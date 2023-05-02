@@ -1,9 +1,6 @@
 import torch
-from mlc_llm import utils
 import argparse, os, time
-from transformers import AutoTokenizer, AutoModelForCausalLM
 import tvm
-from tvm import relax
 from mlc_llm.conversation import SeparatorStyle, conv_templates
 from utils import get_tokenizer, get_pytorch_model, get_tvm_model, sample_top_p
 

@@ -307,10 +307,17 @@ class LlamaAttention(nn.Module):
             attention_mask.struct_info.shape.values,
             (bsz, tvm.tir.IntImm("int64", 1), q_len, kv_seq_len),
         )
-        
-        attn_weights = nn.emit(maximum(attn_weights, relax.const(tvm.tir.min_value(attn_weights.struct_info.dtype).value, attn_weights.struct_info.dtype)))
-        attn_weights = nn.emit(relax.op.minimum(attn_weights, attention_mask))
 
+        attn_weights = nn.emit(
+            maximum(
+                attn_weights,
+                relax.const(
+                    tvm.tir.min_value(attn_weights.struct_info.dtype).value,
+                    attn_weights.struct_info.dtype,
+                ),
+            )
+        )
+        attn_weights = nn.emit(relax.op.minimum(attn_weights, attention_mask))
 
         # upcast attention to fp32
         if attn_weights.struct_info.dtype != "float32":
@@ -394,7 +401,7 @@ def _make_causal_mask(input_ids_shape, dtype, src_len):
     from tvm.relax.op import broadcast_to, full, triu
 
     bsz, tgt_len = input_ids_shape
-    
+
     def min_max_triu_te():
         return te.compute(
             (tgt_len, tgt_len),
@@ -403,7 +410,7 @@ def _make_causal_mask(input_ids_shape, dtype, src_len):
             ),
             name="make_diag_mask_te",
         )
-    
+
     mask = nn.emit_te(min_max_triu_te)
     diag_mask = nn.emit(broadcast_to(mask, (bsz, 1, tgt_len, tgt_len)))
     if src_len == tgt_len:
@@ -413,7 +420,9 @@ def _make_causal_mask(input_ids_shape, dtype, src_len):
         return te.compute(
             (bsz, 1, tgt_len, src_len),
             lambda b, _, i, j: te.if_then_else(
-                j < src_len - tgt_len, tvm.tir.max_value(dtype), x[b, _, i, j - (src_len - tgt_len)]
+                j < src_len - tgt_len,
+                tvm.tir.max_value(dtype),
+                x[b, _, i, j - (src_len - tgt_len)],
             ),
             name="concat_te",
         )
@@ -446,7 +455,13 @@ class LlamaModel(nn.Module):
             # Get src_len from input parameters
             # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
             bsz, tgt_len = input_shape
-            combined_attention_mask = nn.emit(relax.op.full((bsz, 1, tgt_len, src_len), relax.const(tvm.tir.max_value(dtype).value, dtype), dtype))
+            combined_attention_mask = nn.emit(
+                relax.op.full(
+                    (bsz, 1, tgt_len, src_len),
+                    relax.const(tvm.tir.max_value(dtype).value, dtype),
+                    dtype,
+                )
+            )
         return combined_attention_mask
 
     def forward(
@@ -638,6 +653,28 @@ def create_kv_cache_func(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
         bb.emit_func_output(gv)
 
 
+def create_postprocess_func(
+    bb: relax.BlockBuilder, config: LlamaConfig, sampling_method: str
+) -> None:
+    with bb.function("postprocessing"):
+        logits = relax.Var(
+            "logits", relax.TensorStructInfo((config.vocab_size,), dtype=config.dtype)
+        )
+        if sampling_method == "greedy":
+            next_token_id = nn.emit(relax.op.argmax(logits, keepdims=True))
+            next_token_id = nn.emit(relax.op.reshape(next_token_id, (-1,)))
+        elif sampling_method == "p-sampling":
+            # TODO(sunggg): implement relax.op.multinomial
+            assert 0, "Not implemented yet"
+        else:
+            raise Exception(f"{sampling_method} is not supported yet.")
+        bb.emit_func_output(next_token_id, [logits])
+
+    mod = bb.get()
+    gv = mod.get_global_var("postprocessing")
+    bb.update_func(gv, mod[gv])
+
+
 def get_model(args):
     from transformers import AutoModelForCausalLM  # type: ignore[import]
 
@@ -645,6 +682,7 @@ def get_model(args):
     model_path = args.model_path
     dtype = args.dtype
     max_seq_len = args.max_seq_len
+    sampling_method = args.sampling_method
 
     if model_name.startswith("vicuna-") or model_name.startswith("llama-"):
         config = LlamaConfig(**MODEL_CONFIG[model_name], dtype=dtype)
@@ -655,6 +693,7 @@ def get_model(args):
         create_encoding_func(bb, config)
         create_decoding_func(bb, config)
         create_kv_cache_func(bb, config)
+        create_postprocess_func(bb, config, sampling_method)
         mod = bb.get()
 
         param_list = []

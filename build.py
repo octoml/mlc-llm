@@ -17,8 +17,12 @@ def _parse_args():
     args = argparse.ArgumentParser()
     utils.argparse_add_common(args)
     args.add_argument("--quantization-sym", action="store_true", default=False)
-    args.add_argument("--quantization-mode", type=str, choices=["int4", "int3", "fp4"], default="int4")
-    args.add_argument("--quantization-storage-nbit", type=int, choices=[32, 16], default=32)
+    args.add_argument(
+        "--quantization-mode", type=str, choices=["int4", "int3", "fp4"], default="int4"
+    )
+    args.add_argument(
+        "--quantization-storage-nbit", type=int, choices=[32, 16], default=32
+    )
     args.add_argument("--no-quantize", action="store_true", default=False)
     args.add_argument("--max-seq-len", type=int, default=-1)
     args.add_argument("--target", type=str, default="auto")
@@ -34,15 +38,20 @@ def _parse_args():
     args.add_argument("--debug-load-script", action="store_true", default=False)
 
     args.add_argument(
-        "--llvm-mingw", type=str, default="",
-        help="/path/to/llvm-mingw-root, use llvm-mingw to cross compile to windows"
+        "--llvm-mingw",
+        type=str,
+        default="",
+        help="/path/to/llvm-mingw-root, use llvm-mingw to cross compile to windows",
     )
     args.add_argument("--system-lib", action="store_true", default=False)
 
     parsed = args.parse_args()
     parsed.model_path = os.path.join(parsed.artifact_path, "models", parsed.model)
     parsed.artifact_path = os.path.join(
-        parsed.artifact_path, parsed.model, parsed.dtype
+        parsed.artifact_path,
+        parsed.model,
+        parsed.dtype,
+        parsed.sampling_method,
     )
     parsed.export_kwargs = {}
     assert parsed.max_seq_len == -1 or parsed.max_seq_len > 0
@@ -118,14 +127,17 @@ def _parse_args():
         parsed.target_kind = parsed.target.kind.default_keys[0]
     elif parsed.target == "metal_x86_64":
         from tvm.contrib import xcode
+
         parsed.target = tvm.target.Target(
-            tvm.target.Target({
-                "kind": "metal",
-                "max_threads_per_block": 256,
-                "max_shared_memory_per_block": 32768,
-                "thread_warp_size": 1,
-            }),
-            host="llvm -mtriple=x86_64-apple-darwin"
+            tvm.target.Target(
+                {
+                    "kind": "metal",
+                    "max_threads_per_block": 256,
+                    "max_shared_memory_per_block": 32768,
+                    "thread_warp_size": 1,
+                }
+            ),
+            host="llvm -mtriple=x86_64-apple-darwin",
         )
         parsed.target_kind = "metal_x86_64"
         parsed.export_kwargs = {
@@ -141,14 +153,14 @@ def _parse_args():
     # use mingw to cross compile windows
     if parsed.llvm_mingw != "":
         from tvm.contrib.cc import cross_compiler
+
         parsed.export_kwargs = {
             "fcompile": cross_compiler(
                 os.path.join(parsed.llvm_mingw, "bin", "x86_64-w64-mingw32-clang++"),
-                output_format="dll"
+                output_format="dll",
             ),
         }
-        parsed.target = parsed.target.with_host(
-            "llvm -mtriple=x86_64-w64-windows-gnu")
+        parsed.target = parsed.target.with_host("llvm -mtriple=x86_64-w64-windows-gnu")
         parsed.lib_format = "dll"
 
     utils.argparse_postproc_common(parsed)
@@ -196,7 +208,7 @@ def mod_transform_before_build(
     args: argparse.Namespace,
 ) -> tvm.IRModule:
     """First-stage: Legalize ops and trace"""
-    model_names = ["encoding", "decoding", "create_kv_cache"]
+    model_names = ["encoding", "decoding", "create_kv_cache", "postprocessing"]
 
     if not args.no_quantize:
         mod = mlc_llm.transform.GroupQuantize(
@@ -211,6 +223,8 @@ def mod_transform_before_build(
     mod = relax.pipeline.get_pipeline()(mod)
     mod = mlc_llm.transform.FuseDecodeMatmulEwise(args.dtype)(mod)
     mod = relax.transform.DeadCodeElimination(model_names)(mod)
+
+    debug_dump_script(mod, "mod_before_lift_params.py", args)
     mod = relax.transform.LiftTransformParams()(mod)
     mod_transform, mod_deploy = utils.split_transform_deploy_mod(mod, model_names)
 
@@ -229,8 +243,8 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
 
         db = ms.database.create(work_dir=args.db_path)
         with db, tvm.target.Target("apple/m1-gpu-restricted"):
-            mod_deploy = relax.transform.MetaScheduleApplyDatabase()(mod_deploy)
-            mod_deploy = mlc_llm.transform.DispatchTIROperator()(mod_deploy)
+            # mod_deploy = relax.transform.MetaScheduleApplyDatabase()(mod_deploy)
+            # mod_deploy = mlc_llm.transform.DispatchTIROperator()(mod_deploy)
             mod_deploy = tvm.tir.transform.DefaultGPUSchedule()(mod_deploy)
             mod_deploy = tvm.tir.transform.ForceNarrowIndexToInt32()(mod_deploy)
 
@@ -243,13 +257,11 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
 
     output_filename = f"{args.model}_{target_kind}_{args.dtype}.{args.lib_format}"
 
-
     debug_dump_shader(ex, f"{args.model}_{target_kind}_{args.dtype}", args)
     lib_path = os.path.join(args.artifact_path, output_filename)
-    ex.export_library(
-        lib_path, **args.export_kwargs
-    )
+    ex.export_library(lib_path, **args.export_kwargs)
     print(f"Finish exporting to {lib_path}")
+
 
 if __name__ == "__main__":
     ARGS = _parse_args()

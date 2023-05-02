@@ -28,6 +28,12 @@ def argparse_add_common(args: argparse.ArgumentParser) -> None:
         choices=["float32", "float16"],
         default="float32",
     )
+    args.add_argument(
+        "--sampling-method",
+        type=str,
+        choices=["greedy", "p-sampling"],
+        default="greedy",
+    )
 
 
 def argparse_postproc_common(args: argparse.Namespace) -> None:
@@ -48,6 +54,7 @@ def argparse_postproc_common(args: argparse.Namespace) -> None:
         from mlc_llm.relax_model import (  # pylint: disable=import-outside-toplevel
             gpt_neox,
         )
+
         if args.model.startswith("dolly-"):
             args.conv_template = "dolly"
         elif args.model.startswith("stablelm-"):
