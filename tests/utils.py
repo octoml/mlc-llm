@@ -28,8 +28,10 @@ def get_tvm_model(artifact_path, model, device_name, dtype):
             self.tot_seq_len = 0
             self.kv_cache = vm["create_kv_cache"]()
 
-        def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-            inputs = tvm.nd.array(inputs.numpy(), device=device)
+        def forward(self, inputs: tvm.nd.array) -> tvm.nd.array:
+            if inputs.device != device_name:
+                inputs = tvm.nd.array(inputs.numpy(), device)
+
             self.tot_seq_len += inputs.shape[1]
             seq_len_shape = tvm.runtime.ShapeTuple([self.tot_seq_len])
             if inputs.shape[1] > 1:
@@ -41,7 +43,7 @@ def get_tvm_model(artifact_path, model, device_name, dtype):
                     inputs, seq_len_shape, self.kv_cache, const_params
                 )
             self.kv_cache = kv_cache
-            return torch.from_numpy(logits.numpy())
+            return logits
 
     model = Model()
     return model.forward

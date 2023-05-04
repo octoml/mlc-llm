@@ -1,30 +1,29 @@
 import torch
-from mlc_llm import utils
 import argparse, os, time
-from transformers import AutoTokenizer, AutoModelForCausalLM
 import tvm
-from tvm import relax
 from mlc_llm.conversation import SeparatorStyle, conv_templates
+from mlc_llm import utils
 from utils import get_tokenizer, get_pytorch_model, get_tvm_model, sample_top_p
 
-torch_device = None
+torch_device = torch_device = torch.device(
+    "cuda:0" if torch.cuda.is_available() else "cpu"
+)
 
 
 def _parse_args():
     args = argparse.ArgumentParser()
+    utils.argparse_add_common(args)
     args.add_argument("--device-name", type=str, default="auto")
     args.add_argument("--debug-dump", action="store_true", default=False)
     args.add_argument("--artifact-path", type=str, default="dist")
-    args.add_argument("--model", type=str, default="vicuna-v1-7b")
     args.add_argument("--max-gen-len", type=int, default=2048)
     args.add_argument("--run-torch-model", action="store_true", default=False)
-    args.add_argument(
-        "--dtype", type=str, choices=["float32", "float16", "int4"], default="float16"
-    )
     parsed = args.parse_args()
     parsed.model_path = os.path.join(parsed.artifact_path, "models", parsed.model)
     parsed.artifact_path = os.path.join(
-        parsed.artifact_path, parsed.model, parsed.dtype
+        parsed.artifact_path,
+        parsed.model,
+        parsed.dtype,
     )
 
     if parsed.device_name == "auto":
@@ -59,6 +58,7 @@ class TvmModelWrapper(ModelWrapper):
         self, tokenizer, max_gen_len, artifact_path, model, device_name, dtype
     ):
         super().__init__(tokenizer, max_gen_len)
+        self.device_name = device_name
         self.model = get_tvm_model(artifact_path, model, device_name, dtype)
 
     def generate(
@@ -73,20 +73,27 @@ class TvmModelWrapper(ModelWrapper):
     ):
         total_len = self.max_gen_len + len(prompt_tokens)
         # TODO: Replace Torch ops to TVM
+        # Issue 1: `tokens` requires in-place update
         tokens = (
             torch.full((1, total_len), self.tokenizer.pad_token_id)
             .to(torch.int32)
             .to(torch_device)
         )
-        tokens[0, : len(prompt_tokens)] = torch.tensor(prompt_tokens).to(torch_device)
+
+        tokens[0, : len(prompt_tokens)] = (
+            torch.tensor(prompt_tokens).to(torch.int32).to(torch_device)
+        )
 
         start_pos = len(prompt_tokens)
         for cur_pos in range(start_pos, total_len):
             if cur_pos == start_pos:
-                logits = self.model(tokens[:, :cur_pos])
+                tok = tvm.nd.from_dlpack(tokens[:, :cur_pos])
+                logits = self.model(tok)
             else:
-                logits = self.model(tokens[:, cur_pos - 1 : cur_pos])
+                tok = tvm.nd.from_dlpack(tokens[:, cur_pos - 1 : cur_pos])
+                logits = self.model(tok)
 
+            logits = torch.from_dlpack(logits)
             logits = logits[:, -1, :]
             if temperature > 0:
                 probs = torch.softmax(
@@ -96,29 +103,28 @@ class TvmModelWrapper(ModelWrapper):
             else:
                 next_token = torch.argmax(logits, dim=-1).to(torch_device)
             next_token = next_token.reshape(-1)
+
             tokens[:, cur_pos] = next_token
-            # the following code assumes bsz == 1
-            if next_token[0] == tokenizer.eos_token_id:
-                stopped = True
-            else:
-                stopped = False
+
+            stopped = next_token[0] == self.tokenizer.eos_token_id
 
             i = cur_pos - start_pos
             if i % stream_interval == 0 or i == self.max_gen_len - 1 or stopped:
                 # TODO: Parallelize decoding
                 output = tokens[0, : cur_pos + 1]
-                output = tokenizer.decode(output, skip_special_tokens=True)
+                output = self.tokenizer.decode(output, skip_special_tokens=True)
                 pos = output.rfind(stop_str, prompt_len)
                 if pos != -1:
                     output = output[:pos]
                     stopped = True
                 yield output
+
             if stopped:
                 break
 
 
 class TorchModelWrapper(ModelWrapper):
-    def __init__(self, tokenizer, max_gen_len, model_path, torch_device, dtype):
+    def __init__(self, tokenizer, max_gen_len, model_path, dtype):
         super().__init__(tokenizer, max_gen_len)
         self.model = get_pytorch_model(model_path, torch_device, dtype)
 
@@ -138,7 +144,9 @@ class TorchModelWrapper(ModelWrapper):
             .to(torch.int32)
             .to(torch_device)
         )
-        tokens[0, : len(prompt_tokens)] = torch.tensor(prompt_tokens).to(torch_device)
+        tokens[0, : len(prompt_tokens)] = (
+            torch.tensor(prompt_tokens).to(torch.int32).to(torch_device)
+        )
         start_pos = len(prompt_tokens)
         for cur_pos in range(start_pos, total_len):
             logits = self.model(tokens[:, :cur_pos])
@@ -153,16 +161,12 @@ class TorchModelWrapper(ModelWrapper):
             next_token = next_token.reshape(-1)
             tokens[:, cur_pos] = next_token
             # the following code assumes bsz == 1
-            if next_token[0] == tokenizer.eos_token_id:
-                stopped = True
-            else:
-                stopped = False
+            stopped = next_token[0] == self.tokenizer.eos_token_id
 
             i = cur_pos - start_pos
             if i % stream_interval == 0 or i == self.max_gen_len - 1 or stopped:
-                # TODO: Parallelize decoding
                 output = tokens[0, : cur_pos + 1]
-                output = tokenizer.decode(output, skip_special_tokens=True)
+                output = self.tokenizer.decode(output, skip_special_tokens=True)
                 pos = output.rfind(stop_str, prompt_len)
                 if pos != -1:
                     output = output[:pos]
@@ -201,6 +205,7 @@ def chat(model_wrapper, user_inps):
             temperature=0,  # Use greedy to make it deterministic for benchmarking
             stop_str=conv.sep if conv.sep_style == SeparatorStyle.SINGLE else conv.sep2,
             add_bos=add_bos,
+            stream_interval=2048,  # To output at once
         ):
             outputs = outputs[prompt_len + 1 :].strip()
             outputs = outputs.split(" ")
@@ -223,7 +228,8 @@ if __name__ == "__main__":
     tokenizer = get_tokenizer(ARGS.model_path)
     tokenizer.pad_token_id = tokenizer.eos_token_id
     if not ARGS.run_torch_model:
-        torch_device = torch.device("cpu")
+        # torch_device = torch.device("cpu")
+
         model = TvmModelWrapper(
             tokenizer,
             ARGS.max_gen_len,
@@ -233,9 +239,11 @@ if __name__ == "__main__":
             ARGS.dtype,
         )
     else:
-        torch_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         model = TorchModelWrapper(
-            tokenizer, ARGS.max_gen_len, ARGS.model_path, torch_device, ARGS.dtype
+            tokenizer,
+            ARGS.max_gen_len,
+            ARGS.model_path,
+            ARGS.dtype,
         )
 
     inputs = [
