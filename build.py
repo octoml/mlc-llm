@@ -17,8 +17,12 @@ def _parse_args():
     args = argparse.ArgumentParser()
     utils.argparse_add_common(args)
     args.add_argument("--quantization-sym", action="store_true", default=False)
-    args.add_argument("--quantization-mode", type=str, choices=["int4", "int3", "fp4"], default="int4")
-    args.add_argument("--quantization-storage-nbit", type=int, choices=[32, 16], default=32)
+    args.add_argument(
+        "--quantization-mode", type=str, choices=["int4", "int3", "fp4"], default="int4"
+    )
+    args.add_argument(
+        "--quantization-storage-nbit", type=int, choices=[32, 16], default=32
+    )
     args.add_argument("--no-quantize", action="store_true", default=False)
     args.add_argument("--max-seq-len", type=int, default=-1)
     args.add_argument("--target", type=str, default="auto")
@@ -32,10 +36,13 @@ def _parse_args():
     )
     args.add_argument("--debug-dump", action="store_true", default=False)
     args.add_argument("--debug-load-script", action="store_true", default=False)
+    args.add_argument("--skip-param-dump", action="store_true", default=False)
 
     args.add_argument(
-        "--llvm-mingw", type=str, default="",
-        help="/path/to/llvm-mingw-root, use llvm-mingw to cross compile to windows"
+        "--llvm-mingw",
+        type=str,
+        default="",
+        help="/path/to/llvm-mingw-root, use llvm-mingw to cross compile to windows",
     )
     args.add_argument("--system-lib", action="store_true", default=False)
 
@@ -118,14 +125,17 @@ def _parse_args():
         parsed.target_kind = parsed.target.kind.default_keys[0]
     elif parsed.target == "metal_x86_64":
         from tvm.contrib import xcode
+
         parsed.target = tvm.target.Target(
-            tvm.target.Target({
-                "kind": "metal",
-                "max_threads_per_block": 256,
-                "max_shared_memory_per_block": 32768,
-                "thread_warp_size": 1,
-            }),
-            host="llvm -mtriple=x86_64-apple-darwin"
+            tvm.target.Target(
+                {
+                    "kind": "metal",
+                    "max_threads_per_block": 256,
+                    "max_shared_memory_per_block": 32768,
+                    "thread_warp_size": 1,
+                }
+            ),
+            host="llvm -mtriple=x86_64-apple-darwin",
         )
         parsed.target_kind = "metal_x86_64"
         parsed.export_kwargs = {
@@ -141,14 +151,14 @@ def _parse_args():
     # use mingw to cross compile windows
     if parsed.llvm_mingw != "":
         from tvm.contrib.cc import cross_compiler
+
         parsed.export_kwargs = {
             "fcompile": cross_compiler(
                 os.path.join(parsed.llvm_mingw, "bin", "x86_64-w64-mingw32-clang++"),
-                output_format="dll"
+                output_format="dll",
             ),
         }
-        parsed.target = parsed.target.with_host(
-            "llvm -mtriple=x86_64-w64-windows-gnu")
+        parsed.target = parsed.target.with_host("llvm -mtriple=x86_64-w64-windows-gnu")
         parsed.lib_format = "dll"
 
     utils.argparse_postproc_common(parsed)
@@ -217,7 +227,8 @@ def mod_transform_before_build(
     debug_dump_script(mod_transform, "mod_lift_params.py", args)
 
     new_params = utils.transform_params(mod_transform, model_params)
-    utils.save_params(new_params, args.artifact_path)
+    if not args.skip_param_dump:
+        utils.save_params(new_params, args.artifact_path)
     return mod_deploy
 
 
@@ -243,13 +254,11 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
 
     output_filename = f"{args.model}_{target_kind}_{args.dtype}.{args.lib_format}"
 
-
     debug_dump_shader(ex, f"{args.model}_{target_kind}_{args.dtype}", args)
     lib_path = os.path.join(args.artifact_path, output_filename)
-    ex.export_library(
-        lib_path, **args.export_kwargs
-    )
+    ex.export_library(lib_path, **args.export_kwargs)
     print(f"Finish exporting to {lib_path}")
+
 
 if __name__ == "__main__":
     ARGS = _parse_args()
