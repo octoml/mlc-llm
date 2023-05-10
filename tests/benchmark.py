@@ -5,6 +5,7 @@ from mlc_llm.conversation import SeparatorStyle, conv_templates, compute_skip_ec
 from mlc_llm import utils
 from utils import get_tokenizer, get_pytorch_model, get_tvm_model, sample_top_p
 import numpy as np
+from transformers import AutoModelForCausalLM
 
 
 class Colors:
@@ -90,15 +91,20 @@ class TvmModelWrapper(ModelWrapper):
         torch_device=("cuda" if torch.cuda.is_available() else "cpu"),
     ):
         super().__init__(tokenizer, max_gen_len, conv_template)
+
         self.name = "tvm_model_wrapper"
         self.artifact_path = artifact_path
         self.model_name = model_name
         self.dtype = dtype
+        tvm_ex = tvm.runtime.load_module(
+            f"{artifact_path}/{model_name}_{tvm_device}_{dtype}.so"
+        )
         self.tvm_device = tvm.device(tvm_device)
         self.torch_device = torch.device(torch_device)
-        self.model = get_tvm_model(
-            self.artifact_path, self.model_name, self.tvm_device, tvm_device, self.dtype
-        )
+
+        self.const_params = utils.load_params(artifact_path, self.tvm_device)
+        self.vm = tvm.relax.VirtualMachine(tvm_ex, self.tvm_device)
+        self.prep_model()
 
     def sync(self):
         if self.torch_device.type == "cuda":
@@ -106,6 +112,9 @@ class TvmModelWrapper(ModelWrapper):
 
         if str(self.tvm_device) != "cpu":
             self.tvm_device.sync()
+
+    def prep_model(self):
+        self.model = get_tvm_model(self.const_params, self.vm)
 
     def benchmark_core(self, num_input_tokens, num_output_tokens):
         total_len = num_input_tokens + num_output_tokens
@@ -257,9 +266,16 @@ class TorchModelWrapper(ModelWrapper):
         self.model_path = model_path
         self.dtype = dtype
         self.torch_mode = torch_mode
-        model = get_pytorch_model(
-            self.model_path, self.torch_device, self.dtype, use_cache=True
-        )
+
+        model = AutoModelForCausalLM.from_pretrained(model_path)
+        model.eval()
+        if dtype == "float16":
+            model = model.to(torch.float16)
+        self._model = model.to(torch_device)
+        self.prep_model()
+
+    def prep_model(self):
+        model = get_pytorch_model(self._model)
         self.model = torch.compile(model, backend=self.torch_mode, dynamic=True)
 
     def sync(self):
@@ -379,6 +395,8 @@ def benchmark_e2e_chat(model_wrapper, prompt, enable_print=False):
 
 
 def benchmark_core_chat(model_wrapper, num_input_tokens, num_output_tokens):
+    # Clear kv cache and prepare the model
+    model_wrapper.prep_model()
     model_wrapper.sync()
     t0 = time.time()
     model_wrapper.benchmark_core(num_input_tokens, num_output_tokens)
@@ -395,11 +413,6 @@ def benchmark(
     num_measurement,
     percentiles=[50, 90, 99],
 ):
-    # TODO: Until we have kv cache clear in TVM, we just measure once.
-    if model_wrapper.name == "tvm_model_wrapper":
-        num_warm_up = 0
-        num_measurement = 1
-
     # Warm-up
     for _ in range(num_warm_up):
         benchmark_core_chat(model_wrapper, num_input_tokens, num_output_tokens)
@@ -415,7 +428,7 @@ def benchmark(
     return elapsed, tok_per_sec
 
 
-def get_model(mode, tokenizer, ARGS):
+def get_model_wrapper(mode, tokenizer, ARGS):
     if mode == "tvm":
         return TvmModelWrapper(
             tokenizer,
@@ -448,12 +461,11 @@ if __name__ == "__main__":
     tokenizer = get_tokenizer(ARGS.model_path)
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    prompt = """Repeat the following paragraph exactly: Carlos Alcaraz is a professional tennis player from Spain. He was born on April 12, 1997, and has been playing tennis since he was a child. Alcaraz is known for his aggressive playing style and his ability to come back from difficult situations. He has won several junior tournaments and has also played on the ATP Tour. Alcaraz He has a career high ranking in men’s singles by the Association of Tennis Professionals of world No. 1 achieved on 12 September 2022. He is currently ranked world No. 2 by the ATP. He is known for his strong serve and powerful groundstrokes. He is also known for his positive attitude and his determination to succeed on the court."""
+    # Example of e2e chat. Disable if you want to try
+    # prompt = """Repeat the following paragraph exactly: Carlos Alcaraz is a professional tennis player from Spain. He was born on April 12, 1997, and has been playing tennis since he was a child. Alcaraz is known for his aggressive playing style and his ability to come back from difficult situations. He has won several junior tournaments and has also played on the ATP Tour. Alcaraz He has a career high ranking in men’s singles by the Association of Tennis Professionals of world No. 1 achieved on 12 September 2022. He is currently ranked world No. 2 by the ATP. He is known for his strong serve and powerful groundstrokes. He is also known for his positive attitude and his determination to succeed on the court."""
+    # benchmark_e2e_chat(model_wrapper, prompt, True)
 
-    model_wrapper = get_model(ARGS.benchmark_mode, tokenizer, ARGS)
-
-    # chat(model_wrapper, prompt, True)
-
+    model_wrapper = get_model_wrapper(ARGS.benchmark_mode, tokenizer, ARGS)
     percentiles = [50, 90, 99]
 
     # TODO: Extend to the list of repr input pairs
