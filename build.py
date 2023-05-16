@@ -233,6 +233,7 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
             mod_deploy = mlc_llm.transform.DispatchTIROperator()(mod_deploy)
             mod_deploy = tvm.tir.transform.DefaultGPUSchedule()(mod_deploy)
             mod_deploy = tvm.tir.transform.ForceNarrowIndexToInt32()(mod_deploy)
+            mod_deploy = mlc_llm.transform.AllowNonAlignedInputs()(mod_deploy)
 
     if args.debug_load_script:
         mod_deploy = debug_load_script("mod_build_stage_debug.py", args)
