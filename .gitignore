@@ -13,6 +13,7 @@ __pycache__/
 *.so
 
 build*
+!build.py
 
 *.ll
 .npm

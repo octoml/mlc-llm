@@ -45,9 +45,10 @@ def argparse_postproc_common(args: argparse.Namespace) -> None:
         args.conv_template = "vicuna_v1.1"
 
     elif args.model.startswith("dolly-") or args.model.startswith("stablelm-"):
-        from mlc_llm.relax_model import (  # pylint: disable=import-outside-toplevel
+        from mlc_llm.relax_model import (
             gpt_neox,
-        )
+        )  # pylint: disable=import-outside-toplevel
+
         if args.model.startswith("dolly-"):
             args.conv_template = "dolly"
         elif args.model.startswith("stablelm-"):
@@ -83,6 +84,14 @@ def split_transform_deploy_mod(
         mod_transform
     )
     mod_deploy = relax.transform.DeadCodeElimination(model_names)(mod_deploy)
+
+    # Copy the runtime module from external codegen
+    mod_deploy = mod_deploy.with_attrs(
+        {
+            "external_mods": mod.get_attr("external_mods"),
+            "const_name_to_constant": mod.get_attr("const_name_to_constant"),
+        }
+    )
 
     return mod_transform, mod_deploy
 

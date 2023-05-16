@@ -6361,6 +6361,272 @@ def fused_decode6_fused_matmul9_add3_int3_int16_fp16_after(lv1158: T.Buffer((T.i
                         T.reads(lv4[v0, v1, v2], var_matmul_intermediate_local[v0, v1, v2])
                         T.writes(p_output0_intermediate[v0, v1, v2])
                         p_output0_intermediate[v0, v1, v2] = lv4[v0, v1, v2] + var_matmul_intermediate_local[v0, v1, v2]
+
+@T.prim_func
+def softmax(var_A: T.handle, var_T_softmax_norm: T.handle):
+    T.func_attr({"op_pattern": 4, "tir.noalias": T.bool(True)})
+    n = T.int64()
+    A = T.match_buffer(var_A, (T.int64(1), T.int64(32), T.int64(1), n), "float16")
+    T_softmax_norm = T.match_buffer(var_T_softmax_norm, (T.int64(1), T.int64(32), T.int64(1), n), "float16")
+    # with T.block("root"):
+    T_softmax_maxelem = T.alloc_buffer((T.int64(1), T.int64(32), T.int64(1)), "float16")
+    T_softmax_exp = T.alloc_buffer((T.int64(1), T.int64(32), T.int64(1), n), "float16")
+    T_softmax_expsum = T.alloc_buffer((T.int64(1), T.int64(32), T.int64(1)), "float16")
+    for i0, i1, i2, k in T.grid(T.int64(1), T.int64(32), T.int64(1), n):
+        with T.block("T_softmax_maxelem"):
+            v_i0, v_i1, v_i2, v_k = T.axis.remap("SSSR", [i0, i1, i2, k])
+            T.reads(A[v_i0, v_i1, v_i2, v_k])
+            T.writes(T_softmax_maxelem[v_i0, v_i1, v_i2])
+            with T.init():
+                T_softmax_maxelem[v_i0, v_i1, v_i2] = T.float16(-65504)
+            T_softmax_maxelem[v_i0, v_i1, v_i2] = T.max(T_softmax_maxelem[v_i0, v_i1, v_i2], A[v_i0, v_i1, v_i2, v_k])
+    for i0, i1, i2, i3 in T.grid(T.int64(1), T.int64(32), T.int64(1), n):
+        with T.block("T_softmax_exp"):
+            v_i0, v_i1, v_i2, v_i3 = T.axis.remap("SSSS", [i0, i1, i2, i3])
+            T.reads(A[v_i0, v_i1, v_i2, v_i3], T_softmax_maxelem[v_i0, v_i1, v_i2])
+            T.writes(T_softmax_exp[v_i0, v_i1, v_i2, v_i3])
+            T_softmax_exp[v_i0, v_i1, v_i2, v_i3] = T.exp(A[v_i0, v_i1, v_i2, v_i3] - T_softmax_maxelem[v_i0, v_i1, v_i2])
+    for i0, i1, i2, k in T.grid(T.int64(1), T.int64(32), T.int64(1), n):
+        with T.block("T_softmax_expsum"):
+            v_i0, v_i1, v_i2, v_k = T.axis.remap("SSSR", [i0, i1, i2, k])
+            T.reads(T_softmax_exp[v_i0, v_i1, v_i2, v_k])
+            T.writes(T_softmax_expsum[v_i0, v_i1, v_i2])
+            with T.init():
+                T_softmax_expsum[v_i0, v_i1, v_i2] = T.float16(0)
+            T_softmax_expsum[v_i0, v_i1, v_i2] = T_softmax_expsum[v_i0, v_i1, v_i2] + T_softmax_exp[v_i0, v_i1, v_i2, v_k]
+    for i0, i1, i2, i3 in T.grid(T.int64(1), T.int64(32), T.int64(1), n):
+        with T.block("T_softmax_norm"):
+            v_i0, v_i1, v_i2, v_i3 = T.axis.remap("SSSS", [i0, i1, i2, i3])
+            T.reads(T_softmax_exp[v_i0, v_i1, v_i2, v_i3], T_softmax_expsum[v_i0, v_i1, v_i2])
+            T.writes(T_softmax_norm[v_i0, v_i1, v_i2, v_i3])
+            T.block_attr({"axis": 3})
+            T_softmax_norm[v_i0, v_i1, v_i2, v_i3] = T_softmax_exp[v_i0, v_i1, v_i2, v_i3] / T_softmax_expsum[v_i0, v_i1, v_i2]
+
+@T.prim_func
+def softmax_dynamic_tuned(var_A: T.handle, var_T_softmax_norm: T.handle):
+    T.func_attr({"op_pattern": 4, "tir.noalias": T.bool(True), "global_symbol": "softmax", "tir.is_scheduled": T.bool(True)})
+    n = T.int64()
+    A = T.match_buffer(var_A, (T.int64(1), T.int64(32), T.int64(1), n), "float16")
+    T_softmax_norm = T.match_buffer(
+        var_T_softmax_norm, (T.int64(1), T.int64(32), T.int64(1), n), "float16"
+    )
+    # with T.block("root"):
+    T_softmax_maxelem_shared = T.alloc_buffer(
+        (T.int64(1), T.int64(32), T.int64(1)), "float16", scope="shared"
+    )
+    T_softmax_expsum_shared = T.alloc_buffer(
+        (T.int64(1), T.int64(32), T.int64(1)), "float16", scope="shared"
+    )
+    for i0_i1_i2_fused in T.thread_binding(
+        T.int64(32),
+        thread="blockIdx.x",
+        annotations={
+            "pragma_auto_unroll_max_step": T.int64(64),
+            "pragma_unroll_explicit": T.int64(1),
+        },
+    ):
+        for ax0, ax1, ax2, ax3_0 in T.grid(
+            T.int64(1), T.int64(1), T.int64(1), (n + T.int64(127)) // T.int64(128)
+        ):
+            for ax3_1 in T.thread_binding(T.int64(128), thread="threadIdx.x"):
+                with T.block("T_softmax_maxelem"):
+                    v_i0 = T.axis.spatial(T.int64(1), ax0)
+                    v_i1 = T.axis.spatial(T.int64(32), i0_i1_i2_fused + ax1)
+                    v_i2 = T.axis.spatial(T.int64(1), ax2)
+                    v_k = T.axis.reduce(n, ax3_0 * T.int64(128) + ax3_1)
+                    T.where(ax3_0 * T.int64(128) + ax3_1 < n)
+                    T.reads(A[v_i0, v_i1, v_i2, v_k])
+                    T.writes(T_softmax_maxelem_shared[v_i0, v_i1, v_i2])
+                    with T.init():
+                        T_softmax_maxelem_shared[v_i0, v_i1, v_i2] = T.float16(
+                            -65504
+                        )
+                    T_softmax_maxelem_shared[v_i0, v_i1, v_i2] = T.max(
+                        T_softmax_maxelem_shared[v_i0, v_i1, v_i2],
+                        A[v_i0, v_i1, v_i2, v_k],
+                    )
+        for ax0, ax1, ax2, ax3_0 in T.grid(
+            T.int64(1), T.int64(1), T.int64(1), (n + T.int64(127)) // T.int64(128)
+        ):
+            for ax3_1 in T.thread_binding(T.int64(128), thread="threadIdx.x"):
+                with T.block("T_softmax_expsum"):
+                    v_i0 = T.axis.spatial(T.int64(1), ax0)
+                    v_i1 = T.axis.spatial(T.int64(32), i0_i1_i2_fused + ax1)
+                    v_i2 = T.axis.spatial(T.int64(1), ax2)
+                    v_k = T.axis.reduce(n, ax3_0 * T.int64(128) + ax3_1)
+                    T.where(ax3_0 * T.int64(128) + ax3_1 < n)
+                    T.reads(
+                        A[v_i0, v_i1, v_i2, v_k],
+                        T_softmax_maxelem_shared[v_i0, v_i1, v_i2],
+                    )
+                    T.writes(T_softmax_expsum_shared[v_i0, v_i1, v_i2])
+                    with T.init():
+                        T_softmax_expsum_shared[v_i0, v_i1, v_i2] = T.float16(0)
+                    T_softmax_expsum_shared[
+                        v_i0, v_i1, v_i2
+                    ] = T_softmax_expsum_shared[v_i0, v_i1, v_i2] + T.exp(
+                        A[v_i0, v_i1, v_i2, v_k]
+                        - T_softmax_maxelem_shared[v_i0, v_i1, v_i2]
+                    )
+        for i3_0 in range((n + T.int64(127)) // T.int64(128)):
+            for i3_1 in T.thread_binding(T.int64(128), thread="threadIdx.x"):
+                with T.block("T_softmax_norm"):
+                    v_i0 = T.axis.spatial(T.int64(1), T.int64(0))
+                    v_i1 = T.axis.spatial(T.int64(32), i0_i1_i2_fused)
+                    v_i2 = T.axis.spatial(T.int64(1), T.int64(0))
+                    v_i3 = T.axis.spatial(n, i3_0 * T.int64(128) + i3_1)
+                    T.where(i3_0 * T.int64(128) + i3_1 < n)
+                    T.reads(
+                        A[v_i0, v_i1, v_i2, v_i3],
+                        T_softmax_maxelem_shared[v_i0, v_i1, v_i2],
+                        T_softmax_expsum_shared[v_i0, v_i1, v_i2],
+                    )
+                    T.writes(T_softmax_norm[v_i0, v_i1, v_i2, v_i3])
+                    T.block_attr({"axis": 3})
+                    T_softmax_norm[v_i0, v_i1, v_i2, v_i3] = (
+                        T.exp(
+                            A[v_i0, v_i1, v_i2, v_i3]
+                            - T_softmax_maxelem_shared[v_i0, v_i1, v_i2]
+                        )
+                        / T_softmax_expsum_shared[v_i0, v_i1, v_i2]
+                    )
+
+@T.prim_func
+def softmax1(var_A: T.handle, var_T_softmax_norm: T.handle):
+    T.func_attr({"op_pattern": 4, "tir.noalias": T.bool(True)})
+    n, m = T.int64(), T.int64()
+    A = T.match_buffer(var_A, (T.int64(1), T.int64(32), n, m), "float16")
+    T_softmax_norm = T.match_buffer(
+        var_T_softmax_norm, (T.int64(1), T.int64(32), n, m), "float16"
+    )
+    # with T.block("root"):
+    T_softmax_maxelem = T.alloc_buffer((T.int64(1), T.int64(32), n), "float16")
+    T_softmax_exp = T.alloc_buffer((T.int64(1), T.int64(32), n, m), "float16")
+    T_softmax_expsum = T.alloc_buffer((T.int64(1), T.int64(32), n), "float16")
+    for i0, i1, i2, k in T.grid(T.int64(1), T.int64(32), n, m):
+        with T.block("T_softmax_maxelem"):
+            v_i0, v_i1, v_i2, v_k = T.axis.remap("SSSR", [i0, i1, i2, k])
+            T.reads(A[v_i0, v_i1, v_i2, v_k])
+            T.writes(T_softmax_maxelem[v_i0, v_i1, v_i2])
+            with T.init():
+                T_softmax_maxelem[v_i0, v_i1, v_i2] = T.float16(-65504)
+            T_softmax_maxelem[v_i0, v_i1, v_i2] = T.max(
+                T_softmax_maxelem[v_i0, v_i1, v_i2], A[v_i0, v_i1, v_i2, v_k]
+            )
+    for i0, i1, i2, i3 in T.grid(T.int64(1), T.int64(32), n, m):
+        with T.block("T_softmax_exp"):
+            v_i0, v_i1, v_i2, v_i3 = T.axis.remap("SSSS", [i0, i1, i2, i3])
+            T.reads(A[v_i0, v_i1, v_i2, v_i3], T_softmax_maxelem[v_i0, v_i1, v_i2])
+            T.writes(T_softmax_exp[v_i0, v_i1, v_i2, v_i3])
+            T_softmax_exp[v_i0, v_i1, v_i2, v_i3] = T.exp(
+                A[v_i0, v_i1, v_i2, v_i3] - T_softmax_maxelem[v_i0, v_i1, v_i2]
+            )
+    for i0, i1, i2, k in T.grid(T.int64(1), T.int64(32), n, m):
+        with T.block("T_softmax_expsum"):
+            v_i0, v_i1, v_i2, v_k = T.axis.remap("SSSR", [i0, i1, i2, k])
+            T.reads(T_softmax_exp[v_i0, v_i1, v_i2, v_k])
+            T.writes(T_softmax_expsum[v_i0, v_i1, v_i2])
+            with T.init():
+                T_softmax_expsum[v_i0, v_i1, v_i2] = T.float16(0)
+            T_softmax_expsum[v_i0, v_i1, v_i2] = (
+                T_softmax_expsum[v_i0, v_i1, v_i2]
+                + T_softmax_exp[v_i0, v_i1, v_i2, v_k]
+            )
+    for i0, i1, i2, i3 in T.grid(T.int64(1), T.int64(32), n, m):
+        with T.block("T_softmax_norm"):
+            v_i0, v_i1, v_i2, v_i3 = T.axis.remap("SSSS", [i0, i1, i2, i3])
+            T.reads(
+                T_softmax_exp[v_i0, v_i1, v_i2, v_i3],
+                T_softmax_expsum[v_i0, v_i1, v_i2],
+            )
+            T.writes(T_softmax_norm[v_i0, v_i1, v_i2, v_i3])
+            T.block_attr({"axis": 3})
+            T_softmax_norm[v_i0, v_i1, v_i2, v_i3] = (
+                T_softmax_exp[v_i0, v_i1, v_i2, v_i3]
+                / T_softmax_expsum[v_i0, v_i1, v_i2]
+            )
+
+@T.prim_func
+def softmax1_dynamic_tuned(var_A: T.handle, var_T_softmax_norm: T.handle):
+    T.func_attr({"op_pattern": 4, "tir.noalias": T.bool(True), "global_symbol": "softmax1", "tir.is_scheduled": T.bool(True)})
+    n, m = T.int64(), T.int64()
+    A = T.match_buffer(var_A, (T.int64(1), T.int64(32), n, m), "float16")
+    T_softmax_norm = T.match_buffer(
+        var_T_softmax_norm, (T.int64(1), T.int64(32), n, m), "float16"
+    )
+    # with T.block("root"):
+    T_softmax_maxelem_shared = T.alloc_buffer(
+        (T.int64(1), T.int64(32), n), "float16", scope="shared"
+    )
+    T_softmax_expsum_shared = T.alloc_buffer(
+        (T.int64(1), T.int64(32), n), "float16", scope="shared"
+    )
+    for i0_i1_i2_fused in T.thread_binding(n * T.int64(32), thread="blockIdx.x"):
+        for ax0, ax1, ax2, ax3_0 in T.grid(
+            T.int64(1), T.int64(1), T.int64(1), (m + T.int64(15)) // T.int64(16)
+        ):
+            for ax3_1 in T.thread_binding(T.int64(16), thread="threadIdx.x"):
+                with T.block("T_softmax_maxelem"):
+                    v_i0 = T.axis.spatial(T.int64(1), ax0)
+                    v_i1 = T.axis.spatial(T.int64(32), i0_i1_i2_fused // n + ax1)
+                    v_i2 = T.axis.spatial(n, i0_i1_i2_fused % n + ax2)
+                    v_k = T.axis.reduce(m, ax3_0 * T.int64(16) + ax3_1)
+                    T.where(ax3_0 * T.int64(16) + ax3_1 < m)
+                    T.reads(A[v_i0, v_i1, v_i2, v_k])
+                    T.writes(T_softmax_maxelem_shared[v_i0, v_i1, v_i2])
+                    with T.init():
+                        T_softmax_maxelem_shared[v_i0, v_i1, v_i2] = T.float16(
+                            -65504
+                        )
+                    T_softmax_maxelem_shared[v_i0, v_i1, v_i2] = T.max(
+                        T_softmax_maxelem_shared[v_i0, v_i1, v_i2],
+                        A[v_i0, v_i1, v_i2, v_k],
+                    )
+        for ax0, ax1, ax2, ax3_0 in T.grid(
+            T.int64(1), T.int64(1), T.int64(1), (m + T.int64(15)) // T.int64(16)
+        ):
+            for ax3_1 in T.thread_binding(T.int64(16), thread="threadIdx.x"):
+                with T.block("T_softmax_expsum"):
+                    v_i0 = T.axis.spatial(T.int64(1), ax0)
+                    v_i1 = T.axis.spatial(T.int64(32), i0_i1_i2_fused // n + ax1)
+                    v_i2 = T.axis.spatial(n, i0_i1_i2_fused % n + ax2)
+                    v_k = T.axis.reduce(m, ax3_0 * T.int64(16) + ax3_1)
+                    T.where(ax3_0 * T.int64(16) + ax3_1 < m)
+                    T.reads(
+                        A[v_i0, v_i1, v_i2, v_k],
+                        T_softmax_maxelem_shared[v_i0, v_i1, v_i2],
+                    )
+                    T.writes(T_softmax_expsum_shared[v_i0, v_i1, v_i2])
+                    with T.init():
+                        T_softmax_expsum_shared[v_i0, v_i1, v_i2] = T.float16(0)
+                    T_softmax_expsum_shared[
+                        v_i0, v_i1, v_i2
+                    ] = T_softmax_expsum_shared[v_i0, v_i1, v_i2] + T.exp(
+                        A[v_i0, v_i1, v_i2, v_k]
+                        - T_softmax_maxelem_shared[v_i0, v_i1, v_i2]
+                    )
+        for i3_0 in range((m + T.int64(15)) // T.int64(16)):
+            for i3_1 in T.thread_binding(T.int64(16), thread="threadIdx.x"):
+                with T.block("T_softmax_norm"):
+                    v_i0 = T.axis.spatial(T.int64(1), T.int64(0))
+                    v_i1 = T.axis.spatial(T.int64(32), i0_i1_i2_fused // n)
+                    v_i2 = T.axis.spatial(n, i0_i1_i2_fused % n)
+                    v_i3 = T.axis.spatial(m, i3_0 * T.int64(16) + i3_1)
+                    T.where(i3_0 * T.int64(16) + i3_1 < m)
+                    T.reads(
+                        A[v_i0, v_i1, v_i2, v_i3],
+                        T_softmax_maxelem_shared[v_i0, v_i1, v_i2],
+                        T_softmax_expsum_shared[v_i0, v_i1, v_i2],
+                    )
+                    T.writes(T_softmax_norm[v_i0, v_i1, v_i2, v_i3])
+                    T.block_attr({"axis": 3})
+                    T_softmax_norm[v_i0, v_i1, v_i2, v_i3] = (
+                        T.exp(
+                            A[v_i0, v_i1, v_i2, v_i3]
+                            - T_softmax_maxelem_shared[v_i0, v_i1, v_i2]
+                        )
+                        / T_softmax_expsum_shared[v_i0, v_i1, v_i2]
+                    )
 ################################################
 
 def get_dict_key(func):
@@ -6371,14 +6637,6 @@ tir_dispatch_dict = {
     get_dict_key(fused_min_max_triu_te_broadcast_to): fused_min_max_triu_te_broadcast_to_sch_func(),
     get_dict_key(rms_norm_before): rms_norm_after,
     get_dict_key(rms_norm_fp16_before): rms_norm_fp16_after,
-    get_dict_key(softmax_before): softmax_after,
-    get_dict_key(softmax_mxn_before): softmax_mxn_after,
-    get_dict_key(softmax_cast_mxn_before): softmax_cast_mxn_after,
-    get_dict_key(softmax_fp16_before): softmax_fp16_after,
-    get_dict_key(softmax_mxn_fp16_before): softmax_mxn_fp16_after,
-    get_dict_key(softmax_1xn_before): softmax_1xn_sch_func(softmax_1xn_before),
-    get_dict_key(softmax_cast_1xn_before): softmax_1xn_sch_func(softmax_cast_1xn_before, cast_to_fp16=True),
-    get_dict_key(softmax_1xn_fp16_before): softmax_1xn_sch_func(softmax_1xn_fp16_before),
     get_dict_key(matmul1_before): matmul1_after,
     get_dict_key(matmul2_before): matmul2_sch_func(),
     get_dict_key(matmul5_before): matmul5_after,
@@ -6445,6 +6703,8 @@ tir_dispatch_dict = {
     get_dict_key(fused_decode5_fused_matmul8_multiply1_int3_int16_fp16_before): fused_decode5_fused_matmul8_multiply1_int3_int16_fp16_after,
     get_dict_key(fused_decode5_fused_matmul8_silu1_int3_int16_fp16_before): fused_decode5_fused_matmul8_silu1_int3_int16_fp16_after,
     get_dict_key(fused_decode6_fused_matmul9_add3_int3_int16_fp16_before): fused_decode6_fused_matmul9_add3_int3_int16_fp16_after,
+    get_dict_key(softmax): softmax_dynamic_tuned,
+    get_dict_key(softmax1): softmax1_dynamic_tuned,
 }
 # fmt: on
 

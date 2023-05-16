@@ -3,3 +3,4 @@ from .quantization import GroupQuantize
 from .transpose_matmul import FuseTransposeMatmul
 from .decode_matmul_ewise import FuseDecodeMatmulEwise
 from .allow_nonaligned_inputs import AllowNonAlignedInputs
+from .rewrite_attention import rewrite_attention
