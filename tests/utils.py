@@ -40,7 +40,8 @@ def get_tvm_model(const_params, vm):
 
 def get_pytorch_model(model, use_cache=True):
     def forward(inputs: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
+        # NOTE: torch.inference_mode() is not supported with torch inductor yet.
+        with torch.no_grad(): 
             return model(inputs, use_cache=use_cache).logits
 
     return forward

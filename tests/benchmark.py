@@ -7,7 +7,6 @@ from utils import get_tokenizer, get_pytorch_model, get_tvm_model, sample_top_p
 import numpy as np
 from transformers import AutoModelForCausalLM
 
-
 class Colors:
     HEADER = "\033[95m"
     OKBLUE = "\033[94m"
@@ -27,6 +26,7 @@ BENCHMARK_MODES = ["tvm", "torch-eager", "torch-inductor"]
 def _parse_args():
     args = argparse.ArgumentParser()
     utils.argparse_add_common(args)
+    args.add_argument("--prompt", type=str, default="Repeat the following paragraph exactly: Carlos Alcaraz is a professional tennis player from Spain. He was born on April 12, 1997, and has been playing tennis since he was a child. Alcaraz is known for his aggressive playing style and his ability to come back from difficult situations. He has won several junior tournaments and has also played on the ATP Tour. Alcaraz He has a career high ranking in men’s singles by the Association of Tennis Professionals of world No. 1 achieved on 12 September 2022. He is currently ranked world No. 2 by the ATP. He is known for his strong serve and powerful groundstrokes. He is also known for his positive attitude and his determination to succeed on the court.")
     args.add_argument("--device-name", type=str, default="auto")
     args.add_argument("--artifact-path", type=str, default="dist")
     args.add_argument("--max-gen-len", type=int, default=2048)
@@ -36,6 +36,7 @@ def _parse_args():
         choices=BENCHMARK_MODES,
         default=BENCHMARK_MODES[0],
     )
+    args.add_argument("--skip_sampling", action="store_true", default=False)
     args.add_argument("--num-warm-up", type=int, default=5)
     args.add_argument("--num-measurements", type=int, default=10)
     args.add_argument("--num-input-tokens", type=int, default=32)
@@ -60,12 +61,24 @@ class ModelWrapper:
         self.max_gen_len = max_gen_len
         self.conv_template = conv_template
 
+    # This function forces device sync
     def sync(self):
         assert 0, "Not intended to call directly"
-
-    def benchmark_core(self, num_input_tokens, num_output_tokens):
+    
+    # This prepares model for benchmarking.
+    # One of its important jobs is to clear kv cache.
+    def prep_model(self):
         assert 0, "Not intended to call directly"
 
+    # This function implements the core of the pipeline for benchmarking.
+    # This excludes the interaction with tokenizer (e.g., text->token, token->text)
+    # Currently, sampling is implemented as greedy and you can also skip this by 
+    # using `skip_sampling`.
+    def benchmark_core(self, num_input_tokens, num_output_tokens, skip_sampling=False):
+        assert 0, "Not intended to call directly"
+
+    # This function is for e2e pipeline. Currently, mainly used for the sanity check 
+    # of the output texts. 
     def generate(
         self,
         prompt: str,
@@ -77,7 +90,6 @@ class ModelWrapper:
         assert 0, "Not intended to call directly"
 
 
-# TODO: Reset kv cache
 class TvmModelWrapper(ModelWrapper):
     def __init__(
         self,
@@ -116,7 +128,7 @@ class TvmModelWrapper(ModelWrapper):
     def prep_model(self):
         self.model = get_tvm_model(self.const_params, self.vm)
 
-    def benchmark_core(self, num_input_tokens, num_output_tokens):
+    def benchmark_core(self, num_input_tokens, num_output_tokens, skip_sampling=False):
         total_len = num_input_tokens + num_output_tokens
         tokens = (
             torch.full((1, total_len), self.tokenizer.pad_token_id)
@@ -128,12 +140,12 @@ class TvmModelWrapper(ModelWrapper):
         for cur_pos in range(start_pos, total_len):
             if cur_pos == start_pos:
                 # TODO: switch to the below when Eric's PR is merged.
-                #    tok = tvm.nd.from_dlpack(tokens[:, :cur_pos])
+                # tok = tvm.nd.from_dlpack(tokens[:, :cur_pos])
                 tok = tvm.nd.array(tokens[:, :cur_pos].numpy(), self.tvm_device)
                 logits = self.model(tok)
             else:
                 # TODO: switch to the below when Eric's PR is merged.
-                #    tok = tvm.nd.from_dlpack(tokens[:, cur_pos - 1 : cur_pos])
+                # tok = tvm.nd.from_dlpack(tokens[:, cur_pos - 1 : cur_pos])
                 tok = tvm.nd.array(
                     tokens[:, cur_pos - 1 : cur_pos].numpy(), self.tvm_device
                 )
@@ -154,6 +166,9 @@ class TvmModelWrapper(ModelWrapper):
             # However, conversion on CPU (Method 2&3) is very cheap even with the data copy from GPU to CPU.
             # Rather than addressing this issue, we choose Method3 by default for now.
 
+            if skip_sampling:
+                continue
+
             if str(self.torch_device) == "cpu":
                 logits = torch.from_numpy(logits.numpy())
             else:
@@ -164,6 +179,7 @@ class TvmModelWrapper(ModelWrapper):
             next_token = torch.argmax(logits, dim=-1)
             next_token = next_token.reshape(-1)
             tokens[:, cur_pos] = next_token
+            
 
     def generate(
         self,
@@ -282,7 +298,7 @@ class TorchModelWrapper(ModelWrapper):
         if self.torch_device.type == "cuda":
             torch.cuda.synchronize()
 
-    def benchmark_core(self, num_input_tokens, num_output_tokens):
+    def benchmark_core(self, num_input_tokens, num_output_tokens, skip_sampling=False):
         total_len = num_input_tokens + num_output_tokens
         tokens = (
             torch.full((1, total_len), self.tokenizer.pad_token_id)
@@ -292,6 +308,10 @@ class TorchModelWrapper(ModelWrapper):
 
         for cur_pos in range(num_input_tokens, total_len):
             logits = self.model(tokens[:, :cur_pos])
+
+            if skip_sampling:
+                continue
+
             logits = logits[:, -1, :]
             # Use greedy
             next_token = torch.argmax(logits, dim=-1)
@@ -342,7 +362,6 @@ class TorchModelWrapper(ModelWrapper):
             if stopped:
                 break
 
-
 # Benchmark single-round conv
 def benchmark_e2e_chat(model_wrapper, prompt, enable_print=False):
     conv = conv_templates[model_wrapper.conv_template].copy()
@@ -368,6 +387,7 @@ def benchmark_e2e_chat(model_wrapper, prompt, enable_print=False):
         # stream_interval=2048,  # To output at once
     ):
         outputs = outputs[skip_echo_len:].strip()
+        outputs = outputs.split(" ")
         now = len(outputs)
         if now - 1 > pre:
             if enable_print:
@@ -394,12 +414,12 @@ def benchmark_e2e_chat(model_wrapper, prompt, enable_print=False):
     return num_input_prompt_tokens, num_decoded_output_tokens, elapsed
 
 
-def benchmark_core_chat(model_wrapper, num_input_tokens, num_output_tokens):
+def benchmark_core_chat(model_wrapper, num_input_tokens, num_output_tokens, skip_sampling):
     # Clear kv cache and prepare the model
     model_wrapper.prep_model()
     model_wrapper.sync()
     t0 = time.time()
-    model_wrapper.benchmark_core(num_input_tokens, num_output_tokens)
+    model_wrapper.benchmark_core(num_input_tokens, num_output_tokens, skip_sampling)
     model_wrapper.sync()
     t1 = time.time()
     return t1 - t0
@@ -411,17 +431,18 @@ def benchmark(
     num_output_tokens,
     num_warm_up,
     num_measurement,
+    skip_sampling=False,
     percentiles=[50, 90, 99],
 ):
     # Warm-up
     for _ in range(num_warm_up):
-        benchmark_core_chat(model_wrapper, num_input_tokens, num_output_tokens)
+        benchmark_core_chat(model_wrapper, num_input_tokens, num_output_tokens, skip_sampling)
 
     # Actual measurement
     elapsed = []
     for _ in range(num_measurement):
         elapsed.append(
-            benchmark_core_chat(model_wrapper, num_input_tokens, num_output_tokens)
+            benchmark_core_chat(model_wrapper, num_input_tokens, num_output_tokens, skip_sampling)
         )
     elapsed = [np.percentile(elapsed, p) for p in percentiles]
     tok_per_sec = [num_output_tokens / e for e in elapsed]
@@ -438,7 +459,7 @@ def get_model_wrapper(mode, tokenizer, ARGS):
             ARGS.model,
             ARGS.dtype,
             tvm_device=ARGS.device_name,
-            torch_device="cpu",
+            torch_device="cpu", # TODO: change to "cuda" when dlpack conversion works.
         )
     elif mode.startswith("torch-"):
         return TorchModelWrapper(
@@ -461,12 +482,11 @@ if __name__ == "__main__":
     tokenizer = get_tokenizer(ARGS.model_path)
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    # Example of e2e chat. Disable if you want to try
-    # prompt = """Repeat the following paragraph exactly: Carlos Alcaraz is a professional tennis player from Spain. He was born on April 12, 1997, and has been playing tennis since he was a child. Alcaraz is known for his aggressive playing style and his ability to come back from difficult situations. He has won several junior tournaments and has also played on the ATP Tour. Alcaraz He has a career high ranking in men’s singles by the Association of Tennis Professionals of world No. 1 achieved on 12 September 2022. He is currently ranked world No. 2 by the ATP. He is known for his strong serve and powerful groundstrokes. He is also known for his positive attitude and his determination to succeed on the court."""
-    # benchmark_e2e_chat(model_wrapper, prompt, True)
-
     model_wrapper = get_model_wrapper(ARGS.benchmark_mode, tokenizer, ARGS)
     percentiles = [50, 90, 99]
+
+    # Example of e2e chat. Disable if you want to try
+    # benchmark_e2e_chat(model_wrapper, ARGS.prompt, True)
 
     # TODO: Extend to the list of repr input pairs
     pairs = [(ARGS.num_input_tokens, ARGS.num_output_tokens)]
@@ -478,6 +498,7 @@ if __name__ == "__main__":
             ARGS.num_warm_up,
             ARGS.num_measurements,
             percentiles=percentiles,
+            skip_sampling=ARGS.skip_sampling
         )
 
         print("|{:^15}|{:^12}|{:^12}|".format("mode", "seqlen", "genlen"), end="")
