@@ -71,17 +71,14 @@ class LlamaAttention(nn.Module):
     def forward(
         self,
         hidden_states: relax.Expr,
+        seq_lens: relax.Expr,
         seqstart_q: relax.Expr,
         max_seqlen_q: relax.Expr,
         kv_cache: relax.Expr,
         slot_mapping: relax.Expr,
         block_tables: relax.Expr,
     ) -> Tuple[relax.Expr, Optional[relax.Expr], Optional[Tuple[relax.Expr]]]:
-        from tvm.relax.op import (
-            reshape,
-            split,
-            expand_dims
-        )
+        from tvm.relax.op import reshape, split, expand_dims
         from tvm.relax.op.nn import attention_var_len
 
         num_tokens, hidden_size = hidden_states.struct_info.shape
@@ -127,27 +124,49 @@ class LlamaAttention(nn.Module):
         # Paged KV cache update
         k_cache, v_cache = kv_cache
 
-        nn.emit(relax.op.call_packed(
+        nn.emit(
+            relax.op.call_packed(
                 "tvm.contrib.vllm.reshape_and_cache",
                 keys,
                 values,
                 k_cache,
                 v_cache,
                 slot_mapping,
-                sinfo_args=[R.Tuple()]))
+                sinfo_args=[R.Tuple()],
+            )
+        )
 
         if True:
             # Prefill attention
-            attn_output = nn.emit(attention_var_len(nn.emit(queries, axis=0),
-                                                    nn.emit(keys, axis=0),
-                                                    nn.emit(values, axis=0),
-                                                    seqstart_q=seqstart_q,
-                                                    max_seqlen_q=max_seqlen_q,
-                                                    causal_mask="BottomRight"))
+            attn_output = nn.emit(
+                attention_var_len(
+                    nn.emit(queries, axis=0),
+                    nn.emit(keys, axis=0),
+                    nn.emit(values, axis=0),
+                    seqstart_q=seqstart_q,
+                    max_seqlen_q=max_seqlen_q,
+                    causal_mask="BottomRight",
+                )
+            )
             attn_output = nn.emit(reshape(attn_output, (num_tokens, hidden_size)))
         else:
             # Decode attention
-            pass
+            attn_output = nn.emit(
+                relax.op.call_dps_packed(
+                    "tvm.contrib.vllm.single_query_cached_kv_attention",
+                    [
+                        queries,
+                        k_cache,
+                        v_cache,
+                        head_mapping,
+                        block_tables,
+                        seq_lens,
+                        16,  # block_size
+                        max_seqlen_q,
+                    ],
+                    out_sinfo=query.struct_info,
+                )
+            )
 
         attn_output = self.o_proj(attn_output)
 
@@ -172,6 +191,7 @@ class LlamaDecoderLayer(nn.Module):
     def forward(
         self,
         hidden_states: relax.Expr,
+        seq_lens: relax.Expr,
         seqstart_q: relax.Expr,
         max_seqlen_q: relax.Expr,
         kv_cache: relax.Expr,
@@ -185,11 +205,12 @@ class LlamaDecoderLayer(nn.Module):
         # Self Attention
         hidden_states, present_key_value = self.self_attn(
             hidden_states=hidden_states,
+            seq_lens=seq_lens,
             seqstart_q=seqstart_q,
             max_seqlen_q=max_seqlen_q,
             kv_cache=kv_cache,
             slot_mapping=slot_mapping,
-            block_tables=block_tables
+            block_tables=block_tables,
         )
         hidden_states = nn.emit(residual + hidden_states)
 
@@ -234,14 +255,17 @@ class LlamaModel(nn.Module):
 
         hidden_states = inputs_embeds
 
-        seqstart_q = nn.emit(relax.op.call_dps_packed(
-                    "tvm.contrib.thrust.sum_scan", seq_lens, out_sinfo=seq_lens.struct_info
-                ))
+        seqstart_q = nn.emit(
+            relax.op.call_dps_packed(
+                "tvm.contrib.thrust.sum_scan", seq_lens, out_sinfo=seq_lens.struct_info
+            )
+        )
         max_seqlen_q = R.max(seq_lens)
 
         for idx, decoder_layer in enumerate(self.layers):
             hidden_states = decoder_layer(
                 hidden_states,
+                seq_lens,
                 seqstart_q,
                 max_seqlen_q,
                 kv_caches[idx],
@@ -276,13 +300,7 @@ class LlamaForCausalLM(nn.Module):
         slot_mapping: relax.Expr,
         block_tables: relax.Expr,
     ):
-        hidden_states = self.model(
-            input_ids,
-            seq_lens,
-            kv_caches,
-            slot_mapping,
-            block_tables
-        )
+        hidden_states = self.model(input_ids, seq_lens, kv_caches, slot_mapping, block_tables)
 
         return hidden_states
 
