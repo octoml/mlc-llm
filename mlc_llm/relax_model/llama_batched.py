@@ -525,50 +525,6 @@ def create_decoding_func(
     bb.update_func(gv, mod[gv].with_attr("num_input", 6))
 
 
-def test():
-    bb = relax.BlockBuilder()
-    model_path = "/home/masa/projects/dev/mlc-llm/mlc_llm/relax_model"
-    import os
-    import json
-
-    with open(os.path.join(model_path, "config.json"), encoding="utf-8") as i_f:
-        config = LlamaConfig(**json.load(i_f))
-
-    func_name = "prefill"
-    num_token = tvm.tir.Var("num_token", "int64")
-    num_seq = tvm.tir.Var("num_seq", "int64")
-    max_num_blocks_per_seq = tvm.tir.Var("max_num_blocks_per_seq", "int64")
-    sep_embed = False
-
-    with bb.function(func_name):
-        inputs, positions, seq_lens, past_key_values, slot_mapping, block_tables = get_inputs(
-            num_seq, num_seq, config, max_num_blocks_per_seq, sep_embed=sep_embed
-        )
-
-        with bb.dataflow():
-            model = LlamaForCausalLM(config, tvm.tir.Var("v", "int64"), False)
-
-            logits, new_kvs = model(
-                inputs, positions, seq_lens, past_key_values, slot_mapping, block_tables
-            )
-            params = [
-                inputs,
-                positions,
-                seq_lens,
-                past_key_values,
-                slot_mapping,
-                block_tables,
-            ] + model.parameters()
-            gv = bb.emit_output((logits, relax.Tuple(new_kvs)))
-        bb.emit_func_output(gv, params)
-
-    mod = bb.get()
-    gv = mod.get_global_var("prefill")
-    bb.update_func(gv, mod[gv].with_attr("num_input", 6))
-
-    print(mod)
-
-
 def get_model(args, hf_config):
     model_name = args.model
     dtype = args.quantization.model_dtype
