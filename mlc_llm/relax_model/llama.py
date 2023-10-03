@@ -114,18 +114,18 @@ class LlamaRMSNorm(nn.Module):
             def f_square(x):
                 return tir.Cast("float32", x) * tir.Cast("float32", x) if not is_float32 else x * x
 
-            k = te.reduce_axis((0, x.shape[2]), name="k")
+            k = te.reduce_axis((0, x.shape[1]), name="k")
             square_sum = te.compute(
-                (x.shape[0], x.shape[1]),
-                lambda bsz, i: te.sum(f_square(x[bsz, i, k]), axis=k),
+                (x.shape[0],),
+                lambda i: te.sum(f_square(x[i, k]), axis=k),
                 name=x.op.name + "red_temp",
             )
 
-            def f_div_cast(bsz, i, k):
-                x_val = x[bsz, i, k]
+            def f_div_cast(i, k):
+                x_val = x[i, k]
                 if not is_float32:
                     x_val = tir.Cast("float32", x_val)
-                return x_val / tir.sqrt(square_sum[bsz, i] / x.shape[2] + self.variance_epsilon)
+                return x_val / tir.sqrt(square_sum[i] / x.shape[1] + self.variance_epsilon)
 
             def f_mul_cast(x, y):
                 value = x * y
@@ -135,7 +135,7 @@ class LlamaRMSNorm(nn.Module):
 
             return te.compute(
                 x.shape,
-                lambda bsz, i, k: f_mul_cast(weight(k), f_div_cast(bsz, i, k)),
+                lambda i, k: f_mul_cast(weight(k), f_div_cast(i, k)),
                 name="rms_norm",
             )
 

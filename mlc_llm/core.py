@@ -566,6 +566,11 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
 
 
 def build_model_from_args(args: argparse.Namespace):
+    from mlc_llm.relax_model.llama_batched import test
+
+    test()
+    return
+
     if args.quantization == "q4f16_0":
         print(
             "WARNING: q4f16_1 is preferred to q4f16_0, "

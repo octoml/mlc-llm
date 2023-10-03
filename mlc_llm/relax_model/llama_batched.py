@@ -124,7 +124,7 @@ class LlamaAttention(nn.Module):
         k_cache, v_cache = kv_cache
 
         nn.emit(
-            relax.op.call_packed(
+            tvm.script.ir_builder.relax.call_packed(
                 "tvm.contrib.vllm.reshape_and_cache",
                 keys,
                 values,
@@ -200,7 +200,7 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
-        hidden_states, present_key_value = self.self_attn(
+        hidden_states = self.self_attn(
             hidden_states=hidden_states,
             seq_lens=seq_lens,
             seqstart_q=seqstart_q,
@@ -217,7 +217,7 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states = self.mlp(hidden_states)
         hidden_states = nn.emit(residual + hidden_states)
 
-        return hidden_states, present_key_value
+        return hidden_states
 
 
 class LlamaModel(nn.Module):
@@ -239,7 +239,7 @@ class LlamaModel(nn.Module):
         )
         num_queries_per_kv = config.num_attention_heads // num_key_value_heads
         head_mapping = relax.const(
-            tvm.runtime.ndarray(
+            tvm.nd.array(
                 np.repeat(np.arange(num_key_value_heads, dtype="int32"), num_queries_per_kv)
             )
         )
@@ -379,6 +379,61 @@ def create_encoding_func(
     mod = bb.get()
     gv = mod.get_global_var(func_name)
     bb.update_func(gv, mod[gv].with_attr("num_input", 5))
+
+
+def test():
+    bb = relax.BlockBuilder()
+    model_path = "/Users/masa/projects/dev/mlc-llm/mlc_llm/relax_model"
+    import os
+    import json
+    with open(os.path.join(model_path, "config.json"), encoding="utf-8") as i_f:
+        config = LlamaConfig(**json.load(i_f))
+
+    sep_embed = False
+    func_name = "prefill"
+
+    num_token = tvm.tir.Var("num_token", "int64")
+    num_seq = tvm.tir.Var("num_seq", "int64")
+    max_num_blocks_per_seq = tvm.tir.Var("max_num_blocks_per_seq", "int64")
+    hidden_size = config.hidden_size
+
+    with bb.function(func_name):
+        model = LlamaForCausalLM(config, tvm.tir.Var("v", "int64"), True, sep_embed)
+
+        inputs = (
+            nn.Placeholder((num_token, hidden_size), dtype=config.dtype, name="inputs_embeds")
+            if sep_embed
+            else nn.Placeholder((num_token,), dtype="int32", name="input_ids")
+        )
+        seq_lens = nn.Placeholder((num_seq,), dtype="int32", name="seq_lens")
+        past_key_values = relax.Var(
+            "kv_cache",
+            relax.TupleStructInfo(
+                [relax.ObjectStructInfo() for _ in range(config.num_hidden_layers * 2)]
+            ),
+        )
+        slot_mapping = nn.Placeholder((num_token,), dtype="int32", name="slot_mapping")
+        block_tables = nn.Placeholder(
+            (num_seq, max_num_blocks_per_seq), dtype="int32", name="max_num_blocks_per_seq"
+        )
+
+        with bb.dataflow():
+            logits = model(inputs, seq_lens, past_key_values, slot_mapping, block_tables)
+            params = [
+                inputs,
+                seq_lens,
+                past_key_values,
+                slot_mapping,
+                block_tables,
+            ] + model.parameters()
+            gv = bb.emit_output(logits)
+        bb.emit_func_output(gv, params)
+
+    mod = bb.get()
+    gv = mod.get_global_var(func_name)
+    bb.update_func(gv, mod[gv].with_attr("num_input", 5))
+
+    print(mod)
 
 
 # def create_decoding_func(
