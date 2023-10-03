@@ -23,6 +23,41 @@ from .llama import (
 )
 
 
+def apply_rotary_pos_emb(q, k, positions, position_embedding_base, offset: int = 0):
+    def f_rotary_embedding(tensor, pos_tensor, offset):
+        dtype = tensor.dtype
+        head_dim = tensor.shape[-1]
+        n_feat_half = tensor.shape[-1] // 2
+
+        def rotary_compute(*idx):
+            tok_id, j = idx[-2], idx[-1]
+            pos = (offset + pos_tensor[tok_id]).astype("float32")
+            inv_freq = te.const(1, "float32") / (
+                te.power(
+                    te.const(position_embedding_base, "float32"),
+                    ((2 * j) % head_dim).astype("float32") / head_dim.astype("float32"),
+                )
+            )
+            freq = pos * inv_freq
+            return te.cos(freq).astype(dtype) * tensor(*idx) + te.sin(freq).astype(
+                dtype
+            ) * tvm.tir.Select(
+                j >= n_feat_half,
+                tensor[idx[0], idx[1], j - n_feat_half],
+                -tensor[idx[0], idx[1], j + n_feat_half],
+            )
+
+        return tvm.te.compute(tensor.shape, rotary_compute, name="rotary")
+
+    q_embed = nn.emit_te(
+        f_rotary_embedding, q, positions, offset, primfunc_name_hint="rotary_embedding"
+    )
+    k_embed = nn.emit_te(
+        f_rotary_embedding, k, positions, offset, primfunc_name_hint="rotary_embedding"
+    )
+    return q_embed, k_embed
+
+
 class LlamaAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
@@ -81,13 +116,14 @@ class LlamaAttention(nn.Module):
     def forward(
         self,
         hidden_states: relax.Expr,
+        positions: relax.Expr,
         seq_lens: relax.Expr,
         kv_cache: relax.Expr,
         slot_mapping: relax.Expr,
         max_seqlen_q: relax.Expr,
         seqstart_q: relax.Expr,  # only for prefill
         block_tables: relax.Expr,  # only for decode
-    ) -> Tuple[relax.Expr, Optional[relax.Expr], Optional[Tuple[relax.Expr]]]:
+    ):
         num_tokens, hidden_size = hidden_states.struct_info.shape
 
         if self.combine_matmul:
@@ -127,6 +163,10 @@ class LlamaAttention(nn.Module):
                 (num_tokens, self.num_key_value_heads, self.head_dim),
             ),
         )
+
+        queries, keys = apply_rotary_pos_emb(
+            queries, keys, positions, self.position_embedding_base, offset=0
+        )  # TODO: When a non-zero offset is needed?
 
         # Paged KV cache update
         k_cache, v_cache = kv_cache
@@ -199,6 +239,7 @@ class LlamaDecoderLayer(nn.Module):
     def forward(
         self,
         hidden_states: relax.Expr,
+        positions: relax.Expr,
         seq_lens: relax.Expr,
         kv_cache: relax.Expr,
         slot_mapping: relax.Expr,
@@ -213,6 +254,7 @@ class LlamaDecoderLayer(nn.Module):
         # Self Attention
         hidden_states, new_kv = self.self_attn(
             hidden_states=hidden_states,
+            positions=positions,
             seq_lens=seq_lens,
             kv_cache=kv_cache,
             slot_mapping=slot_mapping,
@@ -270,6 +312,7 @@ class LlamaModel(nn.Module):
     def forward(
         self,
         inputs: relax.Expr,
+        positions: relax.Expr,
         seq_lens: relax.Expr,
         kv_caches: relax.Expr,
         slot_mapping: relax.Expr,
@@ -301,6 +344,7 @@ class LlamaModel(nn.Module):
         for idx, decoder_layer in enumerate(self.layers):
             hidden_states, new_kv = decoder_layer(
                 hidden_states,
+                positions,
                 seq_lens,
                 (kv_caches[2 * idx], kv_caches[2 * idx + 1]),
                 slot_mapping,
@@ -338,13 +382,14 @@ class LlamaForCausalLM(nn.Module):
     def forward(
         self,
         input_ids: relax.Expr,
+        positions: relax.Expr,
         seq_lens: relax.Expr,
         kv_caches: relax.Expr,
         slot_mapping: relax.Expr,
         block_tables: relax.Expr,  # only for decode
     ):
         hidden_states, new_kvs = self.model(
-            input_ids, seq_lens, kv_caches, slot_mapping, block_tables
+            input_ids, positions, seq_lens, kv_caches, slot_mapping, block_tables
         )
 
         return hidden_states, new_kvs
@@ -360,6 +405,7 @@ def get_inputs(num_token, num_seq, config, max_num_blocks_per_seq=None, sep_embe
     )
 
     seq_lens = nn.Placeholder((num_seq,), dtype="int32", name="seq_lens")
+    positions = nn.Placeholder((num_token,), dtype="int32", name="positions")
 
     num_blocks = tvm.tir.Var("num_blocks", "int64")
     block_size = 16
@@ -398,7 +444,7 @@ def get_inputs(num_token, num_seq, config, max_num_blocks_per_seq=None, sep_embe
             (num_seq, max_num_blocks_per_seq), dtype="int32", name="block_tables"
         )
 
-    return inputs, seq_lens, past_key_values, slot_mapping, block_tables
+    return inputs, positions, seq_lens, past_key_values, slot_mapping, block_tables
 
 
 def create_encoding_func(
@@ -417,14 +463,17 @@ def create_encoding_func(
         model = LlamaForCausalLM(config, tvm.tir.Var("v", "int64"), True, sep_embed)
         param_manager.register_params(model, func_name, quant_scheme, get_param_quant_kind)
 
-        inputs, seq_lens, past_key_values, slot_mapping, _ = get_inputs(
+        inputs, positions, seq_lens, past_key_values, slot_mapping, _ = get_inputs(
             num_token, num_seq, config, sep_embed=sep_embed
         )
 
         with bb.dataflow():
-            logits, new_kvs = model(inputs, seq_lens, past_key_values, slot_mapping, None)
+            logits, new_kvs = model(
+                inputs, positions, seq_lens, past_key_values, slot_mapping, None
+            )
             params = [
                 inputs,
+                positions,
                 seq_lens,
                 past_key_values,
                 slot_mapping,
@@ -434,7 +483,7 @@ def create_encoding_func(
 
     mod = bb.get()
     gv = mod.get_global_var(func_name)
-    bb.update_func(gv, mod[gv].with_attr("num_input", 4))
+    bb.update_func(gv, mod[gv].with_attr("num_input", 5))
 
 
 def create_decoding_func(
@@ -449,7 +498,7 @@ def create_decoding_func(
     max_num_blocks_per_seq = tvm.tir.Var("max_num_blocks_per_seq", "int64")
 
     with bb.function(func_name):
-        inputs, seq_lens, past_key_values, slot_mapping, block_tables = get_inputs(
+        inputs, positions, seq_lens, past_key_values, slot_mapping, block_tables = get_inputs(
             num_seq, num_seq, config, max_num_blocks_per_seq
         )
 
@@ -457,9 +506,12 @@ def create_decoding_func(
             model = LlamaForCausalLM(config, tvm.tir.Var("v", "int64"), False)
             param_manager.register_params(model, func_name, quant_scheme, get_param_quant_kind)
 
-            logits, new_kvs = model(inputs, seq_lens, past_key_values, slot_mapping, block_tables)
+            logits, new_kvs = model(
+                inputs, positions, seq_lens, past_key_values, slot_mapping, block_tables
+            )
             params = [
                 inputs,
+                positions,
                 seq_lens,
                 past_key_values,
                 slot_mapping,
@@ -470,7 +522,7 @@ def create_decoding_func(
 
     mod = bb.get()
     gv = mod.get_global_var(func_name)
-    bb.update_func(gv, mod[gv].with_attr("num_input", 5))
+    bb.update_func(gv, mod[gv].with_attr("num_input", 6))
 
 
 def test():
@@ -489,16 +541,19 @@ def test():
     sep_embed = False
 
     with bb.function(func_name):
-        inputs, seq_lens, past_key_values, slot_mapping, block_tables = get_inputs(
+        inputs, positions, seq_lens, past_key_values, slot_mapping, block_tables = get_inputs(
             num_seq, num_seq, config, max_num_blocks_per_seq, sep_embed=sep_embed
         )
 
         with bb.dataflow():
             model = LlamaForCausalLM(config, tvm.tir.Var("v", "int64"), False)
 
-            logits, new_kvs = model(inputs, seq_lens, past_key_values, slot_mapping, block_tables)
+            logits, new_kvs = model(
+                inputs, positions, seq_lens, past_key_values, slot_mapping, block_tables
+            )
             params = [
                 inputs,
+                positions,
                 seq_lens,
                 past_key_values,
                 slot_mapping,
@@ -509,7 +564,7 @@ def test():
 
     mod = bb.get()
     gv = mod.get_global_var("prefill")
-    bb.update_func(gv, mod[gv].with_attr("num_input", 4))
+    bb.update_func(gv, mod[gv].with_attr("num_input", 6))
 
     print(mod)
 
