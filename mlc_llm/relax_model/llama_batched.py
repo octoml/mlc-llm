@@ -18,7 +18,7 @@ from .llama import LlamaConfig, Linear, Embedding, LlamaRMSNorm, LlamaMLP
 class LlamaAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: LlamaConfig):
+    def __init__(self, config: LlamaConfig, head_mapping):
         dtype = config.dtype
         self.num_shards = config.num_shards
         self.hidden_size = config.hidden_size
@@ -30,6 +30,7 @@ class LlamaAttention(nn.Module):
         self.num_query_heads = config.num_attention_heads // self.num_shards
         self.head_dim = self.hidden_size // config.num_attention_heads
         self.position_embedding_base = config.position_embedding_base
+        self.head_mapping = head_mapping
 
         self.combine_matmul = config.combine_matmul
         if self.combine_matmul:
@@ -137,7 +138,6 @@ class LlamaAttention(nn.Module):
         )
 
         if True:
-            # Prefill attention
             attn_output = nn.emit(
                 attention_var_len(
                     nn.emit(queries, axis=0),
@@ -148,9 +148,7 @@ class LlamaAttention(nn.Module):
                     causal_mask="BottomRight",
                 )
             )
-            attn_output = nn.emit(reshape(attn_output, (num_tokens, hidden_size)))
         else:
-            # Decode attention
             attn_output = nn.emit(
                 relax.op.call_dps_packed(
                     "tvm.contrib.vllm.single_query_cached_kv_attention",
@@ -158,7 +156,7 @@ class LlamaAttention(nn.Module):
                         queries,
                         k_cache,
                         v_cache,
-                        head_mapping,
+                        self.head_mapping,
                         block_tables,
                         seq_lens,
                         16,  # block_size
@@ -168,6 +166,7 @@ class LlamaAttention(nn.Module):
                 )
             )
 
+        attn_output = nn.emit(reshape(attn_output, (num_tokens, hidden_size)))
         attn_output = self.o_proj(attn_output)
 
         if self.num_shards > 1:
@@ -177,9 +176,9 @@ class LlamaAttention(nn.Module):
 
 
 class LlamaDecoderLayer(nn.Module):
-    def __init__(self, config: LlamaConfig):
+    def __init__(self, config: LlamaConfig, head_mapping):
         self.hidden_size = config.hidden_size
-        self.self_attn = LlamaAttention(config)
+        self.self_attn = LlamaAttention(config, head_mapping)
         self.mlp = LlamaMLP(config)
         self.input_layernorm = LlamaRMSNorm(
             config.hidden_size, dtype=config.dtype, eps=config.rms_norm_eps
@@ -229,11 +228,23 @@ class LlamaModel(nn.Module):
         self.padding_idx = config.pad_token_id
         self.embed_tokens = None
 
+        num_key_value_heads = (
+            config.num_key_value_heads is None
+            and config.num_attention_heads
+            or config.num_key_value_heads
+        )
+        num_queries_per_kv = config.num_attention_heads // num_key_value_heads
+        head_mapping = relax.const(
+            tvm.runtime.ndarray(
+                np.repeat(np.arange(num_key_value_heads, dtype="int32"), num_queries_per_kv)
+            )
+        )
+
         if not sep_embed:
             self.embed_tokens = Embedding(vocab_size_var, config.hidden_size, dtype=config.dtype)
 
         self.layers = ModuleList(
-            [LlamaDecoderLayer(config) for _ in range(config.num_hidden_layers)]
+            [LlamaDecoderLayer(config, head_mapping) for _ in range(config.num_hidden_layers)]
         )
         self.norm = LlamaRMSNorm(config.hidden_size, dtype=config.dtype, eps=config.rms_norm_eps)
 
