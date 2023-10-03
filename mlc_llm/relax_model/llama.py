@@ -114,30 +114,51 @@ class LlamaRMSNorm(nn.Module):
             def f_square(x):
                 return tir.Cast("float32", x) * tir.Cast("float32", x) if not is_float32 else x * x
 
-            k = te.reduce_axis((0, x.shape[1]), name="k")
-            square_sum = te.compute(
-                (x.shape[0],),
-                lambda i: te.sum(f_square(x[i, k]), axis=k),
-                name=x.op.name + "red_temp",
-            )
-
-            def f_div_cast(i, k):
-                x_val = x[i, k]
-                if not is_float32:
-                    x_val = tir.Cast("float32", x_val)
-                return x_val / tir.sqrt(square_sum[i] / x.shape[1] + self.variance_epsilon)
-
             def f_mul_cast(x, y):
                 value = x * y
                 if not is_float32:
                     value = tir.Cast(x.dtype, value)
                 return value
 
-            return te.compute(
-                x.shape,
-                lambda i, k: f_mul_cast(weight(k), f_div_cast(i, k)),
-                name="rms_norm",
-            )
+            def f_div_cast_2d(i, k):
+                x_val = x[i, k]
+                if not is_float32:
+                    x_val = tir.Cast("float32", x_val)
+                return x_val / tir.sqrt(square_sum[i] / x.shape[1] + self.variance_epsilon)
+
+            def f_div_cast_3d(bsz, i, k):
+                x_val = x[bsz, i, k]
+                if not is_float32:
+                    x_val = tir.Cast("float32", x_val)
+                return x_val / tir.sqrt(square_sum[bsz, i] / x.shape[2] + self.variance_epsilon)
+
+            k = te.reduce_axis((0, x.shape[-1]), name="k")
+
+            if len(x.shape) == 2:
+                square_sum = te.compute(
+                    (x.shape[0],),
+                    lambda i: te.sum(f_square(x[i, k]), axis=k),
+                    name=x.op.name + "red_temp",
+                )
+
+                return te.compute(
+                    x.shape,
+                    lambda i, k: f_mul_cast(weight(k), f_div_cast_2d(i, k)),
+                    name="rms_norm",
+                )
+            else:
+                square_sum = te.compute(
+                    (x.shape[0], x.shape[1]),
+                    lambda bsz, i: te.sum(f_square(x[bsz, i, k]), axis=k),
+                    name=x.op.name + "red_temp",
+                )
+
+                return te.compute(
+                    x.shape,
+                    lambda bsz, i, k: f_mul_cast(weight(k), f_div_cast_3d(bsz, i, k)),
+                    name="rms_norm",
+                )
+
 
         return nn.emit_te(f_rms_norm, hidden_states, self.weight, primfunc_name_hint="rms_norm")
 
@@ -814,62 +835,39 @@ def create_softmax_func(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
         bb.emit_func_output(gv, [logits, temperature])
 
 
-def get_model(args, hf_config):
-    model_name = args.model
-    dtype = args.quantization.model_dtype
-    max_seq_len = args.max_seq_len
-    sep_embed = args.sep_embed
+def emit_shard3d(bb: relax.BlockBuilder) -> None:
+    from tvm.script import tir as T
 
-    position_embedding_base = 10000
-    max_position_embeddings = 2048
-    if "rope_theta" in hf_config:
-        position_embedding_base = hf_config["rope_theta"]
-    if "max_position_embeddings" in hf_config:
-        max_position_embeddings = hf_config["max_position_embeddings"]
-
-    config = LlamaConfig(
-        **hf_config,
-        dtype=dtype,
-        position_embedding_base=position_embedding_base,
-        combine_matmul=True,
-        num_shards=args.num_shards,
-        build_model_only=args.build_model_only,
-    )
-    if max_seq_len != -1:
-        config.max_sequence_length = max_seq_len
-
-    param_manager = ParamManager()
-    bb = relax.BlockBuilder()
-
-    if sep_embed:
-        create_embed_func(bb, param_manager, config, args.quantization)
-    create_encoding_func(bb, param_manager, config, args.quantization, sep_embed)
-    create_decoding_func(bb, param_manager, config, args.quantization)
-    create_kv_cache_func(bb, config)
-    create_softmax_func(bb, config)
-    create_metadata_func(
-        bb,
-        model_name=model_name,
-        max_window_size=config.max_sequence_length,
-        stop_tokens=[2],
-        add_prefix_space=False,
-    )
-
-    mod = bb.get()
-    for gv in mod.functions:
-        func = mod[gv]
-        if isinstance(func, relax.Function):
-            mod[gv] = func.with_attr(
-                "tir_var_upper_bound",
+    def _emit(dtype: str, global_symbol: str):
+        @T.prim_func
+        def shard_3d(a: T.handle, num_shards: T.int64, b: T.handle):
+            T.func_attr(
                 {
-                    "n": config.max_sequence_length,
-                    "m": config.max_sequence_length,
-                },
+                    "tir.noalias": T.bool(True),
+                    "global_symbol": global_symbol,
+                }
             )
+            s_0, s_1, s_2 = T.int64(), T.int64(), T.int64()
+            # pylint: disable=invalid-name
+            A = T.match_buffer(a, (s_0, s_1, s_2), dtype)
+            B = T.match_buffer(b, (num_shards, s_0, s_1 // num_shards, s_2), dtype)
+            # pylint: enable=invalid-name
+            for j_o, i, j_i, k in T.grid(num_shards, s_0, s_1 // num_shards, s_2):
+                with T.block("B"):
+                    v_j_o = T.axis.spatial(num_shards, j_o)
+                    v_i = T.axis.spatial(s_0, i)
+                    v_j_i = T.axis.spatial(s_1 // num_shards, j_i)
+                    v_k = T.axis.spatial(s_2, k)
+                    B[v_j_o, v_i, v_j_i, v_k] = A[v_i, v_j_o * (s_1 // num_shards) + v_j_i, v_k]
 
-    if args.build_model_only:
-        return mod, param_manager, None, config
+        bb.add_func(shard_3d, global_symbol)
 
+    _emit("float32", "shard3d_fp32")
+    _emit("float16", "shard3d_fp16")
+    _emit("uint32", "shard3d_uint32")
+
+
+def setup_params(mod, param_manager, dtype, config, args):
     def f_convert_pname_fwd(pname: str) -> List[str]:
         if not config.combine_matmul:
             return [pname]
@@ -954,3 +952,64 @@ def get_model(args, hf_config):
     param_list[-1] = tvm.nd.array(np.sin(emb).astype(config.dtype), device)
 
     return mod, param_manager, param_list, config
+
+
+def get_model(args, hf_config):
+    model_name = args.model
+    dtype = args.quantization.model_dtype
+    max_seq_len = args.max_seq_len
+    sep_embed = args.sep_embed
+
+    position_embedding_base = 10000
+    max_position_embeddings = 2048
+    if "rope_theta" in hf_config:
+        position_embedding_base = hf_config["rope_theta"]
+    if "max_position_embeddings" in hf_config:
+        max_position_embeddings = hf_config["max_position_embeddings"]
+
+    config = LlamaConfig(
+        **hf_config,
+        dtype=dtype,
+        position_embedding_base=position_embedding_base,
+        combine_matmul=True,
+        num_shards=args.num_shards,
+        build_model_only=args.build_model_only,
+        convert_weight_only=args.convert_weight_only,
+    )
+    if max_seq_len != -1:
+        config.max_sequence_length = max_seq_len
+
+    param_manager = ParamManager()
+    bb = relax.BlockBuilder()
+    emit_shard3d(bb)
+
+    if sep_embed:
+        create_embed_func(bb, param_manager, config, args.quantization)
+    create_encoding_func(bb, param_manager, config, args.quantization, sep_embed)
+    create_decoding_func(bb, param_manager, config, args.quantization)
+    create_kv_cache_func(bb, config)
+    create_softmax_func(bb, config)
+    create_metadata_func(
+        bb,
+        model_name=model_name,
+        max_window_size=config.max_sequence_length,
+        stop_tokens=[2],
+        add_prefix_space=False,
+    )
+
+    mod = bb.get()
+    for gv in mod.functions:
+        func = mod[gv]
+        if isinstance(func, relax.Function):
+            mod[gv] = func.with_attr(
+                "tir_var_upper_bound",
+                {
+                    "n": config.max_sequence_length,
+                    "m": config.max_sequence_length,
+                },
+            )
+
+    if args.build_model_only:
+        return mod, param_manager, None, config
+
+    return setup_params(mod, param_manager, dtype, config, args)

@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 import numpy as np
 import tvm
@@ -8,11 +8,19 @@ from tvm.relax.op.nn import attention_var_len
 from tvm.relax.testing import nn
 from tvm.script import relax as R
 
-from ..quantization import ParamQuantKind, QuantizationScheme
-from .commons import create_metadata_func
+from ..quantization import QuantizationScheme
 from .modules import ModuleList
 from .param_manager import ParamManager
-from .llama import LlamaConfig, Linear, Embedding, LlamaRMSNorm, LlamaMLP, get_param_quant_kind
+from .llama import (
+    LlamaConfig,
+    Linear,
+    Embedding,
+    LlamaRMSNorm,
+    LlamaMLP,
+    get_param_quant_kind,
+    emit_shard3d,
+    setup_params,
+)
 
 
 class LlamaAttention(nn.Module):
@@ -431,6 +439,7 @@ def test():
     model_path = "/Users/masa/projects/dev/mlc-llm/mlc_llm/relax_model"
     import os
     import json
+
     with open(os.path.join(model_path, "config.json"), encoding="utf-8") as i_f:
         config = LlamaConfig(**json.load(i_f))
 
@@ -474,154 +483,41 @@ def test():
     print(mod)
 
 
-# def get_model(args, hf_config):
-#     model_name = args.model
-#     dtype = args.quantization.model_dtype
-#     max_seq_len = args.max_seq_len
-#     sep_embed = args.sep_embed
+def get_model(args, hf_config):
+    model_name = args.model
+    dtype = args.quantization.model_dtype
+    max_seq_len = args.max_seq_len
+    sep_embed = False
 
-#     position_embedding_base = 10000
-#     max_position_embeddings = 2048
-#     if "rope_theta" in hf_config:
-#         position_embedding_base = hf_config["rope_theta"]
-#     if "max_position_embeddings" in hf_config:
-#         max_position_embeddings = hf_config["max_position_embeddings"]
+    position_embedding_base = 10000
+    max_position_embeddings = 2048
+    if "rope_theta" in hf_config:
+        position_embedding_base = hf_config["rope_theta"]
+    if "max_position_embeddings" in hf_config:
+        max_position_embeddings = hf_config["max_position_embeddings"]
 
-#     config = LlamaConfig(
-#         **hf_config,
-#         dtype=dtype,
-#         position_embedding_base=position_embedding_base,
-#         combine_matmul=True,
-#         num_shards=args.num_shards,
-#         build_model_only=args.build_model_only,
-#         convert_weight_only=args.convert_weight_only,
-#     )
-#     if max_seq_len != -1:
-#         config.max_sequence_length = max_seq_len
+    config = LlamaConfig(
+        **hf_config,
+        dtype=dtype,
+        position_embedding_base=position_embedding_base,
+        combine_matmul=True,
+        num_shards=args.num_shards,
+        build_model_only=args.build_model_only,
+        convert_weight_only=args.convert_weight_only,
+    )
+    if max_seq_len != -1:
+        config.max_sequence_length = max_seq_len
 
-#     param_manager = ParamManager()
-#     bb = relax.BlockBuilder()
-#     emit_shard3d(bb)
+    param_manager = ParamManager()
+    bb = relax.BlockBuilder()
+    emit_shard3d(bb)
 
-#     if sep_embed:
-#         create_embed_func(bb, param_manager, config, args.quantization)
-#     create_encoding_func(bb, param_manager, config, args.quantization, sep_embed)
-#     create_decoding_func(bb, param_manager, config, args.quantization)
-#     create_kv_cache_func(bb, config)
-#     create_softmax_func(bb, config)
-#     create_metadata_func(
-#         bb,
-#         model_name=model_name,
-#         max_window_size=config.max_sequence_length,
-#         stop_tokens=[2],
-#         add_prefix_space=False,
-#     )
+    create_encoding_func(bb, param_manager, config, args.quantization, sep_embed)
+    create_decoding_func(bb, param_manager, config, args.quantization)
 
-#     mod = bb.get()
-#     for gv in mod.functions:
-#         func = mod[gv]
-#         if isinstance(func, relax.Function):
-#             mod[gv] = func.with_attr(
-#                 "tir_var_upper_bound",
-#                 {
-#                     "n": config.max_sequence_length,
-#                     "m": config.max_sequence_length,
-#                 },
-#             )
+    mod = bb.get()
 
-#     if args.build_model_only:
-#         return mod, param_manager, None, config
+    if args.build_model_only:
+        return mod, param_manager, None, config
 
-#     def f_convert_pname_fwd(pname: str) -> List[str]:
-#         if not config.combine_matmul:
-#             return [pname]
-
-#         qkv_str = "query_key_value_proj"
-#         gate_up_str = "gate_up_proj"
-#         if qkv_str in pname:
-#             return [
-#                 pname.replace(qkv_str, "q_proj"),
-#                 pname.replace(qkv_str, "k_proj"),
-#                 pname.replace(qkv_str, "v_proj"),
-#             ]
-#         elif gate_up_str in pname:
-#             return [
-#                 pname.replace(gate_up_str, "gate_proj"),
-#                 pname.replace(gate_up_str, "up_proj"),
-#             ]
-#         else:
-#             return [pname]
-
-#     def f_convert_param_bkwd(torch_pname: str, torch_param):
-#         if not config.combine_matmul:
-#             return [(torch_pname, torch_param.astype(dtype))]
-
-#         combined_layers = ["q_proj", "k_proj", "v_proj", "gate_proj", "up_proj"]
-#         if any([name in torch_pname for name in combined_layers]):
-#             return None
-#         return [(torch_pname, torch_param.astype(dtype))]
-
-#     def f_compute_relax_param(relax_pname: str, torch_params: List[Any]):
-#         # Expected to enter this function only for the combined linear matmul weights.
-#         # Other weights are supposed to be loaded in `f_convert_param_bkwd` since
-#         # each other relax param has a unique corresponding torch param.
-#         if not config.combine_matmul:
-#             # When matmul combination is not turned on, each relax param has a unique
-#             # corresponding torch param, and this function is not expected to be entered.
-#             raise NotImplementedError(
-#                 "Matmul combination is not turned on, and the function "
-#                 "is not expected to be entered"
-#             )
-#         num_shards = args.num_shards
-#         hidden_size = config.hidden_size
-#         head_dim = config.hidden_size // config.num_attention_heads
-
-#         if "query_key_value_proj" in relax_pname:
-#             q_heads = config.num_attention_heads
-#             kv_heads = config.num_key_value_heads
-#             if kv_heads is None:
-#                 kv_heads = q_heads
-#             q, k, v = torch_params
-#             assert q.shape == (q_heads * head_dim, hidden_size)
-#             assert k.shape == (kv_heads * head_dim, hidden_size)
-#             assert v.shape == (kv_heads * head_dim, hidden_size)
-#             q = q.reshape((num_shards, q_heads // num_shards, head_dim, hidden_size))
-#             k = k.reshape((num_shards, kv_heads // num_shards, head_dim, hidden_size))
-#             v = v.reshape((num_shards, kv_heads // num_shards, head_dim, hidden_size))
-#             qkv = np.concatenate([q, k, v], axis=1)
-#             qkv = qkv.reshape((-1, hidden_size)).astype(dtype)
-#             return qkv
-#         if "gate_up_proj" in relax_pname:
-#             intermediate_size = config.intermediate_size
-#             gate, up = torch_params
-#             gate = gate.reshape((num_shards, intermediate_size // num_shards, hidden_size))
-#             up = up.reshape((num_shards, intermediate_size // num_shards, hidden_size))
-#             gate_up = np.concatenate([gate, up], axis=1)
-#             gate_up = gate_up.reshape((-1, hidden_size)).astype(dtype)
-#             return gate_up
-#         raise ValueError("Unexpected param loading")
-
-#     param_manager.set_param_loading_func(
-#         args.model_path,
-#         args.use_safetensors,
-#         f_convert_pname_fwd,
-#         f_convert_param_bkwd,
-#         f_compute_relax_param,
-#     )
-
-#     device = tvm.cpu()
-#     param_list = [None] * param_manager.nparam_to_load
-
-#     head_dim = config.hidden_size / config.num_attention_heads
-#     inv_freq = 1.0 / (
-#         config.position_embedding_base ** (np.arange(0, head_dim, 2).astype("float32") / head_dim)
-#     )
-
-#     # The following cos/sin values can be removed but **are kept for compatibility issues**.
-#     t = np.arange(2048, dtype=inv_freq.dtype)
-#     freqs = np.einsum("i,j->ij", t, inv_freq)
-#     emb = np.concatenate((freqs, freqs), axis=-1)
-#     param_list[-2] = tvm.nd.array(np.cos(emb).astype(config.dtype), device)
-#     param_list[-1] = tvm.nd.array(np.sin(emb).astype(config.dtype), device)
-
-#     return mod, param_manager, param_list, config
+    return setup_params(mod, param_manager, dtype, config, args)
