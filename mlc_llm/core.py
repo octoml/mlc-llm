@@ -366,9 +366,9 @@ def mod_transform_before_build(
         model_names = [
             "prefill",
             "decode",
-            "create_kv_cache",
-            "softmax_with_temperature",
-            "get_metadata",
+            # "create_kv_cache",
+            # "softmax_with_temperature",
+            # "get_metadata",
         ]
         if args.sep_embed:
             model_names = ["embed", "prefill_with_embed"] + model_names[1:]
