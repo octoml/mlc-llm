@@ -3,7 +3,7 @@ from typing import Optional, Tuple, List
 import numpy as np
 import tvm
 from tvm import relax, te
-from tvm.relax.op import ccl, reshape, split, expand_dims
+from tvm.relax.op import ccl, reshape, split, expand_dims, concat, zeros
 from tvm.relax.op.nn import attention_var_len
 from tvm.relax.testing import nn
 from tvm.script import relax as R
@@ -316,6 +316,7 @@ class LlamaModel(nn.Module):
         seq_lens: relax.Expr,
         kv_caches: relax.Expr,
         slot_mapping: relax.Expr,
+        seqstart_q: relax.Expr,
         block_tables: relax.Expr,
     ):
         if self.num_shards > 1:
@@ -327,15 +328,6 @@ class LlamaModel(nn.Module):
             inputs_embeds = inputs
 
         hidden_states = inputs_embeds
-
-        if self.prefill:
-            seqstart_q = nn.emit(
-                relax.op.call_dps_packed(
-                    "tvm.contrib.thrust.sum_scan", seq_lens, out_sinfo=seq_lens.struct_info
-                )
-            )
-        else:
-            seqstart_q = None
 
         max_seqlen_q = R.max(seq_lens)
 
@@ -365,6 +357,7 @@ class LlamaForCausalLM(nn.Module):
         prefill: bool,
         sep_embed: bool = False,
     ):
+        self.prefill = prefill
         self.model = LlamaModel(config, vocab_size_var, prefill, sep_embed)
         self.lm_head = Linear(config.hidden_size, vocab_size_var, dtype=config.dtype, bias=False)
 
@@ -388,11 +381,40 @@ class LlamaForCausalLM(nn.Module):
         slot_mapping: relax.Expr,
         block_tables: relax.Expr,  # only for decode
     ):
+        if self.prefill:
+            cumsum = nn.emit(
+                relax.op.call_dps_packed(
+                    "tvm.contrib.thrust.sum_scan", seq_lens, out_sinfo=seq_lens.struct_info
+                )
+            )
+            seqstart_q = nn.emit(concat([zeros((1,), "int32"), cumsum]))
+        else:
+            seqstart_q = None
+
         hidden_states, new_kvs = self.model(
-            input_ids, positions, seq_lens, kv_caches, slot_mapping, block_tables
+            input_ids, positions, seq_lens, kv_caches, slot_mapping, seqstart_q, block_tables
         )
 
-        return hidden_states, new_kvs
+        def te_slicing(x: te.Tensor, seq_len_tensor: te.Tensor, seqstart: te.Tensor):
+            return te.compute(
+                shape=(seq_len_tensor.shape[0], x.shape[-1]),
+                fcompute=lambda i, j: x[seqstart[i] + seq_len_tensor[i] - 1, j],
+                name="slice",
+            )
+
+        if self.prefill:
+            logits = self.lm_head(
+                nn.emit_te(
+                    te_slicing, hidden_states, seq_lens, seqstart_q, primfunc_name_hint="slice"
+                )
+            )
+        else:
+            logits = self.lm_head(hidden_states)
+
+        if logits.struct_info.dtype != "float32":
+            logits = nn.emit(relax.op.astype(logits, "float32"))
+
+        return logits, new_kvs
 
 
 def get_inputs(num_token, num_seq, config, max_num_blocks_per_seq=None, sep_embed=False):
