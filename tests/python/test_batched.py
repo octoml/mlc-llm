@@ -98,36 +98,38 @@ class SequenceGenerationResponse:
     token_id: int
 
 
+def get_tvm_model(artifact_path):
+    return None
+
+
 class Model:
-    def __init__(self):
-        self.pt_model = get_model()
+    def __init__(self, artifact_path):
+        self.tvm_model = get_tvm_model(artifact_path)
 
     def generate(
         self, requests: List[SequenceGenerationRequest], cache: KVCache, is_prompt: bool
     ) -> List[SequenceGenerationResponse]:
-        seq_groups = []
         request_ids = []
 
         for request in requests:
             request_id = request.request_id
-            seq = Sequence(request_id, "", request.token_ids, cache.block_size)
-            seq_groups.append(
-                SequenceGroup(request_id, [seq], request.sampling_params, time.time())
-            )
             request_ids.append(request_id)
 
-        seq_group_metadata_list = get_seq_group_metadata(
-            seq_groups, cache.block_tables, is_prompt
-        )
+        input_ids = None
+        positions = None
+        seq_lens = None
+        kv_cache = cache.cache
+        slot_mapping = None
+        block_tables = None
 
-        input_ids, positions, input_metadata = prepare_inputs(
-            seq_group_metadata_list, cache.block_size
-        )
+        if is_prompt:
+            out = []
+        else:
+            out = []
 
-        with torch.no_grad():
-            out = self.pt_model.forward(
-                input_ids, positions, cache.cache, input_metadata
-            )
+        # out = self.pt_model.forward(
+        #     input_ids, positions, cache.cache, input_metadata
+        # )
 
         responses = []
 
@@ -156,7 +158,7 @@ def test():
         "The future of AI is",
     ]
 
-    model = Model()
+    model = Model(artifact_path)
 
     cache_manager = CacheManager(config.num_hidden_layers,
                                  config.num_attention_heads,
