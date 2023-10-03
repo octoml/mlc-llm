@@ -21,7 +21,7 @@ from mlc_llm.relax_model import (
     gpt_bigcode,
     gpt_neox,
     gptj,
-    llama,
+    llama_batched,
     minigpt,
     param_manager,
     rwkv,
@@ -566,11 +566,6 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
 
 
 def build_model_from_args(args: argparse.Namespace):
-    from mlc_llm.relax_model.llama_batched import test
-
-    test()
-    return
-
     if args.quantization == "q4f16_0":
         print(
             "WARNING: q4f16_1 is preferred to q4f16_0, "
@@ -595,7 +590,8 @@ def build_model_from_args(args: argparse.Namespace):
             config = json.load(i_f)
     if not use_cache or args.convert_weight_only:
         if args.model_category == "llama":
-            mod, param_manager, params, model_config = llama.get_model(args, config)
+            # mod, param_manager, params, model_config = llama.get_model(args, config)
+            mod, param_manager, params, model_config = llama_batched.get_model(args, config)
         elif args.model_category == "mistral":
             mod, param_manager, params, model_config = llama.get_model(args, config)
         elif args.model_category == "gpt_neox":
