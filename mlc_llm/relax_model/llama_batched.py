@@ -457,7 +457,7 @@ def get_inputs(num_token, num_seq, config, max_num_blocks_per_seq=None, sep_embe
         "kv_cache",
         relax.TupleStructInfo([get_cache_sinfo(i) for i in range(config.num_hidden_layers * 2)]),
     )
-    slot_mapping = nn.Placeholder((num_seq,), dtype="int32", name="slot_mapping")
+    slot_mapping = nn.Placeholder((num_token,), dtype="int32", name="slot_mapping")
 
     if max_num_blocks_per_seq is None:
         block_tables = None

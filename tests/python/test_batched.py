@@ -100,12 +100,12 @@ class SequenceGenerationResponse:
     token_id: int
 
 
-def get_tvm_model(artifact_path, model, dev):
+def get_tvm_model(artifact_path, model, quantization, dev):
     const_params = utils.load_params(artifact_path, dev)
     ex = tvm.runtime.load_module(
         os.path.join(
             artifact_path,
-            f"{model}-q4f16_ft-cuda.so",
+            f"{model}-{quantization}-cuda.so",
         )
     )
     vm = relax.VirtualMachine(ex, dev)
@@ -114,8 +114,8 @@ def get_tvm_model(artifact_path, model, dev):
 
 
 class Model:
-    def __init__(self, artifact_path, model_name, dev):
-        self.vm, self.params = get_tvm_model(artifact_path, model_name, dev)
+    def __init__(self, artifact_path, model_name, quant, dev):
+        self.vm, self.params = get_tvm_model(artifact_path, model_name, quant, dev)
         self.dev = dev
 
     def generate(
@@ -136,15 +136,21 @@ class Model:
             if is_prompt:
                 input_ids += request.token_ids
                 positions += range(seq_lens[-1])
+
+                for i in range(len(request.token_ids)):
+                    block_number = block_table[i // block_size]
+                    block_offset = i % block_size
+                    slot = block_number * block_size + block_offset
+                    slot_mappings.append(slot)
             else:
                 input_ids.append(request.token_ids[-1])
-                positions.append(seq_lens[-1] - 1)
+                pos = seq_lens[-1] - 1
+                positions.append(pos)
                 max_num_blocks_per_seq = max(max_num_blocks_per_seq, len(block_table))
                 block_tables.append(block_table)
 
-            for i in range(len(request.token_ids)):
-                block_number = block_table[i // block_size]
-                block_offset = i % block_size
+                block_number = block_table[pos // block_size]
+                block_offset = pos % block_size
                 slot = block_number * block_size + block_offset
                 slot_mappings.append(slot)
 
@@ -188,9 +194,13 @@ class Model:
 
 
 def test():
-    artifact_path = "/home/masahi/projects/dev/mlc-llm/dist/vicuna-v1-7b-q4f16_ft"
+    quantization = "q4f16_ft"
+    artifact_path = f"/home/masahi/projects/dev/mlc-llm/dist/vicuna-v1-7b-{quantization}"
     model_path = "/home/masahi/projects/dev/mlc-llm/dist/models/vicuna-v1-7b"
     model_name = "vicuna-v1-7b"
+    dev = tvm.device("cuda", 0)
+
+    model = Model(artifact_path, model_name, quantization, dev)
 
     with open(os.path.join(model_path, "config.json"), encoding="utf-8") as i_f:
         config = LlamaConfig(json.load(i_f))
@@ -211,8 +221,6 @@ def test():
     target_sizes = []
     requests = []
 
-    dev = tvm.device("cuda", 0)
-
     for token_ids, request_id in zip(batched_token_ids, request_ids):
         request_ids.append(request_id)
         target_sizes.append(len(token_ids))
@@ -228,20 +236,22 @@ def test():
 
     cache_manager.set_size(request_ids, target_sizes)
 
-    model = Model(artifact_path, model_name, dev)
     out = model.generate(requests, cache, True)
 
-    return
-
-    num_steps = 13
+    num_steps = 15
 
     generated = ["" for _ in range(len(prompts))]
 
-    for _ in range(num_steps):
+    for s in range(num_steps):
         for i, response in enumerate(out):
-            new_token = response.token_id
-            requests[i].token_ids.append(new_token)
-            generated[i] += tokenizer.decode(new_token)
+            new_token_id = response.token_id
+            requests[i].token_ids.append(new_token_id)
+            new_token = tokenizer.decode(new_token_id)
+
+            if s != 0 and new_token not in [".", ","]:
+                generated[i] += " "
+
+            generated[i] += new_token
             target_sizes[i] += 1
 
         cache_manager.set_size(request_ids, target_sizes)
@@ -249,7 +259,7 @@ def test():
         out = model.generate(requests, cache, False)
 
     for p, g in zip(prompts, generated):
-        print("Prompt = '{}', generate tokens = '{}'".format(p, g))
+        print("Prompt = '{}', generated tokens = '{}'".format(p, g))
 
 
 test()
