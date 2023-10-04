@@ -11,7 +11,7 @@ import tvm
 from mlc_llm.relax_model.llama import LlamaConfig
 
 
-def init_cache_blocks(head_size, num_layers, num_heads, block_size, num_gpu_blocks):
+def init_cache_blocks(head_size, num_layers, num_heads, block_size, num_gpu_blocks, dev):
     element_size = 2
     x = 16 // element_size
 
@@ -23,28 +23,28 @@ def init_cache_blocks(head_size, num_layers, num_heads, block_size, num_gpu_bloc
         key_blocks = tvm.nd.empty(
             (num_gpu_blocks, *key_block_shape),
             dtype="float16",
-            device="cuda",
+            device=dev,
         )
         value_blocks = tvm.nd.empty(
             (num_gpu_blocks, *value_block_shape),
             dtype="float16",
-            device="cuda",
+            device=dev,
         )
         gpu_cache += (key_blocks, value_blocks)
     return gpu_cache
 
 
 class KVCache:
-    def __init__(self, num_blocks, block_size, num_layers, num_heads, head_size):
+    def __init__(self, num_blocks, block_size, num_layers, num_heads, head_size, dev):
         self.cache = init_cache_blocks(
-            head_size, num_layers, num_heads, block_size, num_blocks
+            head_size, num_layers, num_heads, block_size, num_blocks, dev
         )
         self.block_tables = defaultdict(list)
         self.block_size = block_size
 
 
 class CacheManager:
-    def __init__(self, num_layers, num_heads, head_size):
+    def __init__(self, num_layers, num_heads, head_size, dev):
         # TODO: Hardcoded for now
         block_size = 16
         num_blocks = 500
@@ -53,7 +53,7 @@ class CacheManager:
         self.block_size = block_size
         self.free_blocks = list(range(num_blocks))
         self.kv_cache = KVCache(
-            num_blocks, block_size, num_layers, num_heads, head_size
+            num_blocks, block_size, num_layers, num_heads, head_size, dev
         )
 
     def set_size(self, request_ids: List[int], target_sizes: List[int]):
@@ -141,8 +141,8 @@ class Model:
 
 
 def test():
-    artifact_path = ""
-    model_path = ""
+    artifact_path = "/home/masahi/projects/dev/mlc-llm/dist/vicuna-v1-7b-q4f16_ft"
+    model_path = "/home/masahi/projects/dev/mlc-llm/dist/models/vicuna-v1-7b"
 
     with open(os.path.join(model_path, "config.json"), encoding="utf-8") as i_f:
         config = LlamaConfig(json.load(i_f))
@@ -158,17 +158,12 @@ def test():
         "The future of AI is",
     ]
 
-    model = Model(artifact_path)
-
-    cache_manager = CacheManager(config.num_hidden_layers,
-                                 config.num_attention_heads,
-                                 config.hidden_size // config.num_attention_heads)
-    cache = cache_manager.get()
-
     batched_token_ids = [tokenizer.encode(p) for p in prompts]
     request_ids = list(range(len(prompts)))
     target_sizes = []
     requests = []
+
+    dev = tvm.device("cuda", 0)
 
     for token_ids, request_id in zip(batched_token_ids, request_ids):
         request_ids.append(request_id)
@@ -177,8 +172,19 @@ def test():
             SequenceGenerationRequest(request_id, token_ids, 0)
         )
 
+    cache_manager = CacheManager(config.num_hidden_layers,
+                                 config.num_attention_heads,
+                                 config.hidden_size // config.num_attention_heads,
+                                 dev)
+    cache = cache_manager.get()
+
     cache_manager.set_size(request_ids, target_sizes)
 
+    print(config)
+    print(batched_token_ids)
+    return
+
+    model = Model(artifact_path)
     out = model.generate(requests, cache, True)
 
     num_steps = 13
