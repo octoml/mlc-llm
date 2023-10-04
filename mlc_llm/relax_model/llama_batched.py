@@ -29,7 +29,7 @@ def apply_rotary_pos_emb(q, k, positions, position_embedding_base, offset: int =
         n_feat_half = tensor.shape[-1] // 2
 
         def rotary_compute(*idx):
-            tok_id, j = idx[-2], idx[-1]
+            tok_id, j = idx[0], idx[-1]
             pos = (offset + pos_tensor[tok_id]).astype("float32")
             inv_freq = te.const(1, "float32") / (
                 te.power(
@@ -42,8 +42,8 @@ def apply_rotary_pos_emb(q, k, positions, position_embedding_base, offset: int =
                 dtype
             ) * tvm.tir.Select(
                 j >= n_feat_half,
-                tensor[idx[0], idx[1], j - n_feat_half],
-                -tensor[idx[0], idx[1], j + n_feat_half],
+                tensor[tok_id, idx[1], j - n_feat_half],
+                -tensor[tok_id, idx[1], j + n_feat_half],
             )
 
         return tvm.te.compute(tensor.shape, rotary_compute, name="rotary")
