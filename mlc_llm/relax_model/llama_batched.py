@@ -18,7 +18,6 @@ from .llama import (
     LlamaRMSNorm,
     LlamaMLP,
     get_param_quant_kind,
-    emit_shard3d,
     setup_params,
 )
 
@@ -85,6 +84,7 @@ class LlamaAttention(nn.Module):
                 bias=False,
             )
             self.query_key_value_proj.weight.shard_dim = 0
+            self.query_key_value_proj.weight.shard_strategy = "shard_qkv"
         else:
             self.q_proj = Linear(
                 self.hidden_size,
@@ -112,6 +112,7 @@ class LlamaAttention(nn.Module):
             self.head_dim * self.num_query_heads, self.hidden_size, dtype=dtype, bias=False
         )
         self.o_proj.weight.shard_dim = 1
+        self.o_proj.weight.shard_strategy = "shard_o_proj_k"
 
     def forward(
         self,
@@ -567,14 +568,12 @@ def get_model(args, hf_config):
         combine_matmul=True,
         num_shards=args.num_shards,
         build_model_only=args.build_model_only,
-        convert_weight_only=args.convert_weight_only,
     )
     if max_seq_len != -1:
         config.max_sequence_length = max_seq_len
 
     param_manager = ParamManager()
     bb = relax.BlockBuilder()
-    emit_shard3d(bb)
 
     create_encoding_func(bb, param_manager, config, args.quantization, sep_embed)
     create_decoding_func(bb, param_manager, config, args.quantization)

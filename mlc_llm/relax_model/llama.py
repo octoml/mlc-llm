@@ -835,38 +835,6 @@ def create_softmax_func(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
         bb.emit_func_output(gv, [logits, temperature])
 
 
-def emit_shard3d(bb: relax.BlockBuilder) -> None:
-    from tvm.script import tir as T
-
-    def _emit(dtype: str, global_symbol: str):
-        @T.prim_func
-        def shard_3d(a: T.handle, num_shards: T.int64, b: T.handle):
-            T.func_attr(
-                {
-                    "tir.noalias": T.bool(True),
-                    "global_symbol": global_symbol,
-                }
-            )
-            s_0, s_1, s_2 = T.int64(), T.int64(), T.int64()
-            # pylint: disable=invalid-name
-            A = T.match_buffer(a, (s_0, s_1, s_2), dtype)
-            B = T.match_buffer(b, (num_shards, s_0, s_1 // num_shards, s_2), dtype)
-            # pylint: enable=invalid-name
-            for j_o, i, j_i, k in T.grid(num_shards, s_0, s_1 // num_shards, s_2):
-                with T.block("B"):
-                    v_j_o = T.axis.spatial(num_shards, j_o)
-                    v_i = T.axis.spatial(s_0, i)
-                    v_j_i = T.axis.spatial(s_1 // num_shards, j_i)
-                    v_k = T.axis.spatial(s_2, k)
-                    B[v_j_o, v_i, v_j_i, v_k] = A[v_i, v_j_o * (s_1 // num_shards) + v_j_i, v_k]
-
-        bb.add_func(shard_3d, global_symbol)
-
-    _emit("float32", "shard3d_fp32")
-    _emit("float16", "shard3d_fp16")
-    _emit("uint32", "shard3d_uint32")
-
-
 def setup_params(mod, param_manager, dtype, config, args):
     def f_convert_pname_fwd(pname: str) -> List[str]:
         if not config.combine_matmul:
@@ -974,14 +942,12 @@ def get_model(args, hf_config):
         combine_matmul=True,
         num_shards=args.num_shards,
         build_model_only=args.build_model_only,
-        convert_weight_only=args.convert_weight_only,
     )
     if max_seq_len != -1:
         config.max_sequence_length = max_seq_len
 
     param_manager = ParamManager()
     bb = relax.BlockBuilder()
-    emit_shard3d(bb)
 
     if sep_embed:
         create_embed_func(bb, param_manager, config, args.quantization)
