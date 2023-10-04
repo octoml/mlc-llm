@@ -185,12 +185,10 @@ class Model:
 
         next_tokens = torch.argmax(torch.from_dlpack(logits), -1).cpu().numpy()
 
-        responses = []
-
-        for request, new_token in zip(requests, next_tokens):
-            responses.append(SequenceGenerationResponse(request.request_id, new_token))
-
-        return responses
+        return [
+            SequenceGenerationResponse(request.request_id, new_token)
+            for request, new_token in zip(requests, next_tokens)
+        ]
 
 
 def test():
