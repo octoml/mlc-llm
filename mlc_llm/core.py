@@ -239,7 +239,7 @@ class BuildArgs:
     batched: bool = field(
         default=False,
         metadata={
-            "help": ("TODO"),
+            "help": ("Build the model batched inference support."),
             "action": "store_true",
         },
     )
@@ -282,6 +282,9 @@ def _parse_args(parsed) -> argparse.Namespace:
     parsed.artifact_path = os.path.join(
         parsed.artifact_path, f"{parsed.model}-{parsed.quantization.name}"
     )
+
+    if parsed.batched:
+        parsed.artifact_path += "-batched"
 
     return parsed
 

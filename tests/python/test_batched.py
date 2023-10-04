@@ -1,3 +1,4 @@
+import argparse
 import math
 import os
 import json
@@ -191,11 +192,28 @@ class Model:
         ]
 
 
-def test():
-    quantization = "q4f16_ft"
-    artifact_path = f"/home/masahi/projects/dev/mlc-llm/dist/vicuna-v1-7b-{quantization}"
-    model_path = "/home/masahi/projects/dev/mlc-llm/dist/models/vicuna-v1-7b"
-    model_name = "vicuna-v1-7b"
+def parse_args():
+    # Example
+    # python build.py --model vicuna-v1-7b --quantization q4f16_ft ache=0 --max-seq-len 768 --batched
+    # python tests/python/test_batched.py --local-id vicuna-v1-7b-q4f16_ft
+    args = argparse.ArgumentParser()
+    args.add_argument("--local-id", type=str, required=True)
+    args.add_argument("--artifact-path", type=str, default="dist")
+    parsed = args.parse_args()
+    parsed.model, parsed.quantization = parsed.local_id.rsplit("-", 1)
+    utils.argparse_postproc_common(parsed)
+    parsed.artifact_path = os.path.join(
+        parsed.artifact_path, f"{parsed.model}-{parsed.quantization.name}-batched"
+    )
+    return parsed
+
+
+def test(args):
+    quantization = args.quantization.name
+    artifact_path = args.artifact_path
+    model_name = args.model
+    model_path = f"dist/models/{model_name}"
+
     dev = tvm.device("cuda", 0)
 
     model = Model(artifact_path, model_name, quantization, dev)
@@ -260,4 +278,5 @@ def test():
         print("Prompt = '{}', generated tokens = '{}'".format(p, g))
 
 
-test()
+if __name__ == "__main__":
+    test(parse_args())
