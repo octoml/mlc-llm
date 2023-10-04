@@ -5,6 +5,9 @@ from collections import defaultdict
 from typing import List, Optional, Tuple
 from dataclasses import dataclass
 
+import numpy as np
+
+import torch
 from transformers import AutoConfig, LlamaTokenizer
 
 import tvm
@@ -98,44 +101,78 @@ class SequenceGenerationResponse:
     token_id: int
 
 
-def get_tvm_model(artifact_path):
+def get_tvm_model(artifact_path, dev):
     return None
 
 
 class Model:
-    def __init__(self, artifact_path):
-        self.tvm_model = get_tvm_model(artifact_path)
+    def __init__(self, artifact_path, dev):
+        self.tvm_model = get_tvm_model(artifact_path, dev)
+        self.dev = dev
 
     def generate(
         self, requests: List[SequenceGenerationRequest], cache: KVCache, is_prompt: bool
     ) -> List[SequenceGenerationResponse]:
-        request_ids = []
+        block_tables = []
+        seq_lens = []
+        input_ids = []
+        slot_mappings = []
+        positions = []
+        max_num_blocks_per_seq = 0
+        block_size = cache.block_size
 
         for request in requests:
-            request_id = request.request_id
-            request_ids.append(request_id)
+            block_table = cache.block_tables[request.request_id]
+            seq_lens.append(len(request.token_ids))
 
-        input_ids = None
-        positions = None
-        seq_lens = None
+            if is_prompt:
+                input_ids += request.token_ids
+                positions += range(seq_lens[-1])
+            else:
+                input_ids.append(request.token_ids[-1])
+                positions.append(seq_lens[-1] - 1)
+                max_num_blocks_per_seq = max(max_num_blocks_per_seq, len(block_table))
+                block_tables.append(block_table)
+
+            for i in range(len(request.token_ids)):
+                block_number = block_table[i // block_size]
+                block_offset = i % block_size
+                slot = block_number * block_size + block_offset
+                slot_mappings.append(slot)
+
+        input_ids = tvm.nd.array(np.array(input_ids, dtype="int32"), self.dev)
+        positions = tvm.nd.array(np.array(positions, dtype="int32"), self.dev)
+        seq_lens = tvm.nd.array(np.array(seq_lens, dtype="int32"), self.dev)
+        slot_mapping = tvm.nd.array(np.array(slot_mappings, dtype="int32"), self.dev)
         kv_cache = cache.cache
-        slot_mapping = None
-        block_tables = None
 
         if is_prompt:
-            out = []
+            logits, kv_cache_next = self.tvm_model(
+                input_ids, positions, seq_lens, kv_cache, slot_mapping
+            )
         else:
-            out = []
+            def _pad_to_max(x: List[int], max_len: int) -> List[int]:
+                return x + [0] * (max_len - len(x))
 
-        # out = self.pt_model.forward(
-        #     input_ids, positions, cache.cache, input_metadata
-        # )
+            padded_block_tables = [
+                _pad_to_max(block_table, max_num_blocks_per_seq)
+                for block_table in block_tables
+            ]
+
+            block_tables = tvm.nd.array(np.array(np.vstack(padded_block_tables), dtype="int32"), self.dev)
+
+            logits, kv_cache_next = self.tvm_model(
+                input_ids, positions, seq_lens, kv_cache, slot_mapping, block_tables
+            )
+
+        cache.cache = kv_cache_next
+
+        next_tokens = torch.argmax(torch.from_dlpack(logits), -1).cpu().numpy()
 
         responses = []
 
-        for request_id, samples in zip(request_ids, out):
-            new_token = samples[0].output_token
-            responses.append(SequenceGenerationResponse(request_id, new_token))
+        for request, new_token in zip(requests, next_tokens):
+            responses.append(SequenceGenerationResponse(request.request_id, new_token))
 
         return responses
 
@@ -180,12 +217,10 @@ def test():
 
     cache_manager.set_size(request_ids, target_sizes)
 
-    print(config)
-    print(batched_token_ids)
-    return
-
-    model = Model(artifact_path)
+    model = Model(artifact_path, dev)
     out = model.generate(requests, cache, True)
+
+    return
 
     num_steps = 13
 
