@@ -8,10 +8,13 @@ from dataclasses import dataclass
 import numpy as np
 
 import torch
-from transformers import AutoConfig, LlamaTokenizer
+from transformers import LlamaTokenizer
 
 import tvm
+from tvm import relax
+
 from mlc_llm.relax_model.llama import LlamaConfig
+from mlc_llm import utils
 
 
 def init_cache_blocks(head_size, num_layers, num_heads, block_size, num_gpu_blocks, dev):
@@ -55,9 +58,7 @@ class CacheManager:
         self.num_blocks = num_blocks
         self.block_size = block_size
         self.free_blocks = list(range(num_blocks))
-        self.kv_cache = KVCache(
-            num_blocks, block_size, num_layers, num_heads, head_size, dev
-        )
+        self.kv_cache = KVCache(num_blocks, block_size, num_layers, num_heads, head_size, dev)
 
     def set_size(self, request_ids: List[int], target_sizes: List[int]):
         for id, size in zip(request_ids, target_sizes):
@@ -76,9 +77,7 @@ class CacheManager:
                 self.kv_cache.block_tables[id].append(self.free_blocks.pop())
 
             elif id not in self.kv_cache.block_tables:
-                assert (
-                    len(self.free_blocks) >= num_needed_block
-                ), "Not enough free blocks."
+                assert len(self.free_blocks) >= num_needed_block, "Not enough free blocks."
 
                 for _ in range(num_needed_block):
                     self.kv_cache.block_tables[id].append(self.free_blocks.pop())
@@ -101,13 +100,22 @@ class SequenceGenerationResponse:
     token_id: int
 
 
-def get_tvm_model(artifact_path, dev):
-    return None
+def get_tvm_model(artifact_path, model, dev):
+    const_params = utils.load_params(artifact_path, dev)
+    ex = tvm.runtime.load_module(
+        os.path.join(
+            artifact_path,
+            f"{model}-q4f16_ft-cuda.so",
+        )
+    )
+    vm = relax.VirtualMachine(ex, dev)
+
+    return vm, const_params
 
 
 class Model:
-    def __init__(self, artifact_path, dev):
-        self.tvm_model = get_tvm_model(artifact_path, dev)
+    def __init__(self, artifact_path, model_name, dev):
+        self.vm, self.params = get_tvm_model(artifact_path, model_name, dev)
         self.dev = dev
 
     def generate(
@@ -147,22 +155,24 @@ class Model:
         kv_cache = cache.cache
 
         if is_prompt:
-            logits, kv_cache_next = self.tvm_model(
-                input_ids, positions, seq_lens, kv_cache, slot_mapping
+            logits, kv_cache_next = self.vm["prefill"](
+                input_ids, positions, seq_lens, kv_cache, slot_mapping, self.params
             )
         else:
+
             def _pad_to_max(x: List[int], max_len: int) -> List[int]:
                 return x + [0] * (max_len - len(x))
 
             padded_block_tables = [
-                _pad_to_max(block_table, max_num_blocks_per_seq)
-                for block_table in block_tables
+                _pad_to_max(block_table, max_num_blocks_per_seq) for block_table in block_tables
             ]
 
-            block_tables = tvm.nd.array(np.array(np.vstack(padded_block_tables), dtype="int32"), self.dev)
+            block_tables = tvm.nd.array(
+                np.array(np.vstack(padded_block_tables), dtype="int32"), self.dev
+            )
 
-            logits, kv_cache_next = self.tvm_model(
-                input_ids, positions, seq_lens, kv_cache, slot_mapping, block_tables
+            logits, kv_cache_next = self.vm["decode"](
+                input_ids, positions, seq_lens, kv_cache, slot_mapping, block_tables, self.params
             )
 
         cache.cache = kv_cache_next
@@ -180,6 +190,7 @@ class Model:
 def test():
     artifact_path = "/home/masahi/projects/dev/mlc-llm/dist/vicuna-v1-7b-q4f16_ft"
     model_path = "/home/masahi/projects/dev/mlc-llm/dist/models/vicuna-v1-7b"
+    model_name = "vicuna-v1-7b"
 
     with open(os.path.join(model_path, "config.json"), encoding="utf-8") as i_f:
         config = LlamaConfig(json.load(i_f))
@@ -205,19 +216,19 @@ def test():
     for token_ids, request_id in zip(batched_token_ids, request_ids):
         request_ids.append(request_id)
         target_sizes.append(len(token_ids))
-        requests.append(
-            SequenceGenerationRequest(request_id, token_ids, 0)
-        )
+        requests.append(SequenceGenerationRequest(request_id, token_ids, 0))
 
-    cache_manager = CacheManager(config.num_hidden_layers,
-                                 config.num_attention_heads,
-                                 config.hidden_size // config.num_attention_heads,
-                                 dev)
+    cache_manager = CacheManager(
+        config.num_hidden_layers,
+        config.num_attention_heads,
+        config.hidden_size // config.num_attention_heads,
+        dev,
+    )
     cache = cache_manager.get()
 
     cache_manager.set_size(request_ids, target_sizes)
 
-    model = Model(artifact_path, dev)
+    model = Model(artifact_path, model_name, dev)
     out = model.generate(requests, cache, True)
 
     return
