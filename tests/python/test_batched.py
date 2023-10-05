@@ -232,6 +232,7 @@ def test(args):
     ]
 
     batched_token_ids = [tokenizer.encode(p) for p in prompts]
+    prompts_len = [len(ids) for ids in batched_token_ids]
     request_ids = list(range(len(prompts)))
     target_sizes = []
     requests = []
@@ -253,28 +254,29 @@ def test(args):
 
     out = model.generate(requests, cache, True)
 
-    num_steps = 15
-
-    generated = ["" for _ in range(len(prompts))]
+    num_steps = 20
 
     for s in range(num_steps):
         for i, response in enumerate(out):
             new_token_id = response.token_id
             requests[i].token_ids.append(new_token_id)
-            new_token = tokenizer.decode(new_token_id)
-
-            if s != 0 and new_token not in [".", ","]:
-                generated[i] += " "
-
-            generated[i] += new_token
             target_sizes[i] += 1
 
         cache_manager.set_size(request_ids, target_sizes)
 
         out = model.generate(requests, cache, False)
 
+    output_tokens = [
+        tokenizer.convert_ids_to_tokens(
+            requests[i].token_ids[prompts_len[i] :], skip_special_tokens=True
+        )
+        for i in range(len(requests))
+    ]
+
+    generated = [tokenizer.convert_tokens_to_string(tokens) for tokens in output_tokens]
+
     for p, g in zip(prompts, generated):
-        print("Prompt = '{}', generated tokens = '{}'".format(p, g))
+        print("Prompt = '{}', generated text = '{}'".format(p, g))
 
 
 if __name__ == "__main__":
