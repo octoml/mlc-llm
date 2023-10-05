@@ -384,17 +384,18 @@ class LlamaForCausalLM(nn.Module):
             input_ids, positions, seq_lens, kv_caches, slot_mapping, seqstart_q, block_tables
         )
 
-        def te_slicing(x: te.Tensor, seq_len_tensor: te.Tensor, seqstart: te.Tensor):
-            return te.compute(
-                shape=(seq_len_tensor.shape[0], x.shape[-1]),
-                fcompute=lambda i, j: x[seqstart[i] + seq_len_tensor[i] - 1, j],
-                name="slice",
-            )
-
         if self.prefill:
+            def get_logits_last_tokens(x, seq_len_tensor, seqstart):
+                return te.compute(
+                    shape=(seq_len_tensor.shape[0], x.shape[-1]),
+                    fcompute=lambda i, j: x[seqstart[i] + seq_len_tensor[i] - 1, j],
+                    name="get_logits_last_tokens",
+                )
+
             logits = self.lm_head(
                 nn.emit_te(
-                    te_slicing, hidden_states, seq_lens, seqstart_q, primfunc_name_hint="slice"
+                    get_logits_last_tokens, hidden_states, seq_lens, seqstart_q,
+                    primfunc_name_hint="get_logits_last_tokens",
                 )
             )
         else:

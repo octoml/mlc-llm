@@ -3,9 +3,10 @@ import math
 import os
 import json
 from collections import defaultdict
-from typing import List, Optional, Tuple
+from typing import List
 from dataclasses import dataclass
 
+import torch
 import numpy as np
 
 from transformers import LlamaTokenizer
@@ -86,18 +87,46 @@ class CacheManager:
         return self.kv_cache
 
 
+class SamplingParams:
+    def __init__(
+        self,
+        greedy=True,
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+        top_k: int = -1,
+    ):
+        self.greedy = greedy
+        self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+
+
 @dataclass
 class SequenceGenerationRequest:
     request_id: int
     token_ids: List[int]
     start_position: int
-    # sampling_params: SamplingParams
+    sampling_params: SamplingParams
 
 
 @dataclass
 class SequenceGenerationResponse:
     request_id: int
     token_id: int
+
+
+def sample(logits, sampling_params):
+    logits = torch.from_dlpack(logits)
+    # TODO: Support beam search?
+    do_greedy = [p.greedy for p in sampling_params]
+    # TODO: Support per-type batched sampling like vllm.
+    assert all(do_greedy) or all([not greedy for greedy in do_greedy])
+
+    if all(do_greedy):
+        return torch.argmax(logits, -1).cpu().numpy()
+
+    probs = torch.softmax(logits, dim=-1)
+    return torch.multinomial(probs, 1, True).cpu().numpy()[:, 0]
 
 
 def get_tvm_model(artifact_path, model, quantization, dev):
@@ -128,10 +157,12 @@ class Model:
         positions = []
         max_num_blocks_per_seq = 0
         block_size = cache.block_size
+        sampling_params = []
 
         for request in requests:
             block_table = cache.block_tables[request.request_id]
             seq_lens.append(len(request.token_ids))
+            sampling_params.append(request.sampling_params)
 
             if is_prompt:
                 input_ids += request.token_ids
@@ -183,7 +214,7 @@ class Model:
 
         cache.cache = kv_cache_next
 
-        next_tokens = np.argmax(logits.numpy(), -1)
+        next_tokens = sample(logits, sampling_params)
 
         return [
             SequenceGenerationResponse(request.request_id, new_token)
@@ -218,7 +249,7 @@ def test(args):
     model = Model(artifact_path, model_name, quantization, dev)
 
     with open(os.path.join(model_path, "config.json"), encoding="utf-8") as i_f:
-        config = LlamaConfig(json.load(i_f))
+        config = LlamaConfig(**json.load(i_f))
 
     tokenizer = LlamaTokenizer.from_pretrained(
         os.path.join(artifact_path, "params"), trust_remote_code=True
@@ -229,6 +260,7 @@ def test(args):
         "The president of the United States is",
         "The capital of France is",
         "The future of AI is",
+        "Shohei Ohtani is",
     ]
 
     batched_token_ids = [tokenizer.encode(p) for p in prompts]
@@ -238,9 +270,10 @@ def test(args):
     requests = []
 
     for token_ids, request_id in zip(batched_token_ids, request_ids):
+        sampling_params = SamplingParams(greedy=True, temperature=0.8, top_p=0.95)
         request_ids.append(request_id)
         target_sizes.append(len(token_ids))
-        requests.append(SequenceGenerationRequest(request_id, token_ids, 0))
+        requests.append(SequenceGenerationRequest(request_id, token_ids, 0, sampling_params))
 
     cache_manager = CacheManager(
         config.num_hidden_layers,
