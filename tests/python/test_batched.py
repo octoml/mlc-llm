@@ -8,7 +8,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-import torch
 from transformers import LlamaTokenizer
 
 import tvm
@@ -184,7 +183,7 @@ class Model:
 
         cache.cache = kv_cache_next
 
-        next_tokens = torch.argmax(torch.from_dlpack(logits), -1).cpu().numpy()
+        next_tokens = np.argmax(logits.numpy(), -1)
 
         return [
             SequenceGenerationResponse(request.request_id, new_token)

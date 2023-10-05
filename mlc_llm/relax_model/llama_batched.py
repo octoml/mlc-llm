@@ -155,7 +155,7 @@ class LlamaAttention(nn.Module):
 
         queries, keys = apply_rotary_pos_emb(
             queries, keys, positions, self.position_embedding_base, offset=0
-        )  # TODO: When a non-zero offset is needed?
+        )
 
         # Paged KV cache update
         k_cache, v_cache = kv_cache
