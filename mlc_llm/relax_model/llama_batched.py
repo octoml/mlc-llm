@@ -214,9 +214,6 @@ class LlamaAttention(nn.Module):
         attn_output = nn.emit(reshape(attn_output, (num_tokens, hidden_size)))
         attn_output = self.o_proj(attn_output)
 
-        if self.num_shards > 1:
-            attn_output = nn.emit(ccl.allreduce(attn_output, "sum"))
-
         return attn_output, (k_cache, v_cache)
 
 
@@ -483,7 +480,7 @@ def create_encoding_func(
     num_seq = tvm.tir.Var("num_seq", "int64")
 
     with bb.function(func_name):
-        model = LlamaForCausalLM(config, tvm.tir.Var("v", "int64"), True, sep_embed)
+        model = LlamaForCausalLM(config, tvm.tir.Var("vocab_size", "int64"), True, sep_embed)
         param_manager.register_params(model, func_name, quant_scheme, get_param_quant_kind)
 
         inputs, positions, seq_lens, past_key_values, slot_mapping, _ = get_inputs(
@@ -526,7 +523,7 @@ def create_decoding_func(
         )
 
         with bb.dataflow():
-            model = LlamaForCausalLM(config, tvm.tir.Var("v", "int64"), False)
+            model = LlamaForCausalLM(config, tvm.tir.Var("vocab_size", "int64"), False)
             param_manager.register_params(model, func_name, quant_scheme, get_param_quant_kind)
 
             logits, new_kvs = model(
