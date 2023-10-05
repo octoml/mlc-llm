@@ -275,9 +275,15 @@ def test(args):
         target_sizes.append(len(token_ids))
         requests.append(SequenceGenerationRequest(request_id, token_ids, 0, sampling_params))
 
+    num_kv_heads = (
+        config.num_key_value_heads is None
+        and config.num_attention_heads
+        or config.num_key_value_heads
+    )
+
     cache_manager = CacheManager(
         config.num_hidden_layers,
-        config.num_attention_heads,
+        num_kv_heads,
         config.hidden_size // config.num_attention_heads,
         dev,
     )

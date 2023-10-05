@@ -3,7 +3,7 @@ from typing import Optional, Tuple, List
 import numpy as np
 import tvm
 from tvm import relax, te
-from tvm.relax.op import ccl, reshape, split, expand_dims, concat, zeros
+from tvm.relax.op import ccl, reshape, split, expand_dims, concat, zeros, repeat
 from tvm.relax.op.nn import attention_var_len
 from tvm.relax.testing import nn
 from tvm.script import relax as R
@@ -176,6 +176,13 @@ class LlamaAttention(nn.Module):
         k_cache, v_cache = kv[0], kv[1]
 
         if self.prefill:
+            if self.num_key_value_heads != self.num_query_heads:
+                # TODO(masahi): If repeats turn out to be expensive, remove them by
+                # enabling Flash Attention MQA offload for attention_var_len.
+                n_rep = self.num_query_heads // self.num_key_value_heads
+                keys = nn.emit(repeat(keys, n_rep, axis=1))
+                values = nn.emit(repeat(values, n_rep, axis=1))
+
             attn_output = nn.emit(
                 attention_var_len(
                     nn.emit(expand_dims(queries, axis=0)),
@@ -385,6 +392,7 @@ class LlamaForCausalLM(nn.Module):
         )
 
         if self.prefill:
+
             def get_logits_last_tokens(x, seq_len_tensor, seqstart):
                 return te.compute(
                     shape=(seq_len_tensor.shape[0], x.shape[-1]),
@@ -394,7 +402,10 @@ class LlamaForCausalLM(nn.Module):
 
             logits = self.lm_head(
                 nn.emit_te(
-                    get_logits_last_tokens, hidden_states, seq_lens, seqstart_q,
+                    get_logits_last_tokens,
+                    hidden_states,
+                    seq_lens,
+                    seqstart_q,
                     primfunc_name_hint="get_logits_last_tokens",
                 )
             )
