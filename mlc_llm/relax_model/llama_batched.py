@@ -109,8 +109,8 @@ class LlamaAttention(nn.Module):
         seq_lens: relax.Expr,
         kv_cache: relax.Expr,
         slot_mapping: relax.Expr,
-        max_seqlen_q: relax.Expr,
-        seqstart_q: relax.Expr,  # only for prefill
+        max_seqlen: relax.Expr,
+        seqstart: relax.Expr,  # only for prefill
         block_tables: relax.Expr,  # only for decode
     ):
         num_tokens, hidden_size = hidden_states.struct_info.shape
@@ -188,8 +188,8 @@ class LlamaAttention(nn.Module):
                     nn.emit(expand_dims(queries, axis=0)),
                     nn.emit(expand_dims(keys, axis=0)),
                     nn.emit(expand_dims(values, axis=0)),
-                    seqstart_q=seqstart_q,
-                    max_seqlen_q=max_seqlen_q,
+                    seqstart_q=seqstart,
+                    max_seqlen_q=max_seqlen,
                     causal_mask="BottomRight",
                 )
             )
@@ -205,7 +205,7 @@ class LlamaAttention(nn.Module):
                         block_tables,
                         seq_lens,
                         16,  # block_size
-                        max_seqlen_q,
+                        max_seqlen,
                     ],
                     out_sinfo=queries.struct_info,
                 )
@@ -236,8 +236,8 @@ class LlamaDecoderLayer(nn.Module):
         seq_lens: relax.Expr,
         kv_cache: relax.Expr,
         slot_mapping: relax.Expr,
-        max_seqlen_q: relax.Expr,
-        seqstart_q: relax.Expr,
+        max_seqlen: relax.Expr,
+        seqstart: relax.Expr,
         block_tables: relax.Expr,
     ) -> Tuple[relax.Expr, Optional[Tuple[relax.Expr, relax.Expr]]]:
         residual = hidden_states
@@ -251,8 +251,8 @@ class LlamaDecoderLayer(nn.Module):
             seq_lens=seq_lens,
             kv_cache=kv_cache,
             slot_mapping=slot_mapping,
-            max_seqlen_q=max_seqlen_q,
-            seqstart_q=seqstart_q,
+            max_seqlen=max_seqlen,
+            seqstart=seqstart,
             block_tables=block_tables,
         )
         hidden_states = nn.emit(residual + hidden_states)
@@ -309,7 +309,7 @@ class LlamaModel(nn.Module):
         seq_lens: relax.Expr,
         kv_caches: relax.Expr,
         slot_mapping: relax.Expr,
-        seqstart_q: relax.Expr,
+        seqstart: relax.Expr,
         block_tables: relax.Expr,
     ):
         if self.num_shards > 1:
@@ -322,7 +322,7 @@ class LlamaModel(nn.Module):
 
         hidden_states = inputs_embeds
 
-        max_seqlen_q = R.max(seq_lens)
+        max_seqlen = R.max(seq_lens)
 
         new_kvs = ()
 
@@ -333,8 +333,8 @@ class LlamaModel(nn.Module):
                 seq_lens,
                 (kv_caches[2 * idx], kv_caches[2 * idx + 1]),
                 slot_mapping,
-                max_seqlen_q,
-                seqstart_q,
+                max_seqlen,
+                seqstart,
                 block_tables,
             )
             new_kvs += new_kv
@@ -380,12 +380,12 @@ class LlamaForCausalLM(nn.Module):
                     "tvm.contrib.thrust.sum_scan", seq_lens, out_sinfo=seq_lens.struct_info
                 )
             )
-            seqstart_q = nn.emit(concat([zeros((1,), "int32"), cumsum]))
+            seqstart = nn.emit(concat([zeros((1,), "int32"), cumsum]))
         else:
-            seqstart_q = None
+            seqstart = None
 
         hidden_states, new_kvs = self.model(
-            input_ids, positions, seq_lens, kv_caches, slot_mapping, seqstart_q, block_tables
+            input_ids, positions, seq_lens, kv_caches, slot_mapping, seqstart, block_tables
         )
 
         if self.prefill:
@@ -402,7 +402,7 @@ class LlamaForCausalLM(nn.Module):
                     get_logits_last_tokens,
                     hidden_states,
                     seq_lens,
-                    seqstart_q,
+                    seqstart,
                     primfunc_name_hint="get_logits_last_tokens",
                 )
             )

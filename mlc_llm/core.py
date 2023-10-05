@@ -239,7 +239,7 @@ class BuildArgs:
     batched: bool = field(
         default=False,
         metadata={
-            "help": ("Build the model batched inference support."),
+            "help": ("Build the model with batched inference support."),
             "action": "store_true",
         },
     )
