@@ -6,9 +6,9 @@ from collections import defaultdict
 from typing import List
 from dataclasses import dataclass
 
-import torch
 import numpy as np
 
+import torch
 from transformers import LlamaTokenizer
 
 import tvm
@@ -115,12 +115,49 @@ class SequenceGenerationResponse:
     token_id: int
 
 
-def sample(logits, sampling_params):
+def _apply_top_p_top_k(logits, top_ps, top_ks):
+    p = torch.tensor(top_ps, dtype=logits.dtype, device=logits.device)
+    k = torch.tensor(top_ks, dtype=torch.int, device=logits.device)
+    logits_sort, logits_idx = logits.sort(dim=-1, descending=True)
+
+    # Apply top-p.
+    probs_sort = logits_sort.softmax(dim=-1)
+    probs_sum = probs_sort.cumsum(dim=-1)
+    top_p_mask = (probs_sum - probs_sort) > p.unsqueeze(dim=1)
+    logits_sort[top_p_mask] = -float("inf")
+
+    # Apply top-k.
+    # Create a mask for the top-k elements.
+    top_k_mask = torch.arange(logits_idx.shape[-1], device=logits_idx.device)
+    top_k_mask = top_k_mask.expand(logits_idx.shape[0], -1)
+    top_k_mask = top_k_mask >= k.unsqueeze(dim=1)
+    logits_sort[top_k_mask] = -float("inf")
+
+    # Re-sort the probabilities.
+    logits = torch.gather(logits_sort, dim=-1, index=torch.argsort(logits_idx, dim=-1))
+    return logits
+
+
+def sample(logits, sampling_params, vocab_size):
     logits = torch.from_dlpack(logits)
     # TODO: Support beam search?
     do_greedy = [p.greedy for p in sampling_params]
     # TODO: Support per-type batched sampling like vllm.
     assert all(do_greedy) or all([not greedy for greedy in do_greedy])
+
+    temperatures = [p.temperature for p in sampling_params]
+    if any(t != 1.0 for t in temperatures):
+        t = torch.tensor(temperatures, dtype=logits.dtype, device=logits.device)
+        logits.div_(t.unsqueeze(dim=1))
+
+    top_ps = [p.top_p for p in sampling_params]
+    top_ks = [p.top_k if p.top_k != -1 else vocab_size for p in sampling_params]
+
+    do_top_p = any(p < 1.0 for p in top_ps)
+    do_top_k = any(k != vocab_size for k in top_ks)
+
+    if do_top_p or do_top_k:
+        logits = _apply_top_p_top_k(logits, top_ps, top_ks)
 
     if all(do_greedy):
         return torch.argmax(logits, -1).cpu().numpy()
@@ -143,9 +180,10 @@ def get_tvm_model(artifact_path, model, quantization, dev):
 
 
 class Model:
-    def __init__(self, artifact_path, model_name, quant, dev):
+    def __init__(self, artifact_path, model_name, quant, vocab_size, dev):
         self.vm, self.params = get_tvm_model(artifact_path, model_name, quant, dev)
         self.dev = dev
+        self.vocab_size = vocab_size
 
     def generate(
         self, requests: List[SequenceGenerationRequest], cache: KVCache, is_prompt: bool
@@ -214,7 +252,7 @@ class Model:
 
         cache.cache = kv_cache_next
 
-        next_tokens = sample(logits, sampling_params)
+        next_tokens = sample(logits, sampling_params, self.vocab_size)
 
         return [
             SequenceGenerationResponse(request.request_id, new_token)
@@ -246,10 +284,10 @@ def test(args):
 
     dev = tvm.device("cuda", 0)
 
-    model = Model(artifact_path, model_name, quantization, dev)
-
     with open(os.path.join(model_path, "config.json"), encoding="utf-8") as i_f:
         config = LlamaConfig(**json.load(i_f))
+
+    model = Model(artifact_path, model_name, quantization, config.vocab_size, dev)
 
     tokenizer = LlamaTokenizer.from_pretrained(
         os.path.join(artifact_path, "params"), trust_remote_code=True
@@ -260,7 +298,6 @@ def test(args):
         "The president of the United States is",
         "The capital of France is",
         "The future of AI is",
-        "Shohei Ohtani is",
     ]
 
     batched_token_ids = [tokenizer.encode(p) for p in prompts]
@@ -270,7 +307,8 @@ def test(args):
     requests = []
 
     for token_ids, request_id in zip(batched_token_ids, request_ids):
-        sampling_params = SamplingParams(greedy=True, temperature=0.8, top_p=0.95)
+        # sampling_params = SamplingParams(greedy=False, temperature=0.8, top_p=0.95)
+        sampling_params = SamplingParams(greedy=True)
         request_ids.append(request_id)
         target_sizes.append(len(token_ids))
         requests.append(SequenceGenerationRequest(request_id, token_ids, 0, sampling_params))
