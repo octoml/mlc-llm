@@ -19,31 +19,19 @@ from .llama import (
     LlamaMLP,
     get_param_quant_kind,
     setup_params,
+    rotary_modulate_by_freq,
 )
 
 
 def apply_rotary_pos_emb(q, k, positions, position_embedding_base, offset: int = 0):
     def f_rotary_embedding(tensor, pos_tensor, offset):
-        dtype = tensor.dtype
-        head_dim = tensor.shape[-1]
-        n_feat_half = tensor.shape[-1] // 2
-
         def rotary_compute(*idx):
-            tok_id, j = idx[0], idx[-1]
-            pos = (offset + pos_tensor[tok_id]).astype("float32")
-            inv_freq = te.const(1, "float32") / (
-                te.power(
-                    te.const(position_embedding_base, "float32"),
-                    ((2 * j) % head_dim).astype("float32") / head_dim.astype("float32"),
-                )
-            )
-            freq = pos * inv_freq
-            return te.cos(freq).astype(dtype) * tensor(*idx) + te.sin(freq).astype(
-                dtype
-            ) * tvm.tir.Select(
-                j >= n_feat_half,
-                tensor[tok_id, idx[1], j - n_feat_half],
-                -tensor[tok_id, idx[1], j + n_feat_half],
+            pos = (offset + pos_tensor[idx[0]]).astype("float32")
+            return rotary_modulate_by_freq(
+                tensor,
+                idx,
+                pos,
+                position_embedding_base,
             )
 
         return tvm.te.compute(tensor.shape, rotary_compute, name="rotary")

@@ -159,7 +159,6 @@ class LlamaRMSNorm(nn.Module):
                     name="rms_norm",
                 )
 
-
         return nn.emit_te(f_rms_norm, hidden_states, self.weight, primfunc_name_hint="rms_norm")
 
 
@@ -201,28 +200,36 @@ class LlamaMLP(nn.Module):
         return result
 
 
+def rotary_modulate_by_freq(tensor, idx, pos, position_embedding_base):
+    head_dim = tensor.shape[-1]
+    dtype = tensor.dtype
+    n_feat_half = head_dim // 2
+    feat_idx = idx[-1]
+    inv_freq = te.const(1, "float32") / (
+        te.power(
+            te.const(position_embedding_base, "float32"),
+            ((2 * feat_idx) % head_dim).astype("float32") / head_dim.astype("float32"),
+        )
+    )
+    freq = pos * inv_freq
+    left_indices = idx[:-1] + (feat_idx - n_feat_half,)
+    right_indices = idx[:-1] + (feat_idx + n_feat_half,)
+    return te.cos(freq).astype(dtype) * tensor(*idx) + te.sin(freq).astype(dtype) * tvm.tir.Select(
+        feat_idx >= n_feat_half,
+        tensor[*left_indices],
+        -tensor[*right_indices],
+    )
+
+
 def apply_rotary_pos_emb(q, k, position_embedding_base, offset: int = 0):
     def f_rotary_embedding(tensor, offset):
-        dtype = tensor.dtype
-        head_dim = tensor.shape[-1]
-        n_feat_half = tensor.shape[-1] // 2
-
         def rotary_compute(*idx):
-            i, j = idx[-3], idx[-1]
-            pos = (offset + i).astype("float32")
-            inv_freq = te.const(1, "float32") / (
-                te.power(
-                    te.const(position_embedding_base, "float32"),
-                    ((2 * j) % head_dim).astype("float32") / head_dim.astype("float32"),
-                )
-            )
-            freq = pos * inv_freq
-            return te.cos(freq).astype(dtype) * tensor(*idx) + te.sin(freq).astype(
-                dtype
-            ) * tvm.tir.Select(
-                j >= n_feat_half,
-                tensor[idx[0], i, idx[2], j - n_feat_half],
-                -tensor[idx[0], i, idx[2], j + n_feat_half],
+            pos = (offset + idx[-3]).astype("float32")
+            return rotary_modulate_by_freq(
+                tensor,
+                idx,
+                pos,
+                position_embedding_base,
             )
 
         return tvm.te.compute(tensor.shape, rotary_compute, name="rotary")
