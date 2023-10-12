@@ -33,9 +33,19 @@ class KVCache:
 
 
 class CacheManager:
+    block_size: int = 16
+
+    @staticmethod
+    def get_cache_block_size(num_layers, num_heads, head_size):
+        # Taken from vllm/worker/cache_engine.py
+        key_cache_block = CacheManager.block_size * num_heads * head_size
+        value_cache_block = key_cache_block
+        total = num_layers * (key_cache_block + value_cache_block)
+        dtype_size = 2  # fp16
+        return dtype_size * total
+
     def __init__(self, num_blocks, num_layers, num_heads, head_size, disco_session=None):
         self.num_blocks = num_blocks
-        self.block_size = 16
         self.free_blocks = list(range(num_blocks))
         self.kv_cache = KVCache(
             num_blocks, self.block_size, num_layers, num_heads, head_size, disco_session
@@ -213,10 +223,12 @@ class Model:
 
         return peak_memory + param_bytes
 
-    def profile_memory_usage(self, num_seqs, seq_len):
-        input_ids = [0] * (num_seqs * seq_len)
-        seq_lens = [seq_len] * num_seqs
-        positions = list(range(seq_len)) * num_seqs
+    def profile_memory_usage(self, seq_lens):
+        input_ids = [0] * sum(seq_lens)
+        positions = []
+
+        for s in seq_lens:
+            positions += range(s)
 
         input_ids = tvm.nd.array(np.array(input_ids, dtype="int32"), self.dev)
         positions = tvm.nd.array(np.array(positions, dtype="int32"), self.dev)
@@ -338,6 +350,10 @@ def parse_args():
     # python build.py --model vicuna-v1-7b --quantization q0f16 --use-cache=0 --max-seq-len 768  --batched --build-model-only --num-shards 2
     # python build.py --model vicuna-v1-7b --quantization q0f16 --use-cache=0 --max-seq-len 768  --batched --convert-weight-only
     # /opt/bin/cuda-reserve.py  --num-gpus 2 python tests/python/test_batched.py --local-id vicuna-v1-7b-q0f16 --num-shards 2
+    #
+    # Profile the gpu memory usage, and use the maximum number of cache blocks possible:
+    # /opt/bin/cuda-reserve.py  --num-gpus 2 python tests/python/test_batched.py --local-id vicuna-v1-7b-q0f16 --num-shards 2 --max-num-batched-tokens 2560 --max-input-len 256
+
     args = argparse.ArgumentParser()
     args.add_argument("--local-id", type=str, required=True)
     args.add_argument("--artifact-path", type=str, default="dist")
@@ -351,6 +367,24 @@ def parse_args():
         parsed.artifact_path, f"{parsed.model}-{parsed.quantization.name}-batched"
     )
     return parsed
+
+
+def get_gpu_memory(gpu: int = 0) -> int:
+    return torch.cuda.get_device_properties(gpu).total_memory
+
+
+def get_num_cache_blocks(
+    model,
+    seq_lens,
+    num_layers,
+    num_kv_heads,
+    head_size,
+    gpu_memory_utilization=0.9,  # the default used by vllm
+):
+    used_memory_bytes = model.profile_memory_usage(seq_lens)
+    cache_block_size = CacheManager.get_cache_block_size(num_layers, num_kv_heads, head_size)
+    total_vram = get_gpu_memory()
+    return int((total_vram * gpu_memory_utilization - used_memory_bytes) // cache_block_size)
 
 
 def test(args):
@@ -371,25 +405,30 @@ def test(args):
     )
 
     num_kv_heads = config.get_num_key_value_heads() // args.num_shards
+    head_size = config.hidden_size // config.num_attention_heads
 
     if args.max_num_batched_tokens > 0:
         assert args.max_input_len > 0
         assert args.max_num_batched_tokens % args.max_input_len == 0  # for simplicity
 
         num_seqs = args.max_num_batched_tokens // args.max_input_len
-        used_memory_bytes = model.profile_memory_usage(num_seqs, args.max_input_len)
-        print(used_memory_bytes / 1e9)
-        return
-
-        num_blocks = 500
+        num_blocks = get_num_cache_blocks(
+            model,
+            [args.max_input_len] * num_seqs,
+            config.num_hidden_layers,
+            num_kv_heads,
+            head_size,
+        )
     else:
         num_blocks = 500
+
+    print(f"Using {num_blocks} cache blocks.")
 
     cache_manager = CacheManager(
         num_blocks,
         config.num_hidden_layers,
         num_kv_heads,
-        config.hidden_size // config.num_attention_heads,
+        head_size,
         model.disco_session,
     )
     cache = cache_manager.get()
