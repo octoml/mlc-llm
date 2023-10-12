@@ -330,7 +330,6 @@ class LlamaAttention(nn.Module):
 
         return query_states, key_states, value_states
 
-
     def forward(
         self,
         hidden_states: relax.Expr,
@@ -354,7 +353,8 @@ class LlamaAttention(nn.Module):
         query_states, key_states, value_states = self.project_qkv(
             hidden_states,
             (bsz, q_len, self.num_query_heads, self.head_dim),
-            (bsz, q_len, self.num_key_value_heads, self.head_dim))
+            (bsz, q_len, self.num_key_value_heads, self.head_dim),
+        )
 
         kv_seq_len = all_seq_len_shape.struct_info.values[0]
         offset = kv_seq_len - q_len
@@ -491,7 +491,6 @@ class LlamaDecoderLayer(nn.Module):
             hidden_states = nn.emit(ccl.allreduce(hidden_states, "sum"))
 
         return hidden_states
-
 
     def forward(
         self,
