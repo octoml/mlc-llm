@@ -193,6 +193,16 @@ class Model:
         )
         self.dev = dev
         self.vocab_size = vocab_size
+        self.get_used_memory_func = tvm.get_global_func("vm.memory_manager.get_used_memory")
+
+    def get_used_memory(self):
+        peak_memory = self.get_used_memory_func(self.dev)
+        param_bytes = 0
+
+        for param in self.params:
+            param_bytes += param.numpy().nbytes
+
+        return peak_memory + param_bytes
 
     def generate(
         self, requests: List[SequenceGenerationRequest], cache: KVCache, is_prompt: bool
@@ -364,6 +374,8 @@ def test(args):
     cache_manager.set_size(request_ids, target_sizes)
 
     out = model.generate(requests, cache, True)
+    print(model.get_used_memory() / 1e9)
+    return
 
     num_steps = 20
 
