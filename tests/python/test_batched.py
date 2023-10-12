@@ -33,16 +33,12 @@ class KVCache:
 
 
 class CacheManager:
-    def __init__(self, num_layers, num_heads, head_size, disco_session=None):
-        # TODO: Hardcoded for now
-        block_size = 16
-        num_blocks = 500
-
+    def __init__(self, num_blocks, num_layers, num_heads, head_size, disco_session=None):
         self.num_blocks = num_blocks
-        self.block_size = block_size
+        self.block_size = 16
         self.free_blocks = list(range(num_blocks))
         self.kv_cache = KVCache(
-            num_blocks, block_size, num_layers, num_heads, head_size, disco_session
+            num_blocks, self.block_size, num_layers, num_heads, head_size, disco_session
         )
 
     def set_size(self, request_ids: List[int], target_sizes: List[int]):
@@ -217,6 +213,24 @@ class Model:
 
         return peak_memory + param_bytes
 
+    def profile_memory_usage(self, num_seqs, seq_len):
+        input_ids = [0] * (num_seqs * seq_len)
+        seq_lens = [seq_len] * num_seqs
+        positions = list(range(seq_len)) * num_seqs
+
+        input_ids = tvm.nd.array(np.array(input_ids, dtype="int32"), self.dev)
+        positions = tvm.nd.array(np.array(positions, dtype="int32"), self.dev)
+        seq_lens = tvm.nd.array(np.array(seq_lens, dtype="int32"), self.dev)
+
+        if self.disco_session:
+            input_ids = copy_to_worker_0(self.disco_session, input_ids)
+            positions = copy_to_worker_0(self.disco_session, positions)
+            seq_lens = copy_to_worker_0(self.disco_session, seq_lens)
+
+        self.mod["evaluate"](input_ids, positions, seq_lens, self.params)
+
+        return self.get_used_memory()
+
     def generate(
         self, requests: List[SequenceGenerationRequest], cache: KVCache, is_prompt: bool
     ) -> List[SequenceGenerationResponse]:
@@ -328,6 +342,8 @@ def parse_args():
     args.add_argument("--local-id", type=str, required=True)
     args.add_argument("--artifact-path", type=str, default="dist")
     args.add_argument("--num-shards", type=int, default=1)
+    args.add_argument("--max-num-batched-tokens", type=int, default=-1)
+    args.add_argument("--max-input-len", type=int, default=-1)
     parsed = args.parse_args()
     parsed.model, parsed.quantization = parsed.local_id.rsplit("-", 1)
     utils.argparse_postproc_common(parsed)
@@ -354,6 +370,30 @@ def test(args):
         os.path.join(artifact_path, "params"), trust_remote_code=True
     )
 
+    num_kv_heads = config.get_num_key_value_heads() // args.num_shards
+
+    if args.max_num_batched_tokens > 0:
+        assert args.max_input_len > 0
+        assert args.max_num_batched_tokens % args.max_input_len == 0  # for simplicity
+
+        num_seqs = args.max_num_batched_tokens // args.max_input_len
+        used_memory_bytes = model.profile_memory_usage(num_seqs, args.max_input_len)
+        print(used_memory_bytes / 1e9)
+        return
+
+        num_blocks = 500
+    else:
+        num_blocks = 500
+
+    cache_manager = CacheManager(
+        num_blocks,
+        config.num_hidden_layers,
+        num_kv_heads,
+        config.hidden_size // config.num_attention_heads,
+        model.disco_session,
+    )
+    cache = cache_manager.get()
+
     prompts = [
         "Hello, my name is",
         "The president of the United States is",
@@ -374,21 +414,9 @@ def test(args):
         target_sizes.append(len(token_ids))
         requests.append(SequenceGenerationRequest(request_id, token_ids, 0, sampling_params))
 
-    num_kv_heads = config.get_num_key_value_heads() // args.num_shards
-
-    cache_manager = CacheManager(
-        config.num_hidden_layers,
-        num_kv_heads,
-        config.hidden_size // config.num_attention_heads,
-        model.disco_session,
-    )
-    cache = cache_manager.get()
-
     cache_manager.set_size(request_ids, target_sizes)
 
     out = model.generate(requests, cache, True)
-    print(model.get_used_memory() / 1e9)
-    return
 
     num_steps = 20
 

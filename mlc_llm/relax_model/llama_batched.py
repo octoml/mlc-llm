@@ -405,7 +405,7 @@ class LlamaForCausalLM(nn.Module):
             input_ids, positions, seq_lens, kv_caches, slot_mapping, seqstart, block_tables
         )
 
-        if is_prompt and kv_caches:  # prefill
+        if is_prompt:
 
             def get_logits_last_tokens(x, seq_len_tensor, seqstart):
                 return te.compute(
@@ -528,7 +528,7 @@ def create_evaluate_func(
 
     mod = bb.get()
     gv = mod.get_global_var(func_name)
-    bb.update_func(gv, mod[gv].with_attr("num_input", 5))
+    bb.update_func(gv, mod[gv].with_attr("num_input", 3))
 
 
 def create_encoding_func(
