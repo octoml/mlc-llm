@@ -193,13 +193,26 @@ class Model:
         )
         self.dev = dev
         self.vocab_size = vocab_size
-        self.get_used_memory_func = tvm.get_global_func("vm.memory_manager.get_used_memory")
 
     def get_used_memory(self):
-        peak_memory = self.get_used_memory_func(self.dev)
+        if self.disco_session:
+            params = self.params.debug_get_from_remote(0)
+
+            get_used_memory_func = self.disco_session.get_global_func(
+                "vm.memory_manager.get_used_memory"
+            )
+            # For Disco, we explicitly query the device 0.
+            peak_memory = get_used_memory_func(tvm.device("cuda", 0)).debug_get_from_remote(0)
+
+        else:
+            params = self.params
+
+            get_used_memory_func = tvm.get_global_func("vm.memory_manager.get_used_memory")
+            peak_memory = get_used_memory_func(self.dev)
+
         param_bytes = 0
 
-        for param in self.params:
+        for param in params:
             param_bytes += param.numpy().nbytes
 
         return peak_memory + param_bytes
