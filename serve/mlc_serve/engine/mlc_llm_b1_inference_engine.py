@@ -19,7 +19,7 @@ from tvm import relax
 
 ## amalyshe: below code stays in mlc-llm/python/mlc_chat/chat_module.py
 # nothing is changed, ideally we need to remove it and include original one
-# TODO(amalyshe): refactor this
+# TODO(amalyshe): refactor this/reuse original
 
 # pylint: disable=line-too-long
 _PYTHON_GET_STARTED_TUTORIAL_URL = "https://github.com/mlc-ai/notebooks/blob/main/mlc-llm/tutorial_chat_module_getting_started.ipynb"
@@ -424,8 +424,8 @@ def _load_params(artifact_path: str, device) -> List[tvm.nd.NDArray]:
 
 
 class Model:
+    kv_cache = None
     def __init__(self, model_config) -> None:
-
         device = model_config.device
 
         device_err_msg = (
@@ -480,12 +480,23 @@ class Model:
 
         from tvm._ffi import get_global_func
         self.sample_top_p_from_prob_ = get_global_func("vm.builtin.sample_top_p_from_prob")
+        self.fsample_topp_from_logits_ptr =get_global_func("vm.builtin.sample_top_p_from_logits")
 
+        self.reset_kv_cache_func_ = get_global_func("vm.builtin.attention_kv_cache_array_clear")
+
+    def get_model_config(self):
+        return self.chat_config
     def init_kv_cache(self):
-        return self.vm["create_kv_cache"]()
+        if not self.kv_cache:
+            self.kv_cache = self.vm["create_kv_cache"]()
+        else:
+            self.reset_kv_cache()
+        return self.kv_cache
 
-    def reset(self):
+    def reset_kv_cache(self):
         self.tot_seq_len = 0
+        if self.kv_cache:
+            self.reset_kv_cache_func_(self.kv_cache)
 
     def tokenizer_encode(self, text):
         return self.tokenizer.encode(text)
@@ -505,30 +516,29 @@ class Model:
         return self.sample_top_p_from_prob_(logits, top_p, random.random())
 
 
-    def sample_token_from_logits(self, logits_on_device, sampling_params: SamplingParams) -> int:
-        # TODO(amalyshe): remove below hardcoded params after debugging
-        sampling_params.temperature = 0.7 # hardcoded as in mlc-llm llama config, remove a
-        sampling_params.top_p = 0.95
-        sampling_params.presence_penalty = 1.0
-        if sampling_params.presence_penalty == 1.0:
+    def sample_from_logits(self, logits, temperature, top_p):
+        # ICHECK(logits_on_cpu_.defined()) << "logits_on_cpu_ is not defined";
+        # ICHECK_EQ(logits_on_cpu_->ndim, 3) << "logits_on_cpu_ should be 3D";
+        # ICHECK_EQ(logits_on_cpu_->shape[0], 1) << "logits_on_cpu_ should be 1 batch";
+        self.fsample_topp_from_logits_(logits, temperature, top_p, random.random());
+
+
+    def sample_token_from_logits(self, logits, sampling_params: SamplingParams) -> int:
+        if sampling_params.frequency_penalty == 1.0:
             if sampling_params.temperature >= 1e-6:
-                logits_on_device = self.softmax(logits_on_device, sampling_params.temperature)
-            # amalyshe: originally this code moved data from gpu, that means that result was not on cpu all the time
-            # TODO(amalyshe): figure out how this happens in python and if we have perf penalties here
-            # if sampling_params.temperature < 1e-6:
-            #     UpdateLogitsOrProbOnCPUSync(logits_on_device)
-            # else:
-            #     UpdateLogitsOrProbOnCPUSync(Softmax(logits_on_device, sampling_params.temperature))
+                logits = self.softmax(logits, sampling_params.temperature)
         else:
-            UpdateLogitsOrProbOnCPUSync(logits_on_device)
-            ApplyRepetitionPenaltyOnCPU()
-            if sampling_params.temperature >= 1e-6:
-                ApplySoftmaxWithTemperatureOnCPU();
+            # TODO(amalyshe): implement handling of tokens repetition 
+            raise KeyError("Need to implement this branch")
+            # UpdateLogitsOrProbOnCPUSync(logits)
+            # ApplyRepetitionPenaltyOnCPU()
+            # if sampling_params.temperature >= 1e-6:
+            #     ApplySoftmaxWithTemperatureOnCPU();
 
         if sampling_params.temperature < 1e-6:
-            next_token = SampleFromLogitsOnCPU()
+            next_token = self.sample_from_logits(logits, sampling_params.temperature, sampling_params.top_p):
         else:
-            next_token = self.sample_from_prob(logits_on_device, sampling_params.top_p)
+            next_token = self.sample_from_prob(logits, sampling_params.top_p)
         return next_token
 
     def prefill(self, input, kv_cache, sampling_params: SamplingParams):
@@ -605,14 +615,24 @@ class MlcLLMb1Engine (InferenceEngine):
             output = []
             for r in requests:
                 self.requests[r.request_id] = IFRequest (r.prompt, [], "", [], r.sampling_params, None)
+                # init of sampling params by model settings if they were not initialized
+                if not self.requests[r.request_id].sampling_params.temperature:
+                    self.requests[r.request_id].sampling_params.temperature = self.model.get_model_config().temperature
+                if not self.requests[r.request_id].sampling_params.top_p:
+                    self.requests[r.request_id].sampling_params.top_p = self.model.get_model_config().top_p
+                # TODO(amalyshe): there is frequency_penalty and presence_penalty in openai while in mlc-llm there is repetition_penalty
+                # what does it stand for?
+                if not self.requests[r.request_id].sampling_params.frequency_penalty:
+                    self.requests[r.request_id].sampling_params.frequency_penalty = self.model.get_model_config().repetition_penalty
+
                 output.append(r.request_id)
         return output
 
     def cancel(self, request_id: str):
-        # TODO(amalyshe): free kv_cache in self.requests[request_id]
         del self.requests[request_id]
         if self.current_id == request_id:
-            self.current_id == ""
+            self.model.reset_kv_cache()
+            self.current_id = ""
 
     def step(self) -> InferenceStepResult:
         #determine the current_id
@@ -649,10 +669,13 @@ class MlcLLMb1Engine (InferenceEngine):
                 # TODO(amalyshe): this must be correct de-tokinezition and taking a diff
                 # can we do better? Do we need to change API?
                 o = TextGenerationOutput(self.current_id, r.decoded[prev_size:len(r.decoded):])
-                
+
                 # TODO(amalyshe): hardcoding of stop token for LLama (==2)
                 # Need to move/migrate mlc-llm chat conv_templates.cc
                 if r.decoded_tokens[len(r.decoded_tokens) - 1] == 2:
                     o.finish_reason = "stop"
+                elif (self.model.get_model_config().max_gen_len <= len(r.decoded_tokens) or 
+                    (r.sampling_params.max_tokens and r.sampling_params.max_tokens <= len(r.decoded_tokens) )):
+                    o.finish_reason = "length"
                 a.outputs.append(o)
         return a
