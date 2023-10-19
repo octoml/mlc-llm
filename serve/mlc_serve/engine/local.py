@@ -2,6 +2,7 @@
 A implementation of InferenceEngine that executes in the current process.
 """
 
+import logging
 from collections import deque
 from dataclasses import dataclass
 from threading import Condition, Lock
@@ -20,6 +21,8 @@ from .base import (
     StoppingCriteria,
 )
 from .model_module import DecodeRequest, ModelModule, PrefillRequest, SequenceId
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -74,8 +77,6 @@ class LocalProcessInferenceEngine(InferenceEngine):
         with self.queue_lock:
             self.queue.extend(new_request_states)
             self.has_new_requests.notify_all()
-
-        return [s.request_id for s in new_request_states]
 
     def cancel(self, request_id: RequestId):
         with self.queue_lock:
@@ -154,6 +155,7 @@ class LocalProcessInferenceEngine(InferenceEngine):
                     seq_id, len(state.token_ids) - state.next_start_position
                 )
 
+        logger.debug("Generate text with batch size %s", len(requests))
         results = self.text_generator.generate(requests, self.cache_manager.get_cache())
 
         for res in results:
@@ -210,15 +212,29 @@ class LocalProcessInferenceEngine(InferenceEngine):
                 len(state.token_ids) for state in self.current_batch.values()
             )
             while self.queue:
-                if self.cache_manager.get_max_new_tokens() < self.min_decode_steps:
+                max_new_tokens = self.cache_manager.get_max_new_tokens()
+                if max_new_tokens < self.min_decode_steps:
+                    logger.debug(
+                        "Stop growing the batch due to min_decode_steps. Decode steps: %s",
+                        max_new_tokens,
+                    )
                     # stop adding request if there isn't enough space to do a certain steps of decoding.
                     break
                 state = self.queue[0]
                 num_tokens = len(state.token_ids)
                 num_batched_tokens += num_tokens
                 if num_batched_tokens > self.max_batched_tokens > 0:
+                    logger.debug(
+                        "Stop growing the batch due to max_batched_tokens. Batched tokens: %s",
+                        num_batched_tokens,
+                    )
                     break
                 if self.cache_manager.get_free_space() <= 1.5 * num_tokens:
+                    logger.debug(
+                        "Stop growing the batch due to not enough free space. Free: %s, Num tokens: %s"
+                        self.cache_manager.get_free_space(),
+                        num_tokens,
+                    )
                     break
 
                 self.queue.popleft()

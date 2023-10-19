@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import os
 from collections import defaultdict
@@ -22,6 +23,8 @@ from ..engine.model_module import (
     SequenceId,
     TextGenerationResult,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class KVCache:
@@ -541,7 +544,7 @@ class PagedCacheModelModule:
         else:
             num_blocks = 500
 
-        print(f"Using {num_blocks} cache blocks.")
+        logger.info(f"Using {num_blocks} cache blocks.")
 
         cache_manager = CacheManager(
             num_blocks,
