@@ -231,7 +231,7 @@ class LocalProcessInferenceEngine(InferenceEngine):
                     break
                 if self.cache_manager.get_free_space() <= 1.5 * num_tokens:
                     logger.debug(
-                        "Stop growing the batch due to not enough free space. Free: %s, Num tokens: %s"
+                        "Stop growing the batch due to not enough free space. Free: %s, Num tokens: %s",
                         self.cache_manager.get_free_space(),
                         num_tokens,
                     )
