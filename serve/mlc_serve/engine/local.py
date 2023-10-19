@@ -208,9 +208,7 @@ class LocalProcessInferenceEngine(InferenceEngine):
 
             self._discard_cancelled_requests_from_queue()
 
-            num_batched_tokens = sum(
-                len(state.token_ids) for state in self.current_batch.values()
-            )
+            num_new_batched_tokens = 0
             while self.queue:
                 max_new_tokens = self.cache_manager.get_max_new_tokens()
                 if max_new_tokens < self.min_decode_steps:
@@ -222,11 +220,11 @@ class LocalProcessInferenceEngine(InferenceEngine):
                     break
                 state = self.queue[0]
                 num_tokens = len(state.token_ids)
-                num_batched_tokens += num_tokens
-                if num_batched_tokens > self.max_batched_tokens > 0:
+                num_new_batched_tokens += num_tokens
+                if num_new_batched_tokens > self.max_batched_tokens > 0:
                     logger.debug(
                         "Stop growing the batch due to max_batched_tokens. Batched tokens: %s",
-                        num_batched_tokens,
+                        num_new_batched_tokens,
                     )
                     break
                 if self.cache_manager.get_free_space() <= 1.5 * num_tokens:
