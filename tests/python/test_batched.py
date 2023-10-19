@@ -44,16 +44,25 @@ class CacheManager:
         dtype_size = 2  # fp16
         return dtype_size * total
 
-    def __init__(self, num_blocks, num_layers, num_heads, head_size, disco_session=None):
+    def __init__(self, num_blocks, num_layers, num_heads, head_size, disco_session=None, sliding_window=None):
         self.num_blocks = num_blocks
         self.free_blocks = list(range(num_blocks))
         self.kv_cache = KVCache(
             num_blocks, self.block_size, num_layers, num_heads, head_size, disco_session
         )
 
+        if sliding_window:
+            assert sliding_window % self.kv_cache.block_size == 0
+            self.block_sliding_window = sliding_window // self.kv_cache.block_size
+        else:
+            self.block_sliding_window = None
+
     def set_size(self, request_ids: List[int], target_sizes: List[int]):
         for id, size in zip(request_ids, target_sizes):
             num_needed_block = math.ceil(size / self.block_size)
+
+            if self.block_sliding_window:
+                num_needed_block = min(num_needed_block, self.block_sliding_window)
 
             if id in self.kv_cache.block_tables and size == 0:
                 self.free_blocks.extend(self.kv_cache.block_tables[id])
@@ -199,6 +208,7 @@ class Model:
         )
         self.dev = dev
         self.vocab_size = vocab_size
+        self.block_sliding_window = None
 
     def get_used_memory(self):
         if self.disco_session:
@@ -276,7 +286,11 @@ class Model:
                 max_num_blocks_per_seq = max(max_num_blocks_per_seq, len(block_table))
                 block_tables.append(block_table)
 
-                block_number = block_table[pos // block_size]
+                if self.block_sliding_window:
+                    block_number = block_table[(pos // block_size) % self.block_sliding_window]
+                else:
+                    block_number = block_table[pos // block_size]
+
                 block_offset = pos % block_size
                 slot = block_number * block_size + block_offset
                 slot_mapping.append(slot)
@@ -430,8 +444,11 @@ def test(args):
         num_kv_heads,
         head_size,
         model.disco_session,
+        sliding_window=config.sliding_window
     )
     cache = cache_manager.get()
+
+    model.block_sliding_window = cache_manager.block_sliding_window
 
     prompts = [
         "Hello, my name is",
