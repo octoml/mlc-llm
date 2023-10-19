@@ -157,7 +157,7 @@ class CacheManager:
             self.allocated_tokens
         )
         remaining_tokens_in_last_block = [
-            self.block_size - tokens % self.block_size
+            self.block_size - (tokens - 1) % self.block_size - 1
             for _, tokens in self.allocated_tokens.items()
         ]
 
