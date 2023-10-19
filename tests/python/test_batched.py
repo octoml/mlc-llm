@@ -204,13 +204,18 @@ def get_tvm_model(artifact_path, model, quantization, num_shards, dev):
 
 
 class Model:
-    def __init__(self, artifact_path, model_name, quant, vocab_size, num_shards, dev):
+    def __init__(self, artifact_path, model_name, quant, vocab_size, num_shards, dev, sliding_window):
         self.mod, self.params, self.disco_session = get_tvm_model(
             artifact_path, model_name, quant, num_shards, dev
         )
         self.dev = dev
         self.vocab_size = vocab_size
-        self.block_sliding_window = None
+        self.sliding_window = sliding_window
+
+        if sliding_window:
+            self.block_sliding_window = sliding_window // CacheManager.block_size
+        else:
+            self.block_sliding_window = None
 
     def get_used_memory(self):
         if self.disco_session:
@@ -269,15 +274,19 @@ class Model:
 
         for request in requests:
             block_table = cache.block_tables[request.request_id]
-            seq_lens.append(len(request.token_ids))
             sampling_params.append(request.sampling_params)
 
             if is_prompt:
                 input_ids += request.token_ids
+                seq_lens.append(len(request.token_ids))
                 positions += range(seq_lens[-1])
 
                 for i in range(len(request.token_ids)):
-                    block_number = block_table[i // block_size]
+                    if self.block_sliding_window:
+                        block_number = block_table[(i // block_size) % self.block_sliding_window]
+                    else:
+                        block_number = block_table[i // block_size]
+
                     block_offset = i % block_size
                     slot = block_number * block_size + block_offset
                     slot_mapping.append(slot)
@@ -289,9 +298,11 @@ class Model:
                 block_tables.append(block_table)
 
                 if self.block_sliding_window:
+                    seq_lens.append(min(len(request.token_ids), self.sliding_window))
                     block_number = block_table[(pos // block_size) % self.block_sliding_window]
                 else:
                     block_number = block_table[pos // block_size]
+                    seq_lens.append(len(request.token_ids))
 
                 block_offset = pos % block_size
                 slot = block_number * block_size + block_offset
@@ -414,7 +425,7 @@ def test(args):
     with open(os.path.join(model_path, "config.json"), encoding="utf-8") as i_f:
         config = LlamaConfig(**json.load(i_f))
 
-    model = Model(artifact_path, model_name, quantization, config.vocab_size, args.num_shards, dev)
+    model = Model(artifact_path, model_name, quantization, config.vocab_size, args.num_shards, dev, config.sliding_window)
 
     tokenizer = LlamaTokenizer.from_pretrained(
         os.path.join(artifact_path, "params"), trust_remote_code=True
