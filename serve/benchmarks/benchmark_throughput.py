@@ -11,11 +11,13 @@ from transformers import PreTrainedTokenizerBase
 from mlc_llm import utils
 from mlc_serve.engine import (
     Request,
+    ChatMessage,
+    DebugOptions,
     SamplingParams,
     StoppingCriteria,
 )
 from mlc_serve.engine.local import LocalProcessInferenceEngine
-from mlc_serve.model.paged_cache_model import init_model
+from mlc_serve.model.paged_cache_model import PagedCacheModelModule
 
 import pandas as pd
 
@@ -69,19 +71,18 @@ def run_mlc(
 ) -> float:
     for i, (prompt, _, output_len) in enumerate(requests):
         sampling_params = SamplingParams(
-            n=1,
             temperature=1.0,
             top_p=1.0,
-            ignore_eos=True,
         )
 
         engine.add(
             [
                 Request(
                     request_id=str(i),
-                    prompt=prompt,
+                    messages=[ChatMessage(role="user", content=prompt)],
                     sampling_params=sampling_params,
                     stopping_criteria=StoppingCriteria(max_tokens=output_len),
+                    debug_options=DebugOptions(ignore_eos=True),
                 )
             ]
         )
@@ -100,7 +101,7 @@ def main(args: argparse.Namespace):
     random.seed(args.seed)
 
     # Sample the requests.
-    model_executor, tokenizer = init_model(
+    model_module = PagedCacheModelModule(
         args.model,
         args.artifact_path,
         args.quantization.name,
@@ -109,9 +110,14 @@ def main(args: argparse.Namespace):
         max_input_len=args.max_input_len,
     )
 
-    engine = LocalProcessInferenceEngine(model_executor, tokenizer)
+    engine = LocalProcessInferenceEngine(
+        model_module,
+        max_batched_tokens=args.max_num_batched_tokens,
+    )
 
-    requests = sample_requests(args.dataset, args.num_prompts, tokenizer)
+    requests = sample_requests(
+        args.dataset, args.num_prompts, model_module.tokenizer._tokenizer
+    )
 
     elapsed_time = run_mlc(
         requests,
