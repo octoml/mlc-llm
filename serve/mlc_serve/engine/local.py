@@ -131,30 +131,6 @@ class LocalProcessInferenceEngine(InferenceEngine):
         if not self.current_batch:
             return result
 
-        requests = []
-        for state in self.current_batch.values():
-            if state.next_start_position == 0:
-                requests.append(
-                    PrefillRequest(
-                        request_id=state.request_id,
-                        token_ids=state.token_ids,
-                        num_sequence=1,
-                        sampling_params=state.sampling_params,
-                    )
-                )
-            else:
-                seq_id = SequenceId(state.request_id, 0)
-                requests.append(
-                    DecodeRequest(
-                        sequence_id=seq_id,
-                        token_ids=state.token_ids,
-                        sampling_params=state.sampling_params,
-                    )
-                )
-                self.cache_manager.extend(
-                    seq_id, len(state.token_ids) - state.next_start_position
-                )
-
         logger.debug("Generate text with batch size %s", len(requests))
         results = self.text_generator.generate(requests, self.cache_manager.get_cache())
 
@@ -208,7 +184,7 @@ class LocalProcessInferenceEngine(InferenceEngine):
 
             self._discard_cancelled_requests_from_queue()
 
-            num_new_batched_tokens = 0
+            num_new_batched_tokens = len(self.current_batch)
             while self.queue:
                 max_new_tokens = self.cache_manager.get_max_new_tokens()
                 if max_new_tokens < self.min_decode_steps:
@@ -240,6 +216,32 @@ class LocalProcessInferenceEngine(InferenceEngine):
                 self.current_batch[state.request_id] = state
 
                 self._discard_cancelled_requests_from_queue()
+
+    def _get_requests(self):
+        requests = []
+        for state in self.current_batch.values():
+            if state.next_start_position == 0:
+                requests.append(
+                    PrefillRequest(
+                        request_id=state.request_id,
+                        token_ids=state.token_ids,
+                        num_sequence=1,
+                        sampling_params=state.sampling_params,
+                    )
+                )
+            else:
+                seq_id = SequenceId(state.request_id, 0)
+                requests.append(
+                    DecodeRequest(
+                        sequence_id=seq_id,
+                        token_ids=state.token_ids,
+                        sampling_params=state.sampling_params,
+                    )
+                )
+                self.cache_manager.extend(
+                    seq_id, len(state.token_ids) - state.next_start_position
+                )
+        return requests
 
     def _has_request_to_process(self) -> bool:
         return self.queue or self.current_batch
