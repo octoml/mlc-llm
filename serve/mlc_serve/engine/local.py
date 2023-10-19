@@ -131,6 +131,7 @@ class LocalProcessInferenceEngine(InferenceEngine):
         if not self.current_batch:
             return result
 
+        requests = self._get_requests()
         logger.debug("Generate text with batch size %s", len(requests))
         results = self.text_generator.generate(requests, self.cache_manager.get_cache())
 
