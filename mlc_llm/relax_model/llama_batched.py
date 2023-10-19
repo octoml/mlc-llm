@@ -50,6 +50,7 @@ class LlamaAttentionBatched(LlamaAttention):
     def __init__(self, config: LlamaConfig, head_mapping):
         super().__init__(config)
         self.head_mapping = head_mapping
+        self.sldiing_window = config.sliding_window
 
     def forward(
         self,
@@ -111,6 +112,7 @@ class LlamaAttentionBatched(LlamaAttention):
                     seqstart_q=seqstart,
                     max_seqlen_q=max_seqlen,
                     causal_mask="BottomRight",
+                    window_size=self.sldiing_window,
                 )
             )
         else:
