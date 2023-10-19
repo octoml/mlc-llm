@@ -484,11 +484,28 @@ def create_encoding_func(
         model = LlamaForCausalLM(config, tvm.tir.Var("vocab_size", "int64"), sep_embed)
         param_manager.register_params(model, func_name, quant_scheme, get_param_quant_kind)
 
-        inputs, positions, seq_lens, past_key_values, slot_mapping, _ = get_inputs(
+        input_ids, positions, seq_lens, past_key_values, slot_mapping, _ = get_inputs(
             num_token, num_seq, config, sep_embed=sep_embed
         )
 
         with bb.dataflow():
+            params = [
+                input_ids,
+                positions,
+                seq_lens,
+                past_key_values,
+                slot_mapping,
+            ]
+
+            inputs = [
+                input_ids,
+                positions,
+                seq_lens,
+                past_key_values,
+                slot_mapping,
+                None,  # block_tables
+            ]
+
             if config.sliding_window:
                 num_inputs += 1
                 # The value of num_cached_total is between
@@ -498,39 +515,15 @@ def create_encoding_func(
                 indices_within_window = nn.Placeholder(
                     (num_cached_total,), dtype="int32", name="indices_within_window"
                 )
-
-                logits, new_kvs = model(
-                    inputs,
-                    positions,
-                    seq_lens,
-                    past_key_values,
-                    slot_mapping,
-                    None,
-                    indices_within_window,
-                )
-                params = [
-                    inputs,
-                    positions,
-                    seq_lens,
-                    past_key_values,
-                    slot_mapping,
-                    indices_within_window,
-                ] + model.parameters()
-
+                inputs.append(indices_within_window)
+                params.append(indices_within_window)
             else:
-                logits, new_kvs = model(
-                    inputs, positions, seq_lens, past_key_values, slot_mapping, None, None
-                )
-                params = [
-                    inputs,
-                    positions,
-                    seq_lens,
-                    past_key_values,
-                    slot_mapping,
-                ] + model.parameters()
+                inputs.append(None)
 
+            logits, new_kvs = model(*inputs)
             gv = bb.emit_output((logits, relax.Tuple(new_kvs)))
-        bb.emit_func_output(gv, params)
+
+        bb.emit_func_output(gv, params + model.parameters())
 
     mod = bb.get()
     gv = mod.get_global_var(func_name)

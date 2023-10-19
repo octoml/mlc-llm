@@ -44,7 +44,9 @@ class CacheManager:
         dtype_size = 2  # fp16
         return dtype_size * total
 
-    def __init__(self, num_blocks, num_layers, num_heads, head_size, disco_session=None, sliding_window=None):
+    def __init__(
+        self, num_blocks, num_layers, num_heads, head_size, disco_session=None, sliding_window=None
+    ):
         self.num_blocks = num_blocks
         self.free_blocks = list(range(num_blocks))
         self.kv_cache = KVCache(
@@ -444,7 +446,7 @@ def test(args):
         num_kv_heads,
         head_size,
         model.disco_session,
-        sliding_window=config.sliding_window
+        sliding_window=config.sliding_window,
     )
     cache = cache_manager.get()
 
