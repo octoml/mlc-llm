@@ -204,7 +204,9 @@ def get_tvm_model(artifact_path, model, quantization, num_shards, dev):
 
 
 class Model:
-    def __init__(self, artifact_path, model_name, quant, vocab_size, num_shards, dev, sliding_window):
+    def __init__(
+        self, artifact_path, model_name, quant, vocab_size, num_shards, dev, sliding_window
+    ):
         self.mod, self.params, self.disco_session = get_tvm_model(
             artifact_path, model_name, quant, num_shards, dev
         )
@@ -271,6 +273,9 @@ class Model:
         max_num_blocks_per_seq = 0
         block_size = cache.block_size
         sampling_params = []
+        indices_within_window = []
+
+        start_idx = 0
 
         for request in requests:
             block_table = cache.block_tables[request.request_id]
@@ -278,11 +283,18 @@ class Model:
 
             if is_prompt:
                 input_ids += request.token_ids
-                seq_lens.append(len(request.token_ids))
-                positions += range(seq_lens[-1])
+                prompt_len = len(request.token_ids)
+                seq_lens.append(prompt_len)
+                positions += range(prompt_len)
+
+                if self.sliding_window:
+                    indices_within_window += range(
+                        start_idx + max(0, prompt_len - self.sliding_window), start_idx + prompt_len
+                    )
+                    start_idx += prompt_len
 
                 for i in range(len(request.token_ids)):
-                    if self.block_sliding_window:
+                    if self.sliding_window:
                         block_number = block_table[(i // block_size) % self.block_sliding_window]
                     else:
                         block_number = block_table[i // block_size]
@@ -297,7 +309,7 @@ class Model:
                 max_num_blocks_per_seq = max(max_num_blocks_per_seq, len(block_table))
                 block_tables.append(block_table)
 
-                if self.block_sliding_window:
+                if self.sliding_window:
                     seq_lens.append(min(len(request.token_ids), self.sliding_window))
                     block_number = block_table[(pos // block_size) % self.block_sliding_window]
                 else:
@@ -322,9 +334,29 @@ class Model:
         kv_cache = cache.cache
 
         if is_prompt:
-            out = self.mod["prefill"](
-                input_ids, positions, seq_lens, kv_cache, slot_mapping, self.params
-            )
+            if self.sliding_window:
+                indices_within_window = tvm.nd.array(
+                    np.array(indices_within_window, dtype="int32"), self.dev
+                )
+
+                if self.disco_session:
+                    indices_within_window = copy_to_worker_0(
+                        self.disco_session, indices_within_window
+                    )
+
+                out = self.mod["prefill"](
+                    input_ids,
+                    positions,
+                    seq_lens,
+                    kv_cache,
+                    slot_mapping,
+                    indices_within_window,
+                    self.params,
+                )
+            else:
+                out = self.mod["prefill"](
+                    input_ids, positions, seq_lens, kv_cache, slot_mapping, self.params
+                )
 
             if self.disco_session:
                 logits, _ = out.debug_get_from_remote(0)
@@ -425,7 +457,15 @@ def test(args):
     with open(os.path.join(model_path, "config.json"), encoding="utf-8") as i_f:
         config = LlamaConfig(**json.load(i_f))
 
-    model = Model(artifact_path, model_name, quantization, config.vocab_size, args.num_shards, dev, config.sliding_window)
+    model = Model(
+        artifact_path,
+        model_name,
+        quantization,
+        config.vocab_size,
+        args.num_shards,
+        dev,
+        config.sliding_window,
+    )
 
     tokenizer = LlamaTokenizer.from_pretrained(
         os.path.join(artifact_path, "params"), trust_remote_code=True
