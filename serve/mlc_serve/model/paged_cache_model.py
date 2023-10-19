@@ -542,7 +542,7 @@ class PagedCacheModelModule:
                 head_size,
             )
         else:
-            num_blocks = 500
+            num_blocks = 4000
 
         logger.info(f"Using {num_blocks} cache blocks.")
 
