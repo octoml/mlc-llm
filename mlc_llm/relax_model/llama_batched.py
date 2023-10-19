@@ -7,6 +7,7 @@ from tvm.relax.op import ccl, reshape, expand_dims, concat, zeros, repeat
 from tvm.relax.op.nn import attention_var_len
 from tvm.relax.testing import nn
 from tvm.script import relax as R
+from tvm.script.ir_builder import tir as T
 
 from ..quantization import QuantizationScheme
 from .modules import ModuleList
@@ -50,7 +51,10 @@ class LlamaAttentionBatched(LlamaAttention):
     def __init__(self, config: LlamaConfig, head_mapping):
         super().__init__(config)
         self.head_mapping = head_mapping
-        self.sldiing_window = config.sliding_window
+        self.sldiing_window = None
+
+        if config.sliding_window:
+            self.sliding_window = T.IntImm("int32", config.sliding_window)
 
     def forward(
         self,
