@@ -412,6 +412,9 @@ def parse_args():
     #
     # Profile the gpu memory usage, and use the maximum number of cache blocks possible:
     # /opt/bin/cuda-reserve.py  --num-gpus 2 python tests/python/test_batched.py --local-id vicuna-v1-7b-q0f16 --num-shards 2 --max-num-batched-tokens 2560 --max-input-len 256
+    #
+    # Sliding-window attention with long prompt (> 4k):
+    # /opt/bin/cuda-reserve.py --num-gpus 1 python tests/python/test_batched.py --local-id Mistral-7B-v0.1-q0f16 --long-prompt --max-num-batched-tokens 24000 --max-input-len 8000 --num-decode-steps 30
 
     args = argparse.ArgumentParser()
     args.add_argument("--local-id", type=str, required=True)
@@ -420,6 +423,7 @@ def parse_args():
     args.add_argument("--max-num-batched-tokens", type=int, default=-1)
     args.add_argument("--max-input-len", type=int, default=-1)
     args.add_argument("--long-prompt", action="store_true")
+    args.add_argument("--num-decode-steps", type=int, default=20)
     parsed = args.parse_args()
     parsed.model, parsed.quantization = parsed.local_id.rsplit("-", 1)
     utils.argparse_postproc_common(parsed)
@@ -505,7 +509,7 @@ def test(args):
     if args.long_prompt:
         with open("tests/python/data/long_prompts.json", "r") as f:
             prompts = json.load(f)["prompts"]
-            prompts = [prompts[0]]
+            prompts = [prompts[0], prompts[2], prompts[3]]
     else:
         prompts = [
             "Hello, my name is",
@@ -525,16 +529,13 @@ def test(args):
         sampling_params = SamplingParams(greedy=True)
         request_ids.append(request_id)
         target_sizes.append(len(token_ids))
-        print("prompt length:", target_sizes[-1])
         requests.append(SequenceGenerationRequest(request_id, token_ids, 0, sampling_params))
 
     cache_manager.set_size(request_ids, target_sizes)
 
     out = model.generate(requests, cache, True)
 
-    num_steps = 20
-
-    for _ in range(num_steps):
+    for _ in range(args.num_decode_steps):
         for i, response in enumerate(out):
             new_token_id = response.token_id
             requests[i].token_ids.append(new_token_id)
