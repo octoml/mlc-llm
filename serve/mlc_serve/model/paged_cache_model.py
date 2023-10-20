@@ -343,7 +343,7 @@ class Model:
         self,
         requests: List[Union[PrefillRequest, DecodeRequest]],
         cache: KVCache,
-        is_prompt: bool,
+        is_prefill: bool,
     ) -> List[TextGenerationResult]:
         block_tables = []
         seq_lens = []
@@ -370,7 +370,7 @@ class Model:
             block_table = cache.block_tables[sequence_id.request_id]
             sampling_params.append(request.sampling_params)
 
-            if is_prompt:
+            if is_prefill:
                 input_ids += request.token_ids
                 prompt_len = len(request.token_ids)
                 seq_lens.append(prompt_len)
@@ -428,7 +428,7 @@ class Model:
 
         kv_cache = cache.cache
 
-        if is_prompt:
+        if is_prefill:
             torch.cuda.nvtx.range_push(f"forward prefill {input_ids_np.shape}")
 
             if self.sliding_window:
@@ -542,9 +542,9 @@ class PagedCacheModelTextGenerator:
 
         out = []
         if prefill_requests:
-            out.extend(self.model.generate(prefill_requests, kv_cache, is_prompt=True))
+            out.extend(self.model.generate(prefill_requests, kv_cache, is_prefill=True))
         if decode_requests:
-            out.extend(self.model.generate(decode_requests, kv_cache, is_prompt=False))
+            out.extend(self.model.generate(decode_requests, kv_cache, is_prefill=False))
 
         return out
 
