@@ -304,7 +304,7 @@ class Model:
                     slot_mapping.append(slot)
             else:
                 input_ids.append(request.token_ids[-1])
-                pos = seq_lens[-1] - 1
+                pos = len(request.token_ids) - 1
                 positions.append(pos)
                 max_num_blocks_per_seq = max(max_num_blocks_per_seq, len(block_table))
                 block_tables.append(block_table)

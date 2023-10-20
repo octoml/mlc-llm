@@ -114,13 +114,6 @@ class LlamaAttentionBatched(LlamaAttention):
             k_cache = v_cache = None
 
         if seqstart:
-            if self.num_key_value_heads != self.num_query_heads:
-                # TODO(masahi): If repeats turn out to be expensive, remove them by
-                # enabling Flash Attention MQA offload for attention_var_len.
-                n_rep = self.num_query_heads // self.num_key_value_heads
-                keys = nn.emit(repeat(keys, n_rep, axis=1))
-                values = nn.emit(repeat(values, n_rep, axis=1))
-
             attn_output = nn.emit(
                 attention_var_len(
                     nn.emit(expand_dims(queries, axis=0)),
