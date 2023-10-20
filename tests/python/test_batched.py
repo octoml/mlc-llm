@@ -13,7 +13,7 @@ from tvm import relax
 from tvm.runtime import disco as di
 
 import torch
-from transformers import LlamaTokenizer
+from transformers import AutoTokenizer
 
 from mlc_llm.relax_model.llama import LlamaConfig
 from mlc_llm import utils
@@ -419,6 +419,7 @@ def parse_args():
     args.add_argument("--num-shards", type=int, default=1)
     args.add_argument("--max-num-batched-tokens", type=int, default=-1)
     args.add_argument("--max-input-len", type=int, default=-1)
+    args.add_argument("--long-prompt", action="store_true")
     parsed = args.parse_args()
     parsed.model, parsed.quantization = parsed.local_id.rsplit("-", 1)
     utils.argparse_postproc_common(parsed)
@@ -467,9 +468,7 @@ def test(args):
         config.sliding_window,
     )
 
-    tokenizer = LlamaTokenizer.from_pretrained(
-        os.path.join(artifact_path, "params"), trust_remote_code=True
-    )
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=False)
 
     num_kv_heads = config.get_num_key_value_heads() // args.num_shards
     head_size = config.hidden_size // config.num_attention_heads
@@ -503,12 +502,17 @@ def test(args):
 
     model.block_sliding_window = cache_manager.block_sliding_window
 
-    prompts = [
-        "Hello, my name is",
-        "The president of the United States is",
-        "The capital of France is",
-        "The future of AI is",
-    ]
+    if args.long_prompt:
+        with open("tests/python/data/long_prompts.json", "r") as f:
+            prompts = json.load(f)["prompts"]
+            prompts = [prompts[0]]
+    else:
+        prompts = [
+            "Hello, my name is",
+            "The president of the United States is",
+            "The capital of France is",
+            "The future of AI is",
+        ]
 
     batched_token_ids = [tokenizer.encode(p) for p in prompts]
     prompts_len = [len(ids) for ids in batched_token_ids]
@@ -521,6 +525,7 @@ def test(args):
         sampling_params = SamplingParams(greedy=True)
         request_ids.append(request_id)
         target_sizes.append(len(token_ids))
+        print("prompt length:", target_sizes[-1])
         requests.append(SequenceGenerationRequest(request_id, token_ids, 0, sampling_params))
 
     cache_manager.set_size(request_ids, target_sizes)
@@ -548,8 +553,12 @@ def test(args):
 
     generated = [tokenizer.convert_tokens_to_string(tokens) for tokens in output_tokens]
 
-    for p, g in zip(prompts, generated):
-        print("Prompt = '{}', generated text = '{}'".format(p, g))
+    if args.long_prompt:
+        for g in generated:
+            print("Generated text = '{}'".format(g))
+    else:
+        for p, g in zip(prompts, generated):
+            print("Prompt = '{}', generated text = '{}'".format(p, g))
 
 
 if __name__ == "__main__":
