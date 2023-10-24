@@ -74,7 +74,6 @@ class CacheManager:
             num_blocks, self.block_size, num_layers, num_heads, head_size, disco_session
         )
         self.allocated_tokens = dict[RequestId, int]()
-        self.sliding_window = sliding_window
 
         if sliding_window:
             assert sliding_window % self.kv_cache.block_size == 0
@@ -96,7 +95,6 @@ class CacheManager:
 
             elif id in self.kv_cache.block_tables:
                 # Decoding
-
                 if len(self.kv_cache.block_tables[id]) < num_needed_block:
                     # Need to allocate a new block for this request
                     assert len(self.kv_cache.block_tables[id]) + 1 == num_needed_block
@@ -121,27 +119,30 @@ class CacheManager:
                     len(self.free_blocks) >= num_needed_block
                 ), "Not enough free blocks."
 
-                for block_id in range(num_needed_block):
-                    block_number = self.free_blocks.pop()
-                    self.kv_cache.block_tables[id].append(block_number)
+                for _ in range(num_needed_block):
+                    self.kv_cache.block_tables[id].append(self.free_blocks.pop())
+
+                for block_idx in range(math.floor(size / self.block_size)):
+                    if self.block_sliding_window:
+                        block_idx %= self.block_sliding_window
+
+                    block_number = self.kv_cache.block_tables[id][block_idx]
+                    slots = [
+                        block_number * self.block_size + block_offset
+                        for block_offset in range(self.block_size)
+                    ]
+                    self.kv_cache.slot_mappings[id] += slots
+
+                for i in range(len(self.kv_cache.slot_mappings[id]), size):
+                    block_idx = i // self.block_size
 
                     if self.block_sliding_window:
-                        num_rep = math.ceil(size / self.block_sliding_window)
-                        window_size = self.sliding_window
-                    else:
-                        num_rep = 1
-                        window_size = size
+                        block_idx %= self.block_sliding_window
 
-                    for rep in range(num_rep):
-                        for block_offset in range(self.block_size):
-                            if (
-                                rep * window_size
-                                + block_id * self.block_size
-                                + block_offset
-                                < size
-                            ):
-                                slot = block_number * self.block_size + block_offset
-                                self.kv_cache.slot_mappings[id].append(slot)
+                    block_number = self.kv_cache.block_tables[id][block_idx]
+                    block_offset = i % self.block_size
+                    slot = block_number * self.block_size + block_offset
+                    self.kv_cache.slot_mappings[id].append(slot)
 
     def get_cache(self):
         return self.kv_cache
@@ -244,8 +245,7 @@ def _apply_top_p_top_k(logits, top_ps, top_ks):
 def sample(logits, sampling_params, vocab_size):
     logits = torch.from_dlpack(logits)
     # TODO: Support beam search?
-    # do_greedy = [p.sampling_type == SamplingType.GREEDY for p in sampling_params]
-    do_greedy = [True for p in sampling_params]
+    do_greedy = [p.sampling_type == SamplingType.GREEDY for p in sampling_params]
     # TODO: Support per-type batched sampling like vllm.
     assert all(do_greedy) or all([not greedy for greedy in do_greedy])
 
