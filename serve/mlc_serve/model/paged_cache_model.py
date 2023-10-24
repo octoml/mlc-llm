@@ -404,7 +404,6 @@ class Model:
                 sequence_id = request.sequence_id
                 sequence_ids.append(request.sequence_id)
 
-            block_table = cache.block_tables[sequence_id.request_id]
             sampling_params.append(request.sampling_params)
 
             if is_prefill:
@@ -425,6 +424,7 @@ class Model:
                 input_ids.append(request.token_ids[-1])
                 pos = len(request.token_ids) - 1
                 positions.append(pos)
+                block_table = cache.block_tables[sequence_id.request_id]
                 max_num_blocks_per_seq = max(max_num_blocks_per_seq, len(block_table))
                 block_tables.append(block_table)
                 slot_mapping.append(cache.slot_mappings[sequence_id.request_id][-1])
