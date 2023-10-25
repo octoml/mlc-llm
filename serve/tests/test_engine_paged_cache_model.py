@@ -14,6 +14,17 @@ from mlc_serve.model.paged_cache_model import PagedCacheModelModule
 
 
 def test(args: argparse.Namespace):
+    # Examples. "--max-output-len" can be used to specify the number of output tokens.
+    #
+    # Profile the gpu memory usage, and use the maximum number of cache blocks possible:
+    # python serve/tests/test_engine_paged_cache_model.py --local-id vicuna-v1-7b-q4f16_ft --max-num-batched-tokens 2560 --max-input-len 256
+    #
+    # Mistral:
+    # python serve/tests/test_engine_paged_cache_model.py  --local-id Mistral-7B-v0.1-q0f16 --long-prompt --max-num-batched-tokens 24000 --max-input-len 8000 --max-output-len 20
+    #
+    # Disco:
+    # python serve/tests/test_engine_paged_cache_model.py --local-id vicuna-v1-7b-q0f16 --num-shards 2
+
     model_module = PagedCacheModelModule(
         args.model,
         args.artifact_path,
