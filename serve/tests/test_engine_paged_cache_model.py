@@ -55,13 +55,22 @@ def test(args: argparse.Namespace):
                     messages=[ChatMessage(role="user", content=prompt)],
                     sampling_params=sampling_params,
                     stopping_criteria=StoppingCriteria(max_tokens=args.max_output_len),
-                    debug_options=DebugOptions(ignore_eos=False),
+                    debug_options=DebugOptions(ignore_eos=False, prompt=prompt),
                 )
             ]
         )
 
+    generated = [[] for _ in range(len(prompts))]
+
     while engine._has_request_to_process():
-        engine.step()
+        results = engine.step()
+        for res in results.outputs:
+            seq = res.sequences[0]
+            if not seq.is_finished:
+                generated[int(res.request_id)].append(seq.delta)
+
+    for prompt, tokens in zip(prompts, generated):
+        print("Prompt = '{}', generated text = '{}'".format(prompt, "".join(tokens)))
 
 
 if __name__ == "__main__":
