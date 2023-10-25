@@ -76,13 +76,13 @@ def test(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Benchmark the throughput.")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--local-id", type=str, required=True)
     parser.add_argument("--artifact-path", type=str, default="dist")
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--max-num-batched-tokens", type=int, default=-1)
     parser.add_argument("--max-input-len", type=int, default=-1)
-    parser.add_argument("--max-output-len", type=int, default=100)
+    parser.add_argument("--max-output-len", type=int, default=20)
     parser.add_argument("--long-prompt", action="store_true")
     args = parser.parse_args()
 
