@@ -53,26 +53,26 @@ def test(args: argparse.Namespace):
                     messages=[ChatMessage(role="user", content=prompt)],
                     sampling_params=sampling_params,
                     stopping_criteria=StoppingCriteria(max_tokens=args.max_output_len),
-                    debug_options=DebugOptions(ignore_eos=False, prompt=prompt),
+                    debug_options=DebugOptions(prompt=prompt),
                 )
             ]
         )
 
-    generated = [[] for _ in range(len(prompts))]
+    generated = ["" for _ in range(len(prompts))]
 
     while engine._has_request_to_process():
         results = engine.step()
         for res in results.outputs:
             seq = res.sequences[0]
             if not seq.is_finished:
-                generated[int(res.request_id)].append(seq.delta)
+                generated[int(res.request_id)] += seq.delta
 
     if args.long_prompt:
-        for tokens in generated:
-            print("Generated text = '{}'".format("".join(tokens)))
+        for g in generated:
+            print(f"Generated text = '{g}'")
     else:
-        for prompt, tokens in zip(prompts, generated):
-            print("Prompt = '{}', generated text = '{}'".format(prompt, "".join(tokens)))
+        for p, g in zip(prompts, generated):
+            print(f"Prompt = '{p}', generated text = '{g}'")
 
 
 if __name__ == "__main__":
