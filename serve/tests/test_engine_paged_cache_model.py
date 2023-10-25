@@ -34,7 +34,7 @@ def test(args: argparse.Namespace):
     )
 
     if args.long_prompt:
-        with open("tests/python/data/long_prompts.json", "r") as f:
+        with open("serve/tests/data/long_prompts.json", "r") as f:
             prompts = json.load(f)["prompts"]
             prompts = [prompts[0], prompts[2], prompts[3]]
     else:
