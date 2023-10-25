@@ -14,8 +14,6 @@ from mlc_serve.model.paged_cache_model import PagedCacheModelModule
 
 
 def test(args: argparse.Namespace):
-    print(args)
-
     model_module = PagedCacheModelModule(
         args.model,
         args.artifact_path,
@@ -69,8 +67,12 @@ def test(args: argparse.Namespace):
             if not seq.is_finished:
                 generated[int(res.request_id)].append(seq.delta)
 
-    for prompt, tokens in zip(prompts, generated):
-        print("Prompt = '{}', generated text = '{}'".format(prompt, "".join(tokens)))
+    if args.long_prompt:
+        for tokens in generated:
+            print("Generated text = '{}'".format("".join(tokens)))
+    else:
+        for prompt, tokens in zip(prompts, generated):
+            print("Prompt = '{}', generated text = '{}'".format(prompt, "".join(tokens)))
 
 
 if __name__ == "__main__":
