@@ -248,7 +248,7 @@ def sample(logits, sampling_params, vocab_size):
     # TODO: Support per-type batched sampling like vllm.
     assert all(do_greedy) or all([not greedy for greedy in do_greedy])
 
-    temperatures = [p.temperature for p in sampling_params]
+    temperatures = [p.temperature if p.temperature != 0.0 else 1.0 for p in sampling_params]
     if any(t != 1.0 for t in temperatures):
         t = torch.tensor(temperatures, dtype=logits.dtype, device=logits.device)
         logits.div_(t.unsqueeze(dim=1))
