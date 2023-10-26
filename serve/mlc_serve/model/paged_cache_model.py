@@ -243,45 +243,54 @@ def _apply_top_p_top_k(logits, top_ps, top_ks):
 
 def sample(logits, sampling_params, vocab_size):
     logits = torch.from_dlpack(logits)
-    num_tokens = len(sampling_params)
+    num_seq = len(sampling_params)
 
-    indices_greedy = [
-        i
-        for i in range(num_tokens)
-        if sampling_params[i].sampling_type == SamplingType.GREEDY
-    ]
+    mask_random = torch.tensor(
+        [p.sampling_type == SamplingType.RANDOM for p in sampling_params],
+        dtype=torch.bool,
+    )
+    mask_greedy = torch.logical_not(mask_random)
 
-    if indices_greedy:
-        res_greedy = torch.argmax(logits[indices_greedy], -1).cpu().numpy()
+    logits_greedy = logits[mask_greedy]
 
-        if len(indices_greedy) == num_tokens:
+    if logits_greedy.shape[0] > 0:
+        res_greedy = torch.argmax(logits_greedy, -1).cpu().numpy()
+
+        if logits_greedy.shape[0] == num_seq:
             return res_greedy
 
-    # Assumption: greedy is rare
-    # So rather than paying the cost of splitting and merging, just do random sampling for all tokens,
-    # and patch the sampled tokens with greedily-chosen ones if any.
+    logits_random = logits[mask_random]
 
-    temperatures = [
-        p.temperature if p.temperature != 0.0 else 1.0 for p in sampling_params
-    ]
+    temperatures = []
+    top_ps = []
+    top_ks = []
+
+    for i in range(num_seq):
+        param = sampling_params[i]
+
+        if param.sampling_type == SamplingType.RANDOM:
+            temperatures.append(param.temperature)
+            top_ps.append(param.top_p)
+            top_ks.append(param.top_k if param.top_k != -1 else vocab_size)
+
     if any(t != 1.0 for t in temperatures):
         t = torch.tensor(temperatures, dtype=logits.dtype, device=logits.device)
-        logits.div_(t.unsqueeze(dim=1))
+        logits_random.div_(t.unsqueeze(dim=1))
 
-    top_ps = [p.top_p for p in sampling_params]
-    top_ks = [p.top_k if p.top_k != -1 else vocab_size for p in sampling_params]
+    if top_ps or top_ks:
+        logits = _apply_top_p_top_k(logits_random, top_ps, top_ks)
 
-    do_top_p = any(p < 1.0 for p in top_ps)
-    do_top_k = any(k != vocab_size for k in top_ks)
+    probs = torch.softmax(logits_random, dim=-1)
+    res_random = torch.multinomial(probs, 1, True).cpu().numpy()[:, 0]
 
-    if do_top_p or do_top_k:
-        logits = _apply_top_p_top_k(logits, top_ps, top_ks)
+    if logits_random.shape[0] == num_seq:
+        return res_random
 
-    probs = torch.softmax(logits, dim=-1)
-    res = torch.multinomial(probs, 1, True).cpu().numpy()[:, 0]
+    res = np.empty((num_seq,), dtype=np.int32)
+    res[mask_random] = res_random
 
-    if indices_greedy:
-        res[indices_greedy] = res_greedy
+    if logits_greedy.shape[0] > 0:
+        res[mask_greedy] = res_greedy
 
     return res
 
