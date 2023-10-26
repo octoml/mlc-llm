@@ -40,12 +40,12 @@ def test(args: argparse.Namespace):
         max_batched_tokens=args.max_num_batched_tokens,
     )
 
-    sampling_param_random = SamplingParams(
+    sampling_params_random = SamplingParams(
         temperature=0.9,
         top_p=1.0,
     )
 
-    sampling_param_greedy = SamplingParams(
+    sampling_params_greedy = SamplingParams(
         temperature=0.0,
     )
 
@@ -62,14 +62,16 @@ def test(args: argparse.Namespace):
         ]
 
     for i, prompt in enumerate(prompts):
-        sampling_param = random.choice([sampling_param_random, sampling_param_greedy])
+        sampling_params = random.choice(
+            [sampling_params_random, sampling_params_greedy]
+        )
 
         engine.add(
             [
                 Request(
                     request_id=str(i),
                     messages=[ChatMessage(role="user", content=prompt)],
-                    sampling_params=sampling_param,
+                    sampling_params=sampling_params,
                     stopping_criteria=StoppingCriteria(max_tokens=args.max_output_len),
                     debug_options=DebugOptions(prompt=prompt),
                 )
