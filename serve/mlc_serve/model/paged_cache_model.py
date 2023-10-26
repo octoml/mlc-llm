@@ -259,11 +259,12 @@ def sample(logits, sampling_params, vocab_size):
         if logits_greedy.shape[0] == num_seq:
             return res_greedy
 
-    logits_random = logits[mask_random]
-
     temperatures = []
     top_ps = []
     top_ks = []
+    divide_by_temperature = False
+    do_top_p = False
+    do_top_k = False
 
     for i in range(num_seq):
         param = sampling_params[i]
@@ -273,11 +274,17 @@ def sample(logits, sampling_params, vocab_size):
             top_ps.append(param.top_p)
             top_ks.append(param.top_k if param.top_k != -1 else vocab_size)
 
-    if any(t != 1.0 for t in temperatures):
+            divide_by_temperature |= temperatures[-1] != 1.0
+            do_top_p |= top_ps[-1] < 1.0
+            do_top_k |= top_ks[-1] != vocab_size
+
+    logits_random = logits[mask_random]
+
+    if divide_by_temperature:
         t = torch.tensor(temperatures, dtype=logits.dtype, device=logits.device)
         logits_random.div_(t.unsqueeze(dim=1))
 
-    if top_ps or top_ks:
+    if do_top_p or do_top_k:
         logits = _apply_top_p_top_k(logits_random, top_ps, top_ks)
 
     probs = torch.softmax(logits_random, dim=-1)
