@@ -1,5 +1,6 @@
 import argparse
 import json
+import random
 
 from mlc_llm import utils
 from mlc_serve.engine import (
@@ -39,9 +40,13 @@ def test(args: argparse.Namespace):
         max_batched_tokens=args.max_num_batched_tokens,
     )
 
-    sampling_params = SamplingParams(
-        temperature=1.0,
+    sampling_param_random = SamplingParams(
+        temperature=0.9,
         top_p=1.0,
+    )
+
+    sampling_param_greedy = SamplingParams(
+        temperature=0.0,
     )
 
     if args.long_prompt:
@@ -57,12 +62,14 @@ def test(args: argparse.Namespace):
         ]
 
     for i, prompt in enumerate(prompts):
+        sampling_param = random.choice([sampling_param_random, sampling_param_greedy])
+
         engine.add(
             [
                 Request(
                     request_id=str(i),
                     messages=[ChatMessage(role="user", content=prompt)],
-                    sampling_params=sampling_params,
+                    sampling_params=sampling_param,
                     stopping_criteria=StoppingCriteria(max_tokens=args.max_output_len),
                     debug_options=DebugOptions(prompt=prompt),
                 )

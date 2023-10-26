@@ -243,12 +243,27 @@ def _apply_top_p_top_k(logits, top_ps, top_ks):
 
 def sample(logits, sampling_params, vocab_size):
     logits = torch.from_dlpack(logits)
-    # TODO: Support beam search?
-    do_greedy = [p.sampling_type == SamplingType.GREEDY for p in sampling_params]
-    # TODO: Support per-type batched sampling like vllm.
-    assert all(do_greedy) or all([not greedy for greedy in do_greedy])
+    num_tokens = len(sampling_params)
 
-    temperatures = [p.temperature if p.temperature != 0.0 else 1.0 for p in sampling_params]
+    indices_greedy = [
+        i
+        for i in range(num_tokens)
+        if sampling_params[i].sampling_type == SamplingType.GREEDY
+    ]
+
+    if indices_greedy:
+        res_greedy = torch.argmax(logits[indices_greedy], -1).cpu().numpy()
+
+        if len(indices_greedy) == num_tokens:
+            return res_greedy
+
+    # Assumption: greedy is rare
+    # So rather than paying the cost of splitting and merging, just do random sampling for all tokens,
+    # and patch the sampled tokens with greedily-chosen ones if any.
+
+    temperatures = [
+        p.temperature if p.temperature != 0.0 else 1.0 for p in sampling_params
+    ]
     if any(t != 1.0 for t in temperatures):
         t = torch.tensor(temperatures, dtype=logits.dtype, device=logits.device)
         logits.div_(t.unsqueeze(dim=1))
@@ -262,11 +277,13 @@ def sample(logits, sampling_params, vocab_size):
     if do_top_p or do_top_k:
         logits = _apply_top_p_top_k(logits, top_ps, top_ks)
 
-    if all(do_greedy):
-        return torch.argmax(logits, -1).cpu().numpy()
-
     probs = torch.softmax(logits, dim=-1)
-    return torch.multinomial(probs, 1, True).cpu().numpy()[:, 0]
+    res = torch.multinomial(probs, 1, True).cpu().numpy()[:, 0]
+
+    if indices_greedy:
+        res[indices_greedy] = res_greedy
+
+    return res
 
 
 def load_disco_module(artifact_path, lib_path, num_shards):
