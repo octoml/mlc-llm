@@ -523,8 +523,6 @@ def mod_transform_before_build(
                 ]
             )(mod)
 
-            print(mod)
-
     mod = mlc_llm.transform.FuseTransposeMatmul()(mod)
     mod = relax.pipeline.get_pipeline()(mod)  # pylint: disable=no-value-for-parameter
     mod = mlc_llm.transform.FuseDecodeMatmulEwise()(mod)
