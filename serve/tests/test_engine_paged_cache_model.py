@@ -1,3 +1,5 @@
+import torch
+
 import argparse
 import json
 import random
@@ -131,10 +133,13 @@ if __name__ == "__main__":
     parser.add_argument("--use-staging-engine", action="store_true")
     parser.add_argument("--min-decode-steps", type=int, default=12)
     parser.add_argument("--max-decode-steps", type=int, default=16)
-
+    parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
     args.model, args.quantization = args.local_id.rsplit("-", 1)
     utils.argparse_postproc_common(args)
+
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
 
     test(args)
