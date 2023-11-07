@@ -44,15 +44,16 @@ class FTRowwiseQuantizationSpec(QuantizationSpec):
                 primfunc_name_hint="encode",
             )
             packed_weight = bb.normalize(encoded_data[0])
-            encoded_weight = bb.emit(
-                relax.call_pure_packed(
-                    "cutlass.ft_preprocess_weight",
-                    packed_weight,
-                    self.sm,
-                    self.nbit == 4,
-                    sinfo_args=packed_weight.struct_info,
-                )
-            )
+            # encoded_weight = bb.emit(
+            #     relax.call_pure_packed(
+            #         "cutlass.ft_preprocess_weight",
+            #         packed_weight,
+            #         self.sm,
+            #         self.nbit == 4,
+            #         sinfo_args=packed_weight.struct_info,
+            #     )
+            # )
+            encoded_weight = packed_weight
             return bb.emit(relax.Tuple([encoded_weight, encoded_data[1]]))
 
         return f_quantize

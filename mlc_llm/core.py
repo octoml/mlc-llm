@@ -698,13 +698,15 @@ def build_model_from_args(args: argparse.Namespace):
             "WARNING: q4f16_1 is preferred to q4f16_0, "
             "and it is highly recommended to use q4f16_1 instead"
         )
+
+    use_ft_quant = args.quantization.name in ["q4f16_ft", "q8f16_ft"]
+
     if args.num_shards > 1:
         if (not args.build_model_only) and (not args.convert_weight_only):
             raise ValueError(
                 "`num_shards` should be used together with "
                 "`--build-model-only` and `--convert-weight-only`"
             )
-        use_ft_quant = args.quantization.name in ["q4f16_ft", "q8f16_ft"]
         if use_ft_quant and not args.use_presharded_weights:
             raise ValueError("Multi-GPU deployments with FT quantization requires --use-presharded-weights.")
 
@@ -795,6 +797,11 @@ def build_model_from_args(args: argparse.Namespace):
             mod_transform = seq(mod_transform)
 
             params = utils.convert_weights(mod_transform, param_manager, params, args)
+
+            if args.num_shards > 1 and use_ft_quant:
+                for p in params:
+                    print(p.shape, p.dtype)
+
             utils.save_params(params, args.artifact_path, args.num_shards if args.use_presharded_weights else 1)
 
             if args.model_category != "minigpt":
