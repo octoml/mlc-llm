@@ -461,11 +461,12 @@ def apply_rewrite(mod, split_rotary, get_pattern_func):
 
 
 def fuse_split_rotary_embedding(
-    num_query_heads, num_kv_heads, hidden_size, position_embedding_base
+    num_query_heads, num_kv_heads, hidden_size, position_embedding_base, batched=False
 ):
+    head_dim = hidden_size // num_query_heads
+
     @tvm.ir.transform.module_pass(opt_level=0, name="fuse_split_rotary_embedding")
     def ir_module_pass(mod: tvm.IRModule, _pass_context) -> tvm.IRModule:
-        head_dim = hidden_size // num_query_heads
         split_rotary = get_dynamic_split_rotary()
 
         (
@@ -494,7 +495,6 @@ def fuse_split_rotary_embedding(
 
     @tvm.ir.transform.module_pass(opt_level=0, name="fuse_split_rotary_embedding")
     def ir_module_pass_batched(mod: tvm.IRModule, _pass_context) -> tvm.IRModule:
-        head_dim = hidden_size // num_query_heads
         split_rotary = get_dynamic_split_rotary_batched()
 
         (
@@ -519,4 +519,5 @@ def fuse_split_rotary_embedding(
 
         return apply_rewrite(mod, split_rotary, get_batched_pattern)
 
-    return tvm.transform.Sequential([ir_module_pass, ir_module_pass_batched])
+    module_pass = ir_module_pass_batched if batched else ir_module_pass
+    return tvm.transform.Sequential([module_pass])
