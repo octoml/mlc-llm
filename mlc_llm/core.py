@@ -380,9 +380,9 @@ def _parse_args(parsed) -> argparse.Namespace:
         parsed.quantization.name,
     ]
     if parsed.use_presharded_weights:
-        model_name.append(f'presharded-{parsed.num_shards}gpu')
+        model_name.append(f"presharded-{parsed.num_shards}gpu")
 
-    parsed.artifact_path = os.path.join(parsed.artifact_path, '-'.join(model_name))
+    parsed.artifact_path = os.path.join(parsed.artifact_path, "-".join(model_name))
 
     return parsed
 
@@ -501,8 +501,7 @@ def mod_transform_before_build(
     mod = mlc_llm.transform.FuseDecodeTranspose(skip_gemm=not use_ft_quant)(mod)
 
     if (
-        not args.enable_batching
-        and hasattr(config, "num_attention_heads")
+        hasattr(config, "num_attention_heads")
         and hasattr(config, "hidden_size")
         and hasattr(config, "position_embedding_base")
         and getattr(config, "dtype", "float16") == "float16"
@@ -827,7 +826,6 @@ def build_model_from_args(args: argparse.Namespace):
             # initialization-time transforms to apply is empty.
             sharding_module = create_shard_info_func(param_manager, args, model_config)
             mod.update(sharding_module)
-
 
         with open(cache_path, "wb") as outfile:
             pickle.dump(mod, outfile)
