@@ -441,7 +441,7 @@ def get_batched_pattern(split_rotary_gvar):
     return ctx, rewriter
 
 
-def apply_rewrite(mod, split_rotary):
+def apply_rewrite(mod, split_rotary, get_pattern_func):
     update_param_sinfo(split_rotary)
 
     mod["split_rotary"] = split_rotary
@@ -449,7 +449,7 @@ def apply_rewrite(mod, split_rotary):
     split_rotary_gvar = mod.get_global_var("split_rotary")
     relax.expr._update_struct_info(split_rotary_gvar, mod["split_rotary"].struct_info)
 
-    ctx, rewriter = get_single_query_pattern(split_rotary_gvar)
+    ctx, rewriter = get_pattern_func(split_rotary_gvar)
 
     new_mod = {}
     for gvar, func in mod.functions.items():
@@ -490,7 +490,7 @@ def fuse_split_rotary_embedding(
             }
         )
 
-        return apply_rewrite(mod, split_rotary)
+        return apply_rewrite(mod, split_rotary, get_single_query_pattern)
 
     @tvm.ir.transform.module_pass(opt_level=0, name="fuse_split_rotary_embedding")
     def ir_module_pass_batched(mod: tvm.IRModule, _pass_context) -> tvm.IRModule:
@@ -517,6 +517,6 @@ def fuse_split_rotary_embedding(
             }
         )
 
-        return apply_rewrite(mod, split_rotary)
+        return apply_rewrite(mod, split_rotary, get_batched_pattern)
 
     return tvm.transform.Sequential([ir_module_pass, ir_module_pass_batched])
