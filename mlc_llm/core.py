@@ -799,8 +799,15 @@ def build_model_from_args(args: argparse.Namespace):
             params = utils.convert_weights(mod_transform, param_manager, params, args)
 
             if args.num_shards > 1 and use_ft_quant:
+                preprocessed = []
+                weight_preprocess_func = tvm.get_global_func("cutlass.ft_preprocess_weight")
                 for p in params:
-                    print(p.shape, p.dtype)
+                    if p.dtype == "int8":
+                        preprocessed.append(weight_preprocess_func(p, 80, True))
+                    else:
+                        preprocessed.append(p)
+
+                params = preprocessed
 
             utils.save_params(params, args.artifact_path, args.num_shards if args.use_presharded_weights else 1)
 
