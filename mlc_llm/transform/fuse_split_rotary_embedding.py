@@ -441,6 +441,25 @@ def get_batched_pattern(split_rotary_gvar):
     return ctx, rewriter
 
 
+def apply_rewrite(mod, split_rotary):
+    update_param_sinfo(split_rotary)
+
+    mod["split_rotary"] = split_rotary
+
+    split_rotary_gvar = mod.get_global_var("split_rotary")
+    relax.expr._update_struct_info(split_rotary_gvar, mod["split_rotary"].struct_info)
+
+    ctx, rewriter = get_single_query_pattern(split_rotary_gvar)
+
+    new_mod = {}
+    for gvar, func in mod.functions.items():
+        if isinstance(func, relax.Function):
+            func = rewrite_bindings(ctx, rewriter, func)
+        new_mod[gvar] = func
+
+    return tvm.IRModule(new_mod, mod.type_definitions, mod.attrs, mod.global_infos)
+
+
 def fuse_split_rotary_embedding(
     num_query_heads, num_kv_heads, hidden_size, position_embedding_base
 ):
@@ -471,23 +490,7 @@ def fuse_split_rotary_embedding(
             }
         )
 
-        update_param_sinfo(split_rotary)
-
-        mod["split_rotary"] = split_rotary
-
-        split_rotary_gvar = mod.get_global_var("split_rotary")
-        relax.expr._update_struct_info(split_rotary_gvar, mod["split_rotary"].struct_info)
-
-        ctx, rewriter = get_single_query_pattern(split_rotary_gvar)
-
-        new_mod = {}
-        for gvar, func in mod.functions.items():
-            if isinstance(func, relax.Function):
-                func = rewrite_bindings(ctx, rewriter, func)
-            new_mod[gvar] = func
-
-        new_mod = tvm.IRModule(new_mod, mod.type_definitions, mod.attrs, mod.global_infos)
-        return new_mod
+        return apply_rewrite(mod, split_rotary)
 
     @tvm.ir.transform.module_pass(opt_level=0, name="fuse_split_rotary_embedding")
     def ir_module_pass_batched(mod: tvm.IRModule, _pass_context) -> tvm.IRModule:
@@ -514,22 +517,6 @@ def fuse_split_rotary_embedding(
             }
         )
 
-        update_param_sinfo(split_rotary)
-
-        mod["split_rotary"] = split_rotary
-
-        split_rotary_gvar = mod.get_global_var("split_rotary")
-        relax.expr._update_struct_info(split_rotary_gvar, mod["split_rotary"].struct_info)
-
-        ctx, rewriter = get_batched_pattern(split_rotary_gvar)
-
-        new_mod = {}
-        for gvar, func in mod.functions.items():
-            if isinstance(func, relax.Function):
-                func = rewrite_bindings(ctx, rewriter, func)
-            new_mod[gvar] = func
-
-        new_mod = tvm.IRModule(new_mod, mod.type_definitions, mod.attrs, mod.global_infos)
-        return new_mod
+        return apply_rewrite(mod, split_rotary)
 
     return tvm.transform.Sequential([ir_module_pass, ir_module_pass_batched])
