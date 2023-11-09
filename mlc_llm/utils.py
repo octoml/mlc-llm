@@ -119,14 +119,7 @@ def argparse_postproc_common(args: argparse.Namespace) -> None:
 
     if args.quantization not in quantization_schemes:
         raise ValueError(f'Quantization "{args.quantization}" is not supported.')
-
-    use_ft_quant = args.quantization in ["q4f16_ft", "q8f16_ft"]
     args.quantization = quantization_schemes[args.quantization]
-
-    if use_ft_quant and args.num_shards > 1:
-        # Preprocess is done after sharding for this case.
-        args.quantization.linear_weight.do_preprocess = False
-        args.quantization.final_fc_weight.do_preprocess = False
 
 
 def debug_dump_script(mod, name, args: argparse.Namespace, show_meta=True):
@@ -290,7 +283,6 @@ def save_params(params: List[tvm.nd.NDArray], artifact_path: str, num_presharded
     meta_data = {}
     param_dict = {}
     meta_data["ParamSize"] = len(params)
-
     for i, nd in enumerate(params):
         if num_presharded == 1:
             param_name = f"param_{i}"
