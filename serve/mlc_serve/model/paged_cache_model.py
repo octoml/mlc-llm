@@ -2,8 +2,10 @@ import json
 import logging
 import math
 import os
+import inspect
 from collections import defaultdict
-from typing import List, Union
+from typing import List, Union, Optional
+from dataclasses import dataclass, fields
 
 import numpy as np
 import torch
@@ -335,13 +337,198 @@ def get_tvm_model(artifact_path, model, quantization, num_shards, dev):
 
     lib_path = os.path.join(model_artifact_path, f"{model}-{quantization}-cuda.so")
 
+    chat_file = os.path.join(f"{model_artifact_path}/params", "mlc-chat-config.json")
     if num_shards == 1:
         ex = tvm.runtime.load_module(lib_path)
         vm = relax.VirtualMachine(ex, dev)
         params = utils.load_params(model_artifact_path, dev)
-        return vm.module, params, None
+        return vm.module, params, None, chat_file
 
-    return load_disco_module(model_artifact_path, lib_path, num_shards)
+    return load_disco_module(model_artifact_path, lib_path, num_shards), chat_file
+
+@dataclass
+class ConvConfig:
+    r"""A dataclass that represents user-defined partial configuration for conversation template.
+
+    This is an attribute of :class:`mlc_chat.ChatConfig`, which can then be passed in to the
+    instantiation of a :class:`mlc_chat.ChatModule` instance to override the default
+    setting in ``mlc-chat-config.json`` under the model folder. Note that we will
+    first load the predefined template with the name specified in ``conv_template``.
+
+    Since the configuration is partial, everything will be ``Optional``.
+
+    Parameters
+    ----------
+    name : Optional[str]
+        Name of the conversation.
+    system : Optional[str]
+        The prompt encoded before starting the chat.
+    roles : Optional[List[str]]
+        An array that describes the role names of the user and the model. These
+        names are specific to the model being used.
+    messages : Optional[List[str]]
+        The chat history represented as an array of string pairs in the following
+        format: ``[[role_0, msg_0], [role_1, msg_1], ...]``.
+    offset : Optional[str]
+        The offset used to begin the chat from the chat history. When offset
+        is not ``0``, ``messages[0:offset-1]`` will be encoded.
+    separator_style : Optional[int]
+        Specifies whether we are in chat-bot mode (``0``) or pure LM prompt mode (``1``).
+    seps : Optional[List[str]]
+        An array of strings indicating the separators to be used after a user
+        message and a model message respectively.
+    role_msg_sep : Optional[str]
+        A string indicating the separator between a role and a message.
+    role_empty_sep : Optional[str]
+        A string indicating the separator to append to a role when there is no message yet.
+    stop_str : Optional[str]
+        When the ``stop_str`` is encountered, the model will stop generating output.
+    stop_tokens : Optional[List[int]]
+        A list of token IDs that act as stop tokens.
+    add_bos : Optional[bool]
+        Determines whether a beginning-of-string (bos) token should be added
+        before the input tokens.
+    """
+
+    name: Optional[str] = None
+    system: Optional[str] = None
+    roles: Optional[List[str]] = None
+    messages: Optional[List[List[str]]] = None
+    offset: Optional[str] = None
+    separator_style: Optional[int] = None
+    seps: Optional[List[str]] = None
+    role_msg_sep: Optional[str] = None
+    role_empty_sep: Optional[str] = None
+    stop_str: Optional[str] = None
+    stop_tokens: Optional[List[int]] = None
+    add_bos: Optional[bool] = None
+
+    def __post_init__(self):
+        if self.messages is not None and self.offset is None:
+            self.offset = len(self.messages)
+
+@dataclass
+class ChatConfig:
+    r"""A dataclass that represents user-defined partial configuration for the
+    chat config file.
+
+    An instance of ``ChatConfig`` can be passed in to the instantiation of a
+    :class:`mlc_chat.ChatModule` instance to override the default setting in
+    ``mlc-chat-config.json`` under the model folder.
+
+    Since the configuraiton is partial, everything will be ``Optional``.
+
+    Note that we will exploit this class to also represent ``mlc-chat-config.json``
+    during intermediate processing.
+
+    Parameters
+    ----------
+    model_lib : Optional[str]
+        The necessary model library to launch this model architecture. We recommend
+        reuse model library when possible. For example, all LLaMA-7B models can
+        use ``vicuna-v1-7b-{matching quantization scheme}``. So you can distribute
+        LLaMA-7B weight variants and still use them in prebuilt MLC chat apps.
+    local_id : Optional[str]
+        Uniquely identifying the model in application. This is also used by
+        command line interface app to specify which model to run.
+    conv_template : Optional[str]
+        The name of the conversation template that this chat uses.
+    temperature : Optional[float]
+        The temperature applied to logits before sampling. The default value is
+        ``0.7``. A higher temperature encourages more diverse outputs, while a
+        lower temperature produces more deterministic outputs.
+    repetition_penalty : Optional[float]
+        The repetition penalty controls the likelihood of the model generating
+        repeated texts. The default value is set to ``1.0``, indicating that no
+        repetition penalty is applied. Increasing the value reduces the
+        likelihood of repeat text generation. However, setting a high
+        ``repetition_penalty`` may result in the model generating meaningless
+        texts. The ideal choice of repetition penalty may vary among models.
+
+        For more details on how repetition penalty controls text generation, please
+        check out the CTRL paper (https://arxiv.org/pdf/1909.05858.pdf).
+    top_p : Optional[float]
+        This parameter determines the set of tokens from which we sample during
+        decoding. The default value is set to ``0.95``. At each step, we select
+        tokens from the minimal set that has a cumulative probability exceeding
+        the ``top_p`` parameter.
+
+        For additional information on top-p sampling, please refer to this blog
+        post: https://huggingface.co/blog/how-to-generate#top-p-nucleus-sampling.
+    mean_gen_len : Optional[int]
+    max_gen_len : Optional[int]
+    shift_fill_factor : Optional[float]
+    tokenizer_files : Optional[List[str]]
+        List of tokenizer files of the model.
+    conv_config : Optional[ConvConfig]
+        The partial overriding configuration for conversation template. Will first
+        load the predefined template with the name specified in ``conv_template``
+        and then override some of the configuraitons specified in ``conv_config``.
+    model_category : Optional[str]
+        The category of the model's architecture (e.g. ``llama``, ``gpt_neox``, ``rwkv``).
+    model_name : Optional[str]
+        Name of the model (e.g. ``Llama-2-7b-chat-hf``).
+    num_shards: Optional[str]
+        Tensor parallel degree.
+    max_window_size: Optional[str]
+        Maximum kv cache window size.
+    """
+
+    model_lib: Optional[str] = None
+    local_id: Optional[str] = None
+    conv_template: Optional[str] = None
+    temperature: Optional[float] = None
+    repetition_penalty: Optional[float] = None
+    top_p: Optional[float] = None
+    mean_gen_len: Optional[int] = None
+    max_gen_len: Optional[int] = None
+    shift_fill_factor: Optional[float] = None
+    tokenizer_files: Optional[List[str]] = None
+    conv_config: Optional[ConvConfig] = None
+    model_category: Optional[str] = None
+    model_name: Optional[str] = None
+    num_shards: Optional[int] = None
+    max_window_size: Optional[int] = None
+    vocab_size: Optional[int] = None
+    sliding_window: Optional[int] = None
+
+    @classmethod
+    def _from_json(chat_config_cls, json_obj: dict):
+        return chat_config_cls(
+            **{
+                k: v
+                for k, v in json_obj.items()
+                if k in inspect.signature(chat_config_cls).parameters
+            }
+        )
+
+def get_chat_config(config_file_path: str, user_chat_config: Optional[ChatConfig]) -> ChatConfig:
+    """Read in the config file in model path, then potentially override with user input.
+
+    Parameters
+    ----------
+    config_file_path : str
+        ``chat_file`` returned by ``_get_model_path()``.
+    user_chat_config : Optional[ChatConfig]
+        User's input, a partial ``ChatConfig`` to override the one in ``config_file_path``.
+
+    Returns
+    ------
+    final_chat_config : ChatConfig
+        ``ChatConfig`` corresponding to ``config_file_path``, overriden by ``user_chat_config``.
+    """
+    final_chat_config = None
+    with open(config_file_path, mode="rt", encoding="utf-8") as f:
+        json_object = json.load(f)
+        final_chat_config = ChatConfig._from_json(json_object)
+    if user_chat_config is not None:
+        # We override using user's chat config
+        for field in fields(user_chat_config):
+            field_name = field.name
+            field_value = getattr(user_chat_config, field_name)
+            if field_value is not None:
+                setattr(final_chat_config, field_name, field_value)
+    return final_chat_config
 
 
 def _prepare_inputs(
@@ -434,21 +621,20 @@ class Model:
         artifact_path,
         model_name,
         quant,
-        vocab_size,
         num_shards,
         dev,
         sliding_window=None,
     ):
-        self.mod, self.params, self.disco_session = get_tvm_model(
+        self.mod, self.params, self.disco_session, self.config_file_path = get_tvm_model(
             artifact_path, model_name, quant, num_shards, dev
         )
+        self.chat_config = get_chat_config(self.config_file_path, None)
+        self.chat_config.num_shards = num_shards
+        self.chat_config.sliding_window = sliding_window # this should migrate eventually into chat config
         self.dev = dev
-        self.vocab_size = vocab_size
-        self.sliding_window = sliding_window
-        self.num_shards = num_shards
 
-        if sliding_window:
-            self.block_sliding_window = sliding_window // CacheManager.block_size
+        if self.chat_config.sliding_window:
+            self.block_sliding_window = self.chat_config.sliding_window // CacheManager.block_size
         else:
             self.block_sliding_window = None
 
@@ -465,7 +651,7 @@ class Model:
             ).debug_get_from_remote(0)
 
             # TODO: temp hack to switch the VM allocator to eager recycling mode on all devices
-            for i in range(1, self.num_shards):
+            for i in range(1, self.chat_config.num_shards):
                 get_used_memory_func(tvm.device("cuda", i)).debug_get_from_remote(i)
         else:
             params = self.params
@@ -539,7 +725,7 @@ class Model:
             all_token_ids,
             cache.slot_mappings,
             cache.block_tables,
-            self.sliding_window,
+            self.chat_config.sliding_window,
             self.dev,
             is_prefill,
         )
@@ -557,7 +743,7 @@ class Model:
         if is_prefill:
             torch.cuda.nvtx.range_push(f"forward prefill {input_shape}")
 
-            if self.sliding_window:
+            if self.chat_config.sliding_window:
                 if self.disco_session:
                     indices_within_window = copy_to_worker_0(
                         self.disco_session, indices_within_window
@@ -607,7 +793,7 @@ class Model:
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
 
-        next_tokens = sample(logits, sampling_params, self.vocab_size)
+        next_tokens = sample(logits, sampling_params, self.chat_config.vocab_size)
 
         return [
             TextGenerationResult(
@@ -712,6 +898,10 @@ class PagedCacheModelModule:
 
         dev = tvm.device("cuda", 0)
 
+        # TODO(amalyshe): HF config should be substituted by mlc-chat-config.json
+        # we cannot get rid of HF config so far, since there is no number of parameters
+        # in the chat config one:
+        # sliding_window, hidden_size, num_attention_heads, get_num_key_value_heads(), num_hidden_layers
         with open(os.path.join(model_path, "config.json"), encoding="utf-8") as i_f:
             config = LlamaConfig(**json.load(i_f))
 
@@ -719,7 +909,6 @@ class PagedCacheModelModule:
             artifact_path,
             model_name,
             quantization,
-            config.vocab_size,
             num_shards,
             dev,
             config.sliding_window,
