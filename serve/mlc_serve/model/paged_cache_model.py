@@ -15,7 +15,6 @@ from tvm import relax
 from tvm.runtime import disco as di
 
 from mlc_llm import utils
-from mlc_llm.relax_model.llama import LlamaConfig
 
 from ..engine import ChatMessage, RequestId, SamplingType
 from ..engine.model_module import (
@@ -491,6 +490,10 @@ class ChatConfig:
     max_window_size: Optional[int] = None
     vocab_size: Optional[int] = None
     sliding_window: Optional[int] = None
+    hidden_size: Optional[int] = None
+    num_attention_heads: Optional[int] = None
+    num_hidden_layers: Optional[int] = None
+    num_key_value_heads: Optional[int] = None
 
     @classmethod
     def _from_json(chat_config_cls, json_obj: dict):
@@ -501,6 +504,11 @@ class ChatConfig:
                 if k in inspect.signature(chat_config_cls).parameters
             }
         )
+
+    def get_num_key_value_heads(self):
+        if self.num_key_value_heads is None:
+            return self.num_attention_heads
+        return self.num_key_value_heads
 
 def get_chat_config(config_file_path: str, user_chat_config: Optional[ChatConfig]) -> ChatConfig:
     """Read in the config file in model path, then potentially override with user input.
@@ -898,27 +906,19 @@ class PagedCacheModelModule:
 
         dev = tvm.device("cuda", 0)
 
-        # TODO(amalyshe): HF config should be substituted by mlc-chat-config.json
-        # we cannot get rid of HF config so far, since there is no number of parameters
-        # in the chat config one:
-        # sliding_window, hidden_size, num_attention_heads, get_num_key_value_heads(), num_hidden_layers
-        with open(os.path.join(model_path, "config.json"), encoding="utf-8") as i_f:
-            config = LlamaConfig(**json.load(i_f))
-
         model = Model(
             artifact_path,
             model_name,
             quantization,
             num_shards,
             dev,
-            config.sliding_window,
         )
 
         if num_shards > 1:
             model.disco_session.sync_worker_0()
 
-        num_kv_heads = config.get_num_key_value_heads() // num_shards
-        head_size = config.hidden_size // config.num_attention_heads
+        num_kv_heads = model.chat_config.get_num_key_value_heads() // num_shards
+        head_size = model.chat_config.hidden_size // model.chat_config.num_attention_heads
 
         if max_num_batched_tokens > 0:
             assert max_input_len > 0
@@ -928,7 +928,7 @@ class PagedCacheModelModule:
             num_blocks = get_num_cache_blocks(
                 model,
                 [max_input_len] * num_seqs,
-                config.num_hidden_layers,
+                model.chat_config.num_hidden_layers,
                 num_kv_heads,
                 head_size,
             )
@@ -939,11 +939,11 @@ class PagedCacheModelModule:
 
         cache_manager = CacheManager(
             num_blocks,
-            config.num_hidden_layers,
+            model.chat_config.num_hidden_layers,
             num_kv_heads,
             head_size,
             model.disco_session,
-            config.sliding_window,
+            model.chat_config.sliding_window,
         )
 
         self.text_generator = PagedCacheModelTextGenerator(model)

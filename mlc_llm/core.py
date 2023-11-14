@@ -602,6 +602,11 @@ def dump_mlc_chat_config(
     max_gen_len: int = 512,
     shift_fill_factor: float = 0.3,
     rwkv_world=False,
+    sliding_window = None,
+    hidden_size = 4096,
+    num_attention_heads = 32,
+    num_hidden_layers = 32,
+    num_key_value_heads = None
 ):
     args.params_path = os.path.join(args.artifact_path, "params")
     config: Dict[str, Any] = {}
@@ -636,6 +641,13 @@ def dump_mlc_chat_config(
         config["sliding_window_chunk_size"] = args.sliding_window_chunk_size
     else:
         config["max_window_size"] = max_window_size
+    if sliding_window:
+        config["sliding_window"] = sliding_window
+    config["hidden_size"] = hidden_size
+    config["num_attention_heads"] = num_attention_heads
+    config["num_hidden_layers"] = num_hidden_layers
+    if num_key_value_heads:
+        config["num_key_value_heads"] = num_key_value_heads
 
     args.chat_config_path = os.path.join(args.params_path, "mlc-chat-config.json")
     with open(args.chat_config_path, "w", encoding="utf-8") as outfile:
@@ -836,12 +848,22 @@ def build_model_from_args(args: argparse.Namespace):
                     temperature=1.2,
                     repetition_penalty=0.996,
                     rwkv_world=True,
+                    sliding_window = model_config.sliding_window,
+                    hidden_size = model_config.hidden_size,
+                    num_attention_heads = model_config.num_attention_heads,
+                    num_hidden_layers = model_config.num_hidden_layers,
+                    num_key_value_heads = model_config.num_key_value_heads
                 )
             else:
                 dump_mlc_chat_config(
                     args,
                     vocab_size=config["vocab_size"],
                     max_window_size=model_config.max_sequence_length,
+                    sliding_window = model_config.sliding_window,
+                    hidden_size = model_config.hidden_size,
+                    num_attention_heads = model_config.num_attention_heads,
+                    num_hidden_layers = model_config.num_hidden_layers,
+                    num_key_value_heads = model_config.num_key_value_heads
                 )
 
         if args.convert_weight_only:
