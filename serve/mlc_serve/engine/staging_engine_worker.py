@@ -293,8 +293,7 @@ class GenerationLoopWorker:
         return self.queue or self.current_batch
 
     def _should_stop_by_length(self, state: RequestState) -> bool:
-        # TODO: put to config
-        max_tokens = 4096
+        max_tokens = self.text_generator.model.chat_config.max_gen_len
         if state.stopping_criteria.max_tokens is not None:
             max_tokens = min(max_tokens, state.stopping_criteria.max_tokens)
 
