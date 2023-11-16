@@ -245,13 +245,16 @@ def _apply_top_p_top_k(logits, top_ps, top_ks):
 
 
 def sample(
-    logits: tvm.nd.NDArray,
+    logits: Union[tvm.nd.NDArray, torch.Tensor],
     sampling_params: List[SamplingParams],
     vocab_size: int,
     check_safety=False,
-) -> Optional[np.array]:
-    def _is_safe_to_sample(logits):
-        return torch.sum(torch.isnan(logits) | torch.isinf(logits) | logits < 0) == 0
+) -> Optional[np.ndarray]:
+    def _is_safe_to_sample(prob_like):
+        return (
+            torch.sum(torch.isnan(prob_like) | torch.isinf(prob_like) | (prob_like < 0))
+            == 0
+        )
 
     logits = torch.from_dlpack(logits)
     num_seq = len(sampling_params)
@@ -621,14 +624,18 @@ class Model:
                 for sequence_id, new_token in zip(sequence_ids, next_tokens)
             ]
         except RuntimeError:
+            # Fallback to per-token sampling in case some logits values are corrupted.
             outputs = []
             err_msg = "Error from sampling: probability tensor contains either `inf`, `nan` or element < 0"
 
             for sequence_id, logits_per_token, sampling_param in zip(
-                sequence_ids, logits, sampling_params
+                sequence_ids, torch.from_dlpack(logits), sampling_params
             ):
                 maybe_new_token = sample(
-                    logits_per_token, sampling_param, self.vocab_size, check_safety=True
+                    torch.unsqueeze(logits_per_token, 0),
+                    [sampling_param],
+                    self.vocab_size,
+                    check_safety=True,
                 )
 
                 if maybe_new_token is not None:
