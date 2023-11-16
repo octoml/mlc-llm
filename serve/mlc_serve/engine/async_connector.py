@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import AsyncIterator
+from typing import AsyncIterator, Any
 
 from .base import (
     InferenceEngine,
@@ -15,7 +15,9 @@ ResultQueue = asyncio.Queue[RequestOutput]
 
 
 class TextGenerationError(Exception):
-    pass
+    def __init__(self, error: Any) -> None:
+        self.error = error
+        super(self).__init__(error)
 
 
 class AsyncEngineConnector:
@@ -98,6 +100,7 @@ class AsyncEngineConnector:
 
         if wait_shutdown_task.done():
             if self.engine_loop_exception is not None:
+                import pdb; pdb.set_trace()
                 raise RuntimeError(
                     f"InferenceEngine raised exception: {self.engine_loop_exception}"
                 )
