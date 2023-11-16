@@ -14,11 +14,10 @@ from tvm import relax
 from tvm.runtime import disco as di
 
 from mlc_llm import utils
-from mlc_llm.relax_model.llama import LlamaConfig
 
 from .base import get_model_artifact_config
 from .tokenizer import HfTokenizerModule
-from ..engine import ChatMessage, RequestId, SamplingType, MLCServeEngineConfig, SamplingParams
+from ..engine import RequestId, SamplingType, MLCServeEngineConfig, SamplingParams
 from ..engine.model_module import (
     DecodeRequest,
     PrefillRequest,
