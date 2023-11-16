@@ -194,7 +194,7 @@ class StagingInferenceEngine(ScopedInferenceEngine):
     def _is_ready_to_serve(self) -> bool:
         return self.worker_process is not None and self.worker_process.is_alive()
 
-    def _get_new_request_state(self, request: Request) -> Optional[RequestState]:
+    def _get_new_request_state(self, request: Request) -> RequestState:
         if request.debug_options.prompt is not None:
             prompt = request.debug_options.prompt
         else:
