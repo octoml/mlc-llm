@@ -91,17 +91,18 @@ ValidateTokensCallback = Callable[["Request", List[Token]], ValidationError]
 class Request:
     request_id: RequestId
     messages: list[ChatMessage]
-
-    # Perform request validation post-tokenization, used by the HTTP layer to control validation.
-    validate_tokens: Optional[ValidateTokensCallback] = None
     # Number of sequences to generate
     num_sequences: int = 1
     # TODO: should `best_of` be handled in the serving layer?
     best_of: int = None
-
+    # Options for sampling.
     sampling_params: SamplingParams = field(default_factory=SamplingParams)
+    # Options for stopping.
     stopping_criteria: StoppingCriteria = field(default_factory=StoppingCriteria)
+    # Options for debugging.
     debug_options: DebugOptions = field(default_factory=DebugOptions)
+    # Perform request validation post-tokenization, used by the HTTP layer to control validation.
+    validate_tokens: Optional[ValidateTokensCallback] = None
 
     def __post_init__(self):
         if self.best_of is None:
@@ -145,7 +146,11 @@ class RequestOutput:
     # TODO: reconsider the place to put this number
     # Only set for outputs with valid sequence otuputs
     num_prompt_tokens: Optional[int] = None
-
+    # TODO(@jroesch): We should generalize the type here so we are allowed to return more structured information
+    # for logging/user output.
+    #
+    # Right now I am abusing dynamic typing by putting the ValidationError in here.
+    # I would prefer to unblock ourselves then figure this one out right now
     error: Optional[str] = None
 
     @property
