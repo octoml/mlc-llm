@@ -15,8 +15,6 @@ import structlog
 
 logger = logging.getLogger(__name__)
 
-LOG = structlog.stdlib.get_logger(__name__)
-
 @dataclass
 class ShutdownCommand:
     pass
@@ -87,7 +85,6 @@ class GenerationLoopWorker:
                     self.cancelled_requests.append(request_state)
                 else:
                     valid_states.append(request_state)
-            LOG.info("valid_states", valid_states=valid_states)
             self.queue.extend(valid_states)
             self.has_new_requests.notify_all()
 
