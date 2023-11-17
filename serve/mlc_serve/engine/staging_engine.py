@@ -53,16 +53,20 @@ class StagingInferenceEngine(ScopedInferenceEngine):
         self.command_queue = self.mp_context.Queue()
         self.result_queue = self.mp_context.Queue(maxsize=1)
         self.ready_event = self.mp_context.Event()
-        self.worker_process = self.mp_context.Process(
-            target=run_generation_loop_worker,
-            args=(
-                model_module_loader,
-                model_module_loader_kwargs,
-                self.command_queue,
-                self.result_queue,
-                self.ready_event,
-            ),
-        )
+
+        try:
+            self.worker_process = self.mp_context.Process(
+                target=run_generation_loop_worker,
+                args=(
+                    model_module_loader,
+                    model_module_loader_kwargs,
+                    self.command_queue,
+                    self.result_queue,
+                    self.ready_event,
+                ),
+            )
+        except:
+            raise RuntimeError("Failed to initialize StagingInferenceEngine.")
 
     def start(self):
         self.worker_process.start()
