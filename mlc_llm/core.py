@@ -308,6 +308,15 @@ class BuildArgs:
             "action": "store_true",
         },
     )
+    no_cache_dump: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Disable dumping `mod_cache_before_build.pkl`. When this flag is set, cached build would not be available."
+            ),
+            "action": "store_true",
+        },
+    )
     use_cuda_graph: bool = field(
         default=False,
         metadata={
@@ -814,7 +823,7 @@ def build_model_from_args(args: argparse.Namespace):
         with open(os.path.join(args.model_path, "config.json"), encoding="utf-8") as i_f:
             config = json.load(i_f)
 
-    if not use_cache or args.convert_weight_only or not os.path.exists(cache_path):
+    if not use_cache or args.convert_weights_only or not os.path.exists(cache_path):
         model_generators = {
             "llama": llama,
             "mistral": mistral,
