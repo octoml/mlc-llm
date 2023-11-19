@@ -32,7 +32,10 @@ from mlc_llm.relax_model import (
     stablelm_3b,
 )
 from mlc_llm.relax_model.commons import create_shard_info_func, create_shard_transformation_func
-from mlc_llm.relax_model.param_manager import transform_params_for_each_rank, chain_parameter_transforms
+from mlc_llm.relax_model.param_manager import (
+    transform_params_for_each_rank,
+    chain_parameter_transforms,
+)
 from mlc_llm.transform import fuse_split_rotary_embedding, rewrite_attention
 
 
@@ -51,75 +54,103 @@ class BuildArgs:
         The name of the model to build. If it is ``auto``, we will automatically
         set the model name according to ``--model-path``, ``hf-path``, or the model
         folders under ``--artifact-path/models``.
+
     hf_path: str
         Hugging Face path from which to download params, tokenizer, and config.
+
     quantization: str
         The quantization mode we use to compile.
+
     max_seq_len: int
         The maximum allowed sequence length for the model.
+
     target: str
         The target platform to compile the model for.
+
     db_path: str
         Path to log database for all models. Default: ``./log_db/``.
+
     reuse_lib: str
         Whether to reuse a previously generated lib.
+
     artifact_path: str
         Where to store the output.
+
     use_cache: int
         Whether to use previously pickled IRModule and skip trace.
-    convert_weight_only: bool
+
+    convert_weights_only: bool
         Whether to only convert model weights and not build the model. If both
         ``convert_weight_only`` and ``build_model_only`` are set, the behavior is undefined.
+
     build_model_only: bool
         Whether to only build model and do not convert model weights.
+
     debug_dump: bool
         Whether to dump debugging files during compilation.
+
     debug_load_script: bool
         Whether to load the script for debugging.
+
     llvm_mingw: str
         ``/path/to/llvm-mingw-root``, use llvm-mingw to cross compile to windows.
+
     system_lib: bool
         A parameter to ``relax.build``.
+
     sep_embed: bool
         Build with separated embedding layer, only applicable to LlaMa. This
         feature is in testing stage, and will be formally replaced after massive
         overhaul of embedding feature for all models and use cases.
+
     sliding_window: int
         The sliding window size in sliding window attention (SWA). This optional field
         overrides the `sliding_window` in config.json for those models that use SWA.
         Currently only useful when compiling Mistral.
+
     sliding_window_chunk_size: int
         The chunk size in sliding window attention (SWA) during prefilling. By default,
         the chunk size is the same as sliding window. Currently only useful when compiling Mistral.
+
     cc_path: str
         ``/path/to/cross_compiler_path``; currently only used for cross-compile
         for nvidia/jetson device.
+
     use_safetensors: bool
         Specifies whether to use ``.safetensors`` instead of the default ``.bin``
         when loading in model weights.
+
     enable_batching: bool
         Build the model for batched inference.
         This is a temporary flag used to control the model execution flow in single-
         sequence and batching settings for now. We will eventually merge two flows
         in the future and remove this flag then.
+
     no_cutlass_attn: bool
         Disable offloading attention operations to CUTLASS.
+
     no_cutlass_norm: bool
         Disable offloading layer and RMS norm operations to CUTLASS.
+
     no_cublas: bool
         Disable the step that offloads matmul to cuBLAS. Without this flag,
         matmul will be offloaded to cuBLAS if quantization mode is ``q0f16`` or
         ``q0f32``, target is CUDA and TVM has been built with cuBLAS enabled.
+
     use_cuda_graph: bool
         Specifies whether to enable CUDA Graph for the decoder. MLP and QKV
         projection between two attention layers are put into a graph.
+
     num_shards: int
         Number of shards to split the model into in tensor parallelism multi-gpu
         inference. Only useful when ``build_model_only`` is set.
+
     use_flash_attn_mqa: bool
         Offload multi-query attention workload to Flash Attention.
+
     pdb: bool
         If set, drop into a pdb debugger on error.
+
     use_vllm_attention: bool
         Use vLLM paged KV cache and attention kernel, only relevant when enable_batching=True.
     """
@@ -148,6 +179,10 @@ class BuildArgs:
         default=-1,
         metadata={"help": "The maximum allowed sequence length for the model."},
     )
+    max_vocab_size: int = field(
+        default=40000,
+        metadata={"help": "The maximum allowed vocabulary size for the model."},
+    )
     target: str = field(
         default="auto",
         metadata={"help": "The target platform to compile the model for."},
@@ -161,11 +196,12 @@ class BuildArgs:
         default=1,
         metadata={"help": "Whether to use previously pickled IRModule and skip trace."},
     )
-    convert_weight_only: bool = field(
+    convert_weights_only: bool = field(
         default=False,
         metadata={
-            "help": "Whether to only convert model weights and not build the model.",
+            "dest": "convert_weights_only",
             "action": "store_true",
+            "help": "Whether to only convert model weights and not build the model.",
         },
     )
     build_model_only: bool = field(
@@ -239,6 +275,14 @@ class BuildArgs:
             "action": "store_true",
         },
     )
+    max_batch_size: int = field(
+        default=80,
+        metadata={
+            "help": (
+                "The maximum batch size for build. It has effect only when batching is enabled."
+            ),
+        },
+    )
     no_cutlass_attn: bool = field(
         default=False,
         metadata={
@@ -260,15 +304,6 @@ class BuildArgs:
                 "Disable the step that offloads matmul to cuBLAS. Without this flag, "
                 "matmul will be offloaded to cuBLAS if quantization mode is q0f16 or q0f32, "
                 "target is CUDA and TVM has been built with cuBLAS enabled."
-            ),
-            "action": "store_true",
-        },
-    )
-    no_cache_dump: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "Disable dumping `mod_cache_before_build.pkl`. When this flag is set, cached build would not be available."
             ),
             "action": "store_true",
         },
@@ -344,6 +379,11 @@ class BuildArgs:
         },
     )
 
+    @property
+    def convert_weight_only(self):
+        """A backwards-compatibility helper"""
+        return self.convert_weights_only
+
 
 def convert_build_args_to_argparser() -> argparse.ArgumentParser:
     """Convert from BuildArgs to an equivalent ArgumentParser."""
@@ -358,6 +398,20 @@ def convert_build_args_to_argparser() -> argparse.ArgumentParser:
             args.add_argument(field_name, default=field.default, **kwargs)
         else:
             args.add_argument(field_name, type=field.type, default=field.default, **kwargs)
+
+    # Most models contain more than a single parameter (citation
+    # needed), so "weights" should be plural.  The initial use of
+    # "--convert-weight-only" caused enough typos that it is worth
+    # fixing.  The old argument spelling is retained for backwards
+    # compatibility.
+    args.add_argument(
+        "--convert-weight-only",
+        default=False,
+        dest="convert_weights_only",
+        action="store_true",
+        help="Equivalent to --convert-weights-only, retained for backwards compatibility.",
+    )
+
     return args
 
 
@@ -393,7 +447,7 @@ def _parse_args(parsed) -> argparse.Namespace:
     if parsed.use_presharded_weights:
         model_name.append(f"presharded-{parsed.num_shards}gpu")
 
-    # TODO(@sunggg): currently, we overwrite the artifact_path which forces to rely on name deduction rule. 
+    # TODO(@sunggg): currently, we overwrite the artifact_path which forces to rely on name deduction rule.
     # Ideally, it is better to separate its root path and name tag.
     # Until we make the change in upstream, this is a temporary hack.
     artifact_tag = parsed.artifact_tag if parsed.artifact_tag else "-".join(model_name)
@@ -702,6 +756,7 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
                     mod_deploy
                 )
             )
+        if not args.enable_batching:
             mod_deploy = tvm.tir.transform.ForceNarrowIndexToInt32()(mod_deploy)
 
     if args.debug_load_script:
@@ -734,7 +789,7 @@ def build_model_from_args(args: argparse.Namespace):
     use_ft_quant = args.quantization.name in ["q4f16_ft", "q8f16_ft"]
 
     if args.num_shards > 1:
-        if (not args.build_model_only) and (not args.convert_weight_only):
+        if (not args.build_model_only) and (not args.convert_weights_only):
             raise ValueError(
                 "`num_shards` should be used together with "
                 "`--build-model-only` and `--convert-weight-only`"
@@ -895,14 +950,14 @@ def build_model_from_args(args: argparse.Namespace):
 
             # copy hf config into mlc_model_config
             mlc_model_config = config.copy()
-            
+
             with open(mlc_model_config_path, "w", encoding="utf-8") as outfile:
                 json.dump(mlc_model_config, outfile, indent=4)
 
         if args.model_category != "minigpt":
             utils.copy_tokenizer(args)
 
-        if args.convert_weight_only:
+        if args.convert_weights_only:
             exit(0)
 
         mod = mod_transform_before_build(mod, param_manager, args, model_config)
