@@ -162,7 +162,7 @@ def encoding_func(nbit: int, storage_nbit: int, group_size: int, dtype: str = "f
 def decoding_func(nbit: int, storage_nbit: int, group_size: int):
     def te_decode_sym(data, scale):
         n_float_per_int = storage_nbit // nbit
-        cur_group_size = weight.shape[1] if group_size == -1 else group_size
+        cur_group_size = data.shape[1] if group_size == -1 else group_size
 
         def f_decode_sym(i, j):
             if n_float_per_int == 1:

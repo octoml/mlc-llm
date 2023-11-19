@@ -800,7 +800,7 @@ def build_model_from_args(args: argparse.Namespace):
             "and it is highly recommended to use q4f16_1 instead"
         )
 
-    use_ft_quant = args.quantization.name in ["q4f16_ft", "q8f16_ft"]
+    use_ft_quant = args.quantization.name in ["q4f16_ft", "q8f16_ft", "q4f16_ft_group", "q8f16_ft_group"]
 
     if args.num_shards > 1:
         if (not args.build_model_only) and (not args.convert_weights_only):
@@ -907,7 +907,7 @@ def build_model_from_args(args: argparse.Namespace):
             if args.num_shards > 1 and use_ft_quant:
                 preprocessed = []
                 weight_preprocess_func = tvm.get_global_func("cutlass.ft_preprocess_weight")
-                is_int4 = args.quantization.name == "q4f16_ft"
+                is_int4 = args.quantization.name in ["q4f16_ft", "q4f16_ft_group"]
                 sm = get_cuda_sm_version()
 
                 for p in params:
