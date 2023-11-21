@@ -120,7 +120,7 @@ def argparse_postproc_common(args: argparse.Namespace) -> None:
     if args.quantization not in quantization_schemes:
         raise ValueError(f'Quantization "{args.quantization}" is not supported.')
 
-    use_ft_quant = args.quantization in ["q4f16_ft", "q8f16_ft"]
+    use_ft_quant = args.quantization in ["q4f16_ft", "q8f16_ft", "q4f16_ft_group", "q8f16_ft_group"]
     args.quantization = quantization_schemes[args.quantization]
 
     if use_ft_quant and args.num_shards > 1:
