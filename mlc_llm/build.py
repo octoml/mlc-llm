@@ -42,10 +42,9 @@ def main():
 
         # if num_shard>1 without -convert-weight-only or --build-model-only, we implicitly run it sequentially
         if parsed_args.num_shards > 1 and not (parsed_args.build_model_only or parsed_args.convert_weights_only):
-            parsed_args.build_model_only = Truep
+            parsed_args.build_model_only = True
             parsed_args.convert_weights_only = False # just to be explicit
             core.build_model_from_args(parsed_args)
-
 
             parsed_args.build_model_only = False
             parsed_args.convert_weights_only = True
