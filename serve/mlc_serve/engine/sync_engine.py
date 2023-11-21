@@ -69,6 +69,9 @@ class SynchronousInferenceEngine(InferenceEngine):
             state = self._get_new_request_state(req)
             new_request_states.append(state)
 
+            if state.prompt_len >= self.max_num_batched_tokens:
+                self.cancel(req.request_id)
+
         with self.queue_lock:
             self.queue.extend(new_request_states)
             self.has_new_requests.notify_all()

@@ -81,10 +81,11 @@ class GenerationLoopWorker:
             # cancel them instead.
             valid_states = []
             for request_state in request_states:
-                if request_state.validation_err is not None:
+                if request_state.validation_err is not None or request_state.prompt_len >= self.max_num_batched_tokens:
                     self.cancelled_requests.append(request_state)
                 else:
                     valid_states.append(request_state)
+
             self.queue.extend(valid_states)
             self.has_new_requests.notify_all()
 
