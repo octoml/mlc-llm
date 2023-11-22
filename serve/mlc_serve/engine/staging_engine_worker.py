@@ -96,30 +96,26 @@ class GenerationLoopWorker:
             self.has_new_requests.notify_all()
 
     def _get_request_state(self, request_id: RequestId) -> Optional[RequestState]:
-        for i, state in enumerate(self.queue):
+        for state in self.queue:
             if state.request_id == request_id:
                 return state
 
         return None
 
-    def cancel(self, request_id: RequestId):
+    def _cacnel_or_stop_request(self, request_id: RequestId, requests: list[RequestState]):
         with self.queue_lock:
             state = self._get_request_state(request_id)
             if state:
                 del state
 
             if request_id in self.current_batch:
-                self.cancelled_requests.append(self.current_batch[request_id])
+                requests.append(self.current_batch[request_id])
 
-    def stop(self, request_id: RequestId):
-        print("stop ", request_id)
-        with self.queue_lock:
-            state = self._get_request_state(request_id)
-            if state:
-                del state
+    def cancel_request(self, request_id: RequestId):
+        self._cacnel_or_stop_request(request_id, self.cancelled_requests)
 
-            if request_id in self.current_batch:
-                self.stopped_requests.append(self.current_batch[request_id])
+    def stop_request(self, request_id: RequestId):
+        self._cacnel_or_stop_request(request_id, self.stopped_requests)
 
     def wait_for_request(self, timeout_seconds=None) -> bool:
         with self.queue_lock:
@@ -156,18 +152,18 @@ class GenerationLoopWorker:
                 self._remove_request_from_batch(state.request_id)
 
         for state in self.stopped_requests:
-            print("stopping",state.request_id)
             outputs.append(
                 SequenceGenerationOutput(
                     # TODO: support multi-sequence
                     id=SequenceId(state.request_id, 0),
                     new_tokens=[],
                     finish_reason=FinishReason.Stop,
-                    error=None,
                 )
             )
             if state.request_id in self.current_batch:
                 self._remove_request_from_batch(state.request_id)
+
+        self.stopped_requests.clear()
 
         for state in self.cancelled_requests:
             err = None
@@ -397,9 +393,9 @@ def run_generation_loop_worker(
             elif isinstance(cmd, AddRequestsCommand):
                 worker.add(cmd.request_states)
             elif isinstance(cmd, CancelRequestCommand):
-                worker.cancel(cmd.request_id)
+                worker.cancel_request(cmd.request_id)
             elif isinstance(cmd, StopRequestCommand):
-                worker.stop(cmd.request_id)
+                worker.stop_request(cmd.request_id)
             else:
                 logger.error("Unknown command type %s", type(cmd))
                 break
