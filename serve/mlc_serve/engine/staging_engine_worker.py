@@ -30,6 +30,11 @@ class CancelRequestCommand:
     request_id: RequestId
 
 
+@dataclass
+class StopRequestCommand:
+    request_id: RequestId
+
+
 GenerationLoopWorkerCommand = Union[
     ShutdownCommand, AddRequestsCommand, CancelRequestCommand
 ]
@@ -72,6 +77,7 @@ class GenerationLoopWorker:
         self.has_new_requests = Condition(lock=self.queue_lock)
 
         self.cancelled_requests = list[RequestState]()
+        self.stopped_requests = list[RequestState]()
 
         self.current_batch = dict[RequestId, RequestState]()
 
@@ -89,20 +95,31 @@ class GenerationLoopWorker:
             self.queue.extend(valid_states)
             self.has_new_requests.notify_all()
 
+    def _get_request_state(self, request_id: RequestId) -> Optional[RequestState]:
+        for i, state in enumerate(self.queue):
+            if state.request_id == request_id:
+                return state
+
+        return None
+
     def cancel(self, request_id: RequestId):
         with self.queue_lock:
-            queue_index_to_delete = None
-            for i, state in enumerate(self.queue):
-                if state.request_id == request_id:
-                    queue_index_to_delete = i
-                    self.cancelled_requests.append(state)
-                    break
-
-            if queue_index_to_delete is not None:
-                del self.queue[queue_index_to_delete]
+            state = self._get_request_state(request_id)
+            if state:
+                del state
 
             if request_id in self.current_batch:
                 self.cancelled_requests.append(self.current_batch[request_id])
+
+    def stop(self, request_id: RequestId):
+        print("stop ", request_id)
+        with self.queue_lock:
+            state = self._get_request_state(request_id)
+            if state:
+                del state
+
+            if request_id in self.current_batch:
+                self.stopped_requests.append(self.current_batch[request_id])
 
     def wait_for_request(self, timeout_seconds=None) -> bool:
         with self.queue_lock:
@@ -138,6 +155,20 @@ class GenerationLoopWorker:
                 )
                 self._remove_request_from_batch(state.request_id)
 
+        for state in self.stopped_requests:
+            print("stopping",state.request_id)
+            outputs.append(
+                SequenceGenerationOutput(
+                    # TODO: support multi-sequence
+                    id=SequenceId(state.request_id, 0),
+                    new_tokens=[],
+                    finish_reason=FinishReason.Stop,
+                    error=None,
+                )
+            )
+            if state.request_id in self.current_batch:
+                self._remove_request_from_batch(state.request_id)
+
         for state in self.cancelled_requests:
             err = None
             if state.validation_err:
@@ -149,7 +180,7 @@ class GenerationLoopWorker:
                     id=SequenceId(state.request_id, 0),
                     new_tokens=[],
                     finish_reason=FinishReason.Cancelled,
-                    error = err
+                    error=err,
                 )
             )
             if state.request_id in self.current_batch:
@@ -307,13 +338,13 @@ class GenerationLoopWorker:
         return self.queue or self.current_batch
 
     def _should_stop_by_length(self, state: RequestState) -> bool:
-        # TODO: currently, we simply return true for both stopping reasons. 
-        #       in the future, we can differentiate these two. 
+        # TODO: currently, we simply return true for both stopping reasons.
+        #       in the future, we can differentiate these two.
         # this include prompt tokens and gen tokens so far
-        num_context_tokens = len(state.token_ids) 
+        num_context_tokens = len(state.token_ids)
         if num_context_tokens >= self.model_artifact_config.max_context_length:
             return True
-        num_gen_tokens = num_context_tokens - state.prompt_len 
+        num_gen_tokens = num_context_tokens - state.prompt_len
         if num_gen_tokens >= state.stopping_criteria.max_tokens:
             return True
         return False
@@ -367,6 +398,8 @@ def run_generation_loop_worker(
                 worker.add(cmd.request_states)
             elif isinstance(cmd, CancelRequestCommand):
                 worker.cancel(cmd.request_id)
+            elif isinstance(cmd, StopRequestCommand):
+                worker.stop(cmd.request_id)
             else:
                 logger.error("Unknown command type %s", type(cmd))
                 break

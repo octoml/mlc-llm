@@ -21,6 +21,7 @@ from .model_module import ModelModule, TokenizerModule
 from .staging_engine_worker import (
     AddRequestsCommand,
     CancelRequestCommand,
+    StopRequestCommand,
     ShutdownCommand,
     run_generation_loop_worker,
 )
@@ -107,6 +108,11 @@ class StagingInferenceEngine(ScopedInferenceEngine):
             raise RuntimeError("GenerationLoopWorker process is not running")
         self.command_queue.put(CancelRequestCommand(request_id))
 
+    def stop_request(self, request_id: RequestId):
+        if not self._is_ready_to_serve():
+            raise RuntimeError("GenerationLoopWorker process is not running")
+        self.command_queue.put(StopRequestCommand(request_id))
+
     def has_pending_requests(self) -> bool:
         with self.requests_lock:
             return len(self.requests) > 0
@@ -177,9 +183,9 @@ class StagingInferenceEngine(ScopedInferenceEngine):
                                                                                 state.output_text,
                                                                                 delta,
                                                                                 state.is_ended)
-                # signal workers to stop generation                             
+                # signal workers to stop generation
                 if state.is_ended:
-                    self.cancel(state.request_id)
+                    self.stop_request(state.request_id)
 
                 outputs.append(
                     RequestOutput(
