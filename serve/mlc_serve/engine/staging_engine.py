@@ -15,7 +15,7 @@ from .base import (
     RequestState,
     ScopedInferenceEngine,
     SequenceOutput,
-    check_stopping_sequences
+    check_stopping_sequences,
 )
 from .model_module import ModelModule, TokenizerModule
 from .staging_engine_worker import (
@@ -25,6 +25,7 @@ from .staging_engine_worker import (
     ShutdownCommand,
     run_generation_loop_worker,
 )
+
 logger = logging.getLogger(__name__)
 
 
@@ -91,7 +92,9 @@ class StagingInferenceEngine(ScopedInferenceEngine):
             # wrap the stop sequence with list if necessary
             if req.stopping_criteria.stop_sequences:
                 if isinstance(req.stopping_criteria.stop_sequences, str):
-                    req.stopping_criteria.stop_sequences = [req.stopping_criteria.stop_sequences]
+                    req.stopping_criteria.stop_sequences = [
+                        req.stopping_criteria.stop_sequences
+                    ]
                 assert isinstance(req.stopping_criteria.stop_sequences, list)
 
             # If the request violates the tokenization, this returns None, so skip.
@@ -179,10 +182,9 @@ class StagingInferenceEngine(ScopedInferenceEngine):
                 delta = self._decode_last_output(state)
                 state.output_text += delta
 
-                state.output_text, delta, state.is_ended = check_stopping_sequences(state.stopping_criteria,
-                                                                                state.output_text,
-                                                                                delta,
-                                                                                state.is_ended)
+                state.output_text, delta, state.is_ended = check_stopping_sequences(
+                    state.stopping_criteria, state.output_text, delta, state.is_ended
+                )
                 # signal workers to stop generation
                 if state.is_ended:
                     self.stop_request(state.request_id)

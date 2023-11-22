@@ -15,6 +15,7 @@ from .model_module import DecodeRequest, ModelModule, PrefillRequest, SequenceId
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class ShutdownCommand:
     pass
@@ -66,9 +67,12 @@ class GenerationLoopWorker:
         self.max_context_length = self.model_artifact_config.max_context_length
         self.max_num_batched_tokens = model_module.engine_config.max_num_batched_tokens
         self.max_decode_steps = min(
-            self.cache_manager.get_kv_cache_size(), model_module.engine_config.max_decode_steps
+            self.cache_manager.get_kv_cache_size(),
+            model_module.engine_config.max_decode_steps,
         )
-        self.min_decode_steps = min(self.max_decode_steps - 1, model_module.engine_config.min_decode_steps)
+        self.min_decode_steps = min(
+            self.max_decode_steps - 1, model_module.engine_config.min_decode_steps
+        )
         self.prompt_allocate_ratio = model_module.engine_config.prompt_allocate_ratio
         assert self.prompt_allocate_ratio >= 1.0
 
@@ -87,7 +91,10 @@ class GenerationLoopWorker:
             # cancel them instead.
             valid_states = []
             for request_state in request_states:
-                if request_state.validation_err is not None or request_state.prompt_len >= self.max_context_length:
+                if (
+                    request_state.validation_err is not None
+                    or request_state.prompt_len >= self.max_context_length
+                ):
                     self.cancelled_requests.append(request_state)
                 else:
                     valid_states.append(request_state)
@@ -102,7 +109,9 @@ class GenerationLoopWorker:
 
         return None
 
-    def _cacnel_or_stop_request(self, request_id: RequestId, requests: list[RequestState]):
+    def _cacnel_or_stop_request(
+        self, request_id: RequestId, requests: list[RequestState]
+    ):
         with self.queue_lock:
             state = self._get_request_state(request_id)
             if state:
