@@ -727,6 +727,9 @@ class PagedCacheModelModule:
         else:
             num_blocks = 500
 
+        if num_blocks * CacheManager.block_size <= engine_config.max_num_batched_tokens:
+            LOG.info(f"Using {num_blocks} cache blocks.")
+
         LOG.info(f"Using {num_blocks} cache blocks.", num_blocks=num_blocks)
 
         cache_manager = CacheManager(
