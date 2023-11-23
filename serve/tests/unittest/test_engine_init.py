@@ -1,24 +1,12 @@
-import torch
-
 import argparse
-import json
-import random
 import os
 import pytest
 
-from mlc_llm import utils
-from mlc_serve.engine import (
-    Request,
-    ChatMessage,
-    DebugOptions,
-    SamplingParams,
-    StoppingCriteria,
-    get_engine_config
-)
+from mlc_serve.engine import get_engine_config
 from mlc_serve.model.paged_cache_model import PagedCacheModelModule
 
 
-def test_insufficient_cache_block_fail(artifact_path):
+def test_insufficient_cache_blocks_fail(artifact_path):
     model_artifact_path = os.path.join(artifact_path, "codellama-13b-instruct-hf-q0f16")
 
     if not os.path.exists(os.path.join(model_artifact_path)):
@@ -51,4 +39,4 @@ if __name__ == "__main__":
     parser.add_argument("--artifact-path", type=str, default="dist")
     args = parser.parse_args()
 
-    test_insufficient_cache_block_fail(args.artifact_path)
+    test_insufficient_cache_blocks_fail(args.artifact_path)

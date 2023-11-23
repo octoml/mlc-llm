@@ -625,7 +625,10 @@ class Model:
         except RuntimeError:
             # Fallback to per-token sampling in case some logits values are corrupted.
             outputs = []
-            err_msg = "Error from sampling: probability tensor contains either `inf`, `nan` or element < 0"
+            err_msg = (
+                "Error from sampling: probability tensor contains either `inf`, `nan`"
+                " or element < 0"
+            )
 
             for sequence_id, logits_per_token, sampling_param in zip(
                 sequence_ids, torch.from_dlpack(logits), sampling_params
@@ -737,7 +740,11 @@ class PagedCacheModelModule:
 
         if num_cache_slots <= engine_config.max_num_batched_tokens:
             raise RuntimeError(
-                f"""max_num_batched_tokens = {engine_config.max_num_batched_tokens} but only {num_blocks} cache blocks can be allocated. The number of available cache slots is {num_cache_slots}, not enough for {engine_config.max_num_batched_tokens} tokens. Try reducing --max_input_len or --max_num_sequences."""
+                f"max_num_batched_tokens = {engine_config.max_num_batched_tokens} but"
+                f" only {num_blocks} cache blocks can be allocated. The number of"
+                f" available cache slots is {num_cache_slots}, not enough for"
+                f" {engine_config.max_num_batched_tokens} tokens. Try reducing"
+                " --max_input_len or --max_num_sequences."
             )
 
         LOG.info(f"Using {num_blocks} cache blocks.")
