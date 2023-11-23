@@ -388,12 +388,12 @@ def run_generation_loop_worker(
     result_queue: multiprocessing.Queue,
     ready_event: multiprocessing.Event,
     contextvars: Dict[str, Any] = None,
+    enable_json_logs = False,
     log_level="INFO",
 ):
 
-    enable_json_logs = os.environ.get("OLLM_ENABLE_JSON_LOGS") == "1"
     configure_logging(enable_json_logs, log_level)
-    structlog.cotextvars.bind_contextvars(**contextvars)
+    structlog.contextvars.bind_contextvars(**contextvars)
     model_module = model_module_loader(**model_module_loader_kwargs)
     worker = GenerationLoopWorker(model_module=model_module)
 

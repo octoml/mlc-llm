@@ -7,9 +7,18 @@ import structlog
 from structlog.types import EventDict
 from structlog.typing import Processor, WrappedLogger, EventDict
 
+_JSON = False
+
+def json_logging_enabled() -> bool:
+    global _JSON
+    return
 
 def configure_logging(enable_json_logs: bool = False, log_level: str = "INFO"):
     """Configure logging to use structlog and include additional info."""
+    global _JSON
+    if enable_json_logs:
+        _JSON = True
+
     timestamper = structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S")
 
     shared_processors: List[Processor] = [

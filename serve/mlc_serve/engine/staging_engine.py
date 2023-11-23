@@ -7,6 +7,8 @@ import queue
 from threading import Lock
 from typing import Callable, Optional
 
+import os
+
 import structlog
 
 from .base import (
@@ -44,6 +46,8 @@ class StagingInferenceEngine(ScopedInferenceEngine):
         tokenizer_module: TokenizerModule,
         model_module_loader: Callable[..., ModelModule],
         model_module_loader_kwargs: dict,
+        # maybe find a better way to do this
+        json_log_output: bool = False,
     ):
         self.next_generation_output = None
         self.requests_lock = Lock()
@@ -64,8 +68,10 @@ class StagingInferenceEngine(ScopedInferenceEngine):
                 self.command_queue,
                 self.result_queue,
                 self.ready_event,
-                logging.getLogger().level,
+                # Log state
                 structlog.contextvars.get_contextvars(),
+                json_log_output,
+                logging.getLevelName(logging.getLogger().level)
             ),
         )
 
