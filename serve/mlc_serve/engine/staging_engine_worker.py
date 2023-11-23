@@ -356,31 +356,6 @@ class GenerationLoopWorker:
         return False
 
 
-# def setup_logging(level):
-#     logging_config = {
-#         "version": 1,
-#         "disable_existing_loggers": False,
-#         "formatters": {
-#             "standard": {
-#                 "format": "%(asctime)s [%(levelname)s] - %(name)s - %(message)s",
-#             },
-#         },
-#         "handlers": {
-#             "console": {
-#                 "level": level,  # Set the handler's log level to DEBUG
-#                 "class": "logging.StreamHandler",
-#                 "formatter": "standard",
-#             },
-#         },
-#         "root": {
-#             "handlers": ["console"],
-#             "level": level,  # Set the logger's log level to DEBUG
-#         },
-#         "mlc_serve.engine.staging_engine_worker": {"level": level},
-#     }
-#     logging.config.dictConfig(logging_config)
-
-
 def run_generation_loop_worker(
     model_module_loader: Callable[..., ModelModule],
     model_module_loader_kwargs: dict,
