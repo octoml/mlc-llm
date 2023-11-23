@@ -713,8 +713,14 @@ class PagedCacheModelModule:
         if model_artifact_config.num_shards > 1:
             model.disco_session.sync_worker_0()
 
-        num_kv_heads = model_artifact_config.num_key_value_heads // model_artifact_config.num_shards
-        head_size = model_artifact_config.hidden_size // model_artifact_config.num_attention_heads
+        num_kv_heads = (
+            model_artifact_config.num_key_value_heads
+            // model_artifact_config.num_shards
+        )
+        head_size = (
+            model_artifact_config.hidden_size
+            // model_artifact_config.num_attention_heads
+        )
 
         if engine_config.max_num_batched_tokens > 0:
             num_blocks = get_num_cache_blocks(
@@ -727,10 +733,14 @@ class PagedCacheModelModule:
         else:
             num_blocks = 500
 
-        if num_blocks * CacheManager.block_size <= engine_config.max_num_batched_tokens:
-            LOG.info(f"Using {num_blocks} cache blocks.")
+        num_cache_slots = num_blocks * CacheManager.block_size
 
-        LOG.info(f"Using {num_blocks} cache blocks.", num_blocks=num_blocks)
+        if num_cache_slots <= engine_config.max_num_batched_tokens:
+            raise RuntimeError(
+                f"""max_num_batched_tokens = {engine_config.max_num_batched_tokens} but only {num_blocks} cache blocks can be allocated. The number of available cache slots is {num_cache_slots}, not enough for {engine_config.max_num_batched_tokens} tokens. Try reducing --max_input_len or --max_num_sequences."""
+            )
+
+        LOG.info(f"Using {num_blocks} cache blocks.")
 
         cache_manager = CacheManager(
             num_blocks,
