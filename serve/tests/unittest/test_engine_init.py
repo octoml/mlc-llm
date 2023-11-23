@@ -13,18 +13,20 @@ def test_insufficient_cache_blocks_fail(artifact_path):
         return
 
     def try_init(max_num_seqs):
-        engine_config = get_engine_config({
-            "use_staging_engine": False,
-            "max_num_sequences": max_num_seqs,
-            "max_input_len": 16384,
-            "min_decode_steps": 12,
-            "max_decode_steps": 16,
-            "prompt_allocate_ratio": 2.0
-        })
+        engine_config = get_engine_config(
+            {
+                "use_staging_engine": False,
+                "max_num_sequences": max_num_seqs,
+                "max_input_len": 16384,
+                "min_decode_steps": 12,
+                "max_decode_steps": 16,
+                "prompt_allocate_ratio": 2.0,
+            }
+        )
 
         PagedCacheModelModule(
-            model_artifact_path = model_artifact_path,
-            engine_config = engine_config,
+            model_artifact_path=model_artifact_path,
+            engine_config=engine_config,
         )
 
     with pytest.raises(RuntimeError) as e_info:
