@@ -119,6 +119,8 @@ class Request:
     debug_options: DebugOptions = field(default_factory=DebugOptions)
     # Perform request validation post-tokenization, used by the HTTP layer to control validation.
     validate_tokens: Optional[ValidateTokensCallback] = None
+    # Context variables to attach to logging.
+    contextvars: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.best_of is None:

@@ -30,6 +30,8 @@ from .staging_engine_worker import (
     run_generation_loop_worker,
 )
 
+from ..logging_utils import log_every
+
 LOG = structlog.stdlib.get_logger(__name__)
 
 
@@ -60,6 +62,7 @@ class StagingInferenceEngine(ScopedInferenceEngine):
         self.command_queue = self.mp_context.Queue()
         self.result_queue = self.mp_context.Queue(maxsize=1)
         self.ready_event = self.mp_context.Event()
+
         self.worker_process = self.mp_context.Process(
             target=run_generation_loop_worker,
             args=(
@@ -148,7 +151,7 @@ class StagingInferenceEngine(ScopedInferenceEngine):
             return False
 
     def step(self) -> InferenceStepResult:
-        LOG.debug("StagingInferenceEngine.step",
+        log_every(self, 1000, LOG.debug, "StagingInferenceEngine.step",
             _is_ready_to_serve=self._is_ready_to_serve(),
             has_pending_requests=self.has_pending_requests())
 

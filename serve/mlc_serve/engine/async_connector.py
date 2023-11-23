@@ -63,7 +63,7 @@ class AsyncEngineConnector:
                 nonlocal should_stop_inference
                 should_stop_inference = True
             except Exception as e:
-                logging.exception("Error in inference loop")
+                LOG.exception("Error in inference loop")
                 self.engine_loop_exception = e
                 raise
             finally:

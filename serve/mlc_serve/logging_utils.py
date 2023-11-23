@@ -1,7 +1,7 @@
 """Setup structed logging."""
 import logging
 import sys
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Any
 
 import structlog
 from structlog.types import EventDict
@@ -114,3 +114,16 @@ def _drop_color_message_key(_, __, event_dict: EventDict) -> EventDict:
     """Drop extra messages logged by Uvicorn under the color_message key."""
     event_dict.pop("color_message", None)
     return event_dict
+
+def log_every(state: Any, iterations: int, log_fn: Any, message: str, **kw_args):
+    if not hasattr(state, '_log_iterations'):
+        state._log_iterations = {}
+
+    if message not in state._log_iterations:
+        state._log_iterations[message] = 1
+
+    if state._log_iterations[message] % iterations == 0:
+        log_fn(level, message, log_every=True, iteration=state._log_iterations[message], **kw_args)
+        state._log_iterations[message] = 1
+    else:
+        state._log_iterations[message] +=1
