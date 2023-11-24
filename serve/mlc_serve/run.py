@@ -87,7 +87,7 @@ def create_engine(
 
 def run_server():
     args = parse_args()
-    setup_logging(args)
+
     log_level = "DEBUG" if args.debug_logging else "INFO"
     configure_logging(enable_json_logs=True, log_level=log_level)
 
