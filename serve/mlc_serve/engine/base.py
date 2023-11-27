@@ -27,7 +27,6 @@ class MLCServeEngineConfig:
     max_num_batched_tokens: int = -1
     min_decode_steps: int = 32
     max_decode_steps: int = 48
-    prompt_allocate_ratio: float = 2.0
 
     @classmethod
     def _from_json(config_cls, json_obj: Dict[Any, Any]):
@@ -50,7 +49,6 @@ def get_engine_config(dict_config, enable_check = True):
         assert isinstance(engine_config.max_num_sequences, int)
         assert isinstance(engine_config.max_decode_steps, int)
         assert isinstance(engine_config.min_decode_steps, int)
-        assert isinstance(engine_config.prompt_allocate_ratio, float)
 
         # TODO(@sunggg): engine allows -1 for these params. figure out the behavior and enable checks properly
         assert engine_config.max_num_batched_tokens == -1, \
@@ -62,7 +60,6 @@ def get_engine_config(dict_config, enable_check = True):
 
         assert (engine_config.min_decode_steps > 0) and (engine_config.max_decode_steps > 0)
         assert engine_config.max_decode_steps > engine_config.min_decode_steps
-        assert engine_config.prompt_allocate_ratio > 0
 
     return engine_config
 

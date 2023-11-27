@@ -67,8 +67,6 @@ class SynchronousInferenceEngine(InferenceEngine):
         self.min_decode_steps = min(
             self.max_decode_steps - 1, model_module.engine_config.min_decode_steps
         )
-        self.prompt_allocate_ratio = model_module.engine_config.prompt_allocate_ratio
-        assert self.prompt_allocate_ratio >= 1.0
 
         self.queue_lock = Lock()
         self.queue = deque[RequestState]()
@@ -98,8 +96,16 @@ class SynchronousInferenceEngine(InferenceEngine):
             state = self._get_new_request_state(req)
             new_request_states.append(state)
 
-            if state.prompt_len >= self.max_context_length:
+            if (
+                state.validation_err is not None
+                or state.prompt_len >= self.max_context_length
+                or state.prompt_len >= self.max_num_batched_tokens > 0
+                or (self.cache_manager.get_kv_cache_size() - state.prompt_len) < 0
+                or (self.cache_manager.get_kv_cache_size() - state.prompt_len) / (len(self.current_batch) + 1) < self.max_decode_steps
+            ):
                 self.cancel(req.request_id)
+                if state.validation_err is None:
+                    state.validation_err = "Server configuration unable to process the request of such prompt length."
 
         with self.queue_lock:
             self.queue.extend(new_request_states)
@@ -279,6 +285,12 @@ class SynchronousInferenceEngine(InferenceEngine):
                 state = self.queue[0]
                 num_tokens = len(state.token_ids)
                 num_new_batched_tokens += num_tokens
+                # this can happen if we processed some request and then had to remove it from inference
+                # due to limit of the kv cache. It can appear that new size to process is bigger
+                # than max_num_batched_tokens. Need to roll back to acceptable size
+                if not len(self.current_batch) and num_new_batched_tokens > self.max_num_batched_tokens:
+                    state.token_ids = state.token_ids[:self.max_num_batched_tokens]
+                    state.next_start_position = num_new_batched_tokens = num_tokens = self.max_num_batched_tokens
                 if num_new_batched_tokens > self.max_num_batched_tokens > 0:
                     logger.debug(
                         "Stop growing the batch due to max_num_batched_tokens. Batched tokens: %s",
@@ -286,8 +298,8 @@ class SynchronousInferenceEngine(InferenceEngine):
                     )
                     break
                 if (
-                    self.cache_manager.get_free_space()
-                    <= self.prompt_allocate_ratio * num_tokens
+                    (self.cache_manager.get_free_space() - num_tokens) < 0 or \
+                         (self.cache_manager.get_free_space() - num_tokens) / (len(self.current_batch) + 1) < self.max_decode_steps
                 ):
                     logger.debug(
                         "Stop growing the batch due to not enough free space. Free: %s, Num tokens: %s",
