@@ -111,8 +111,7 @@ class GenerationLoopWorker:
             for request_state in request_states:
                 if (
                     request_state.validation_err is not None
-                    or request_state.prompt_len >= self.max_context_length
-                    or request_state.prompt_len >= self.max_num_batched_tokens > 0
+                    or request_state.prompt_len >= min(self.max_context_length, self.max_num_batched_tokens)
                     or (self.cache_manager.get_kv_cache_size() - request_state.prompt_len) / (len(self.current_batch) + 1) < self.max_decode_steps
                 ):
                     self.cancelled_requests.append(request_state)
