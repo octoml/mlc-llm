@@ -312,8 +312,8 @@ class GenerationLoopWorker:
                     )
                     break
                 if (
-                    (self.cache_manager.get_free_space() - num_tokens) < 0 or \
-                         (self.cache_manager.get_free_space() - num_tokens) / (len(self.current_batch) + 1) < self.max_decode_steps
+                    (self.cache_manager.get_free_space() - num_tokens) / (len(self.current_batch) + 1)
+                        < self.max_decode_steps
                 ):
                     LOG.debug(
                         "Stop growing the batch due to not enough free space. Free: %s, Num tokens: %s",
