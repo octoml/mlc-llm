@@ -89,16 +89,21 @@ def run_server():
     log_level = "DEBUG" if args.debug_logging else "INFO"
     configure_logging(enable_json_logs=True, log_level=log_level)
 
-    engine = create_engine(args)
-    connector = AsyncEngineConnector(engine)
-    app = create_app(connector)
-    uvicorn.run(
-        app,
-        host=args.host,
-        port=args.port,
-        reload=False,
-        access_log=False,
-    )
+    import tempfile
+    with tempfile.TemporaryDirectory() as temp_dir:
+        os.environ["PROMETHEUS_MULTIPROC_DIR"] = temp_dir
+
+        engine = create_engine(args)
+        connector = AsyncEngineConnector(engine)
+        app = create_app(connector)
+
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            reload=False,
+            access_log=False,
+        )
 
 
 if __name__ == "__main__":

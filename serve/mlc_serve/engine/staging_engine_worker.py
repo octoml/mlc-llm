@@ -1,7 +1,7 @@
 """
 The worker for StagingInferenceEngine
 """
-import os
+import time
 import multiprocessing
 import multiprocessing.synchronize
 from collections import deque
@@ -10,6 +10,7 @@ from threading import Condition, Lock, Thread
 from typing import Callable, Optional, Union, Any, Dict, Deque, List
 
 import structlog
+from prometheus_client import Counter, Histogram, Gauge
 
 from .base import FinishReason, RequestId, RequestState, ValidationError
 from .model_module import DecodeRequest, ModelModule, PrefillRequest, SequenceId, TextGenerator, Tokenizer as TokenizerP
@@ -57,6 +58,35 @@ class GenerationLoopWorkerOutput:
     error: Optional[str] = None
 
 
+NUM_CACHE_EVICTONS = "num_cache_evictions"
+E2E_LATENCY = "e2e_latency"
+FIRST_TOKEN_LATENCY = "first_token_latency"
+
+
+class PrometheusMetrics:
+    def __init__(self):
+        self.counters = {}
+        self.histograms = {}
+
+        for label in [NUM_CACHE_EVICTONS]:
+            self.counters[label] = Counter(label, label)
+
+        buckets_e2e_lat = (0.5, 2.5, 4.5, 6.5, 8.5, 10.5, 12.5, 14.5, 16.5, 18.5)
+        buckets_ttft = (0.1, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.1, 2.4, 2.7, 3.0)
+
+        for label, buckets in [
+            (E2E_LATENCY, buckets_e2e_lat),
+            (FIRST_TOKEN_LATENCY, buckets_ttft),
+        ]:
+            self.histograms[label] = Histogram(label, label, buckets=buckets)
+
+    def counter(self, label: str):
+        return self.counters[label]
+
+    def histogram(self, label: str):
+        return self.histograms[label]
+
+
 class GenerationLoopWorker:
     text_generator: TextGenerator
     cache_manager: Any
@@ -101,6 +131,8 @@ class GenerationLoopWorker:
         self.stopped_requests = list[RequestState]()
 
         self.current_batch = dict[RequestId, RequestState]()
+
+        self.prom_metrics = PrometheusMetrics()
 
     def add(self, request_states: list[RequestState]):
         LOG.debug("GenerationLoopWorker", requests_states=request_states)
@@ -182,6 +214,8 @@ class GenerationLoopWorker:
                     )
                 )
                 self._remove_request_from_batch(state.request_id)
+                duration = time.time() - state.arrival_timestamp
+                self.prom_metrics.histogram(E2E_LATENCY).observe(duration)
 
         for state in self.stopped_requests:
             outputs.append(
@@ -226,7 +260,7 @@ class GenerationLoopWorker:
                 )
             return result
 
-        requests = self._get_requests_to_process()
+        requests, is_prompt_batch = self._get_requests_to_process()
         results = self.text_generator.generate(requests, self.cache_manager.get_cache())
         LOG.debug("Finished text generation.")
 
@@ -264,6 +298,10 @@ class GenerationLoopWorker:
                 SequenceGenerationOutput(id=res.sequence_id, new_tokens=new_tokens)
             )
 
+            if is_prompt_batch:
+                ttft = time.time() - state.arrival_timestamp
+                self.prom_metrics.histogram(FIRST_TOKEN_LATENCY).observe(ttft)
+
         LOG.debug("Finished state update and stopping criteria check.")
 
         return result
@@ -271,6 +309,7 @@ class GenerationLoopWorker:
     def _adjust_batch(self):
         with self.queue_lock:
             while self.cache_manager.get_max_new_tokens() < 1:
+                self.prom_metrics.counter(NUM_CACHE_EVICTONS).inc()
                 request_to_remove = min(
                     self.current_batch.values(), key=lambda s: len(s.token_ids)
                 )
@@ -282,6 +321,7 @@ class GenerationLoopWorker:
                 )
 
             if self.cache_manager.get_max_new_tokens() <= self.max_decode_steps:
+                self.prom_metrics.counter("num_over_max_decode_steps").inc()
                 LOG.debug(
                     "Skip growing the batch due to max_decode_steps. Decode steps: %s",
                     self.cache_manager.get_max_new_tokens(),
@@ -292,6 +332,7 @@ class GenerationLoopWorker:
             while self.queue:
                 max_new_tokens = self.cache_manager.get_max_new_tokens()
                 if max_new_tokens < self.min_decode_steps:
+                    self.prom_metrics.counter("num_over_min_decode_steps").inc()
                     LOG.debug(
                         "Stop growing the batch due to min_decode_steps. Decode steps: %s",
                         max_new_tokens,
@@ -374,7 +415,7 @@ class GenerationLoopWorker:
                 )
             LOG.debug("Creating decode batch with %s requests.", len(requests))
 
-        return requests
+        return requests, is_prompt_batch
 
     def _has_request_to_process(self) -> bool:
         return len(self.queue) != 0 or len(self.current_batch) != 0

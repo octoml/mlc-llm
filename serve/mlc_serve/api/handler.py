@@ -1,6 +1,8 @@
 import time
 import uuid
 import json
+import os
+
 from http import HTTPStatus
 from typing import Annotated, AsyncIterator, List
 
@@ -59,6 +61,24 @@ def _get_sampling_params(request: ChatCompletionRequest) -> SamplingParams:
     if request.top_p is not None:
         sampling_params.top_p = request.top_p
     return sampling_params
+
+
+@router.get("/metrics")
+def metrics():
+    if "PROMETHEUS_MULTIPROC_DIR" in os.environ:
+        from prometheus_client import (
+            CollectorRegistry,
+            generate_latest,
+            multiprocess,
+        )
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+
+        from starlette.responses import Response
+        resp = Response(content=generate_latest(registry))
+        return resp
+    else:
+        return {}
 
 
 @router.post("/v1/chat/completions")
