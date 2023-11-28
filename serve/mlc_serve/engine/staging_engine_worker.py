@@ -10,9 +10,10 @@ from threading import Condition, Lock, Thread
 from typing import Callable, Optional, Union, Any, Dict, Deque, List
 
 import structlog
-from prometheus_client import Counter, Histogram, Gauge
 
 from .base import FinishReason, RequestId, RequestState, ValidationError
+from .metrics import PrometheusMetrics
+from .metrics_labels import *
 from .model_module import (
     DecodeRequest,
     ModelModule,
@@ -64,43 +65,6 @@ class SequenceGenerationOutput:
 class GenerationLoopWorkerOutput:
     sequences: list[SequenceGenerationOutput]
     error: Optional[str] = None
-
-
-NUM_CACHE_EVICTONS = "num_cache_evictions"
-E2E_LATENCY = "e2e_latency"
-FIRST_TOKEN_LATENCY = "first_token_latency"
-KV_CACHE_UTILIZATION = "kv_cache_utilization"
-
-
-class PrometheusMetrics:
-    def __init__(self):
-        self.counters = {}
-        self.histograms = {}
-        self.gauges = {}
-
-        for label in [NUM_CACHE_EVICTONS]:
-            self.counters[label] = Counter(label, label)
-
-        buckets_e2e_lat = (0.5, 2.5, 4.5, 6.5, 8.5, 10.5, 12.5, 14.5, 16.5, 18.5)
-        buckets_ttft = (0.1, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.1, 2.4, 2.7, 3.0)
-
-        for label, buckets in [
-            (E2E_LATENCY, buckets_e2e_lat),
-            (FIRST_TOKEN_LATENCY, buckets_ttft),
-        ]:
-            self.histograms[label] = Histogram(label, label, buckets=buckets)
-
-        for label in [KV_CACHE_UTILIZATION]:
-            self.gauges[label] = Gauge(label, label)
-
-    def counter(self, label: str):
-        return self.counters[label]
-
-    def histogram(self, label: str):
-        return self.histograms[label]
-
-    def gauge(self, label: str):
-        return self.gauges[label]
 
 
 class GenerationLoopWorker:
@@ -340,7 +304,6 @@ class GenerationLoopWorker:
                 )
 
             if self.cache_manager.get_max_new_tokens() <= self.max_decode_steps:
-                self.prom_metrics.counter("num_over_max_decode_steps").inc()
                 LOG.debug(
                     "Skip growing the batch due to max_decode_steps. Decode steps: %s",
                     self.cache_manager.get_max_new_tokens(),
@@ -351,7 +314,6 @@ class GenerationLoopWorker:
             while self.queue:
                 max_new_tokens = self.cache_manager.get_max_new_tokens()
                 if max_new_tokens < self.min_decode_steps:
-                    self.prom_metrics.counter("num_over_min_decode_steps").inc()
                     LOG.debug(
                         "Stop growing the batch due to min_decode_steps. Decode steps: %s",
                         max_new_tokens,
