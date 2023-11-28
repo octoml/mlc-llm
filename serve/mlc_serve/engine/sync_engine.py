@@ -100,7 +100,6 @@ class SynchronousInferenceEngine(InferenceEngine):
                 state.validation_err is not None
                 or state.prompt_len >= self.max_context_length
                 or state.prompt_len >= self.max_num_batched_tokens > 0
-                or (self.cache_manager.get_kv_cache_size() - state.prompt_len) < 0
                 or (self.cache_manager.get_kv_cache_size() - state.prompt_len) / (len(self.current_batch) + 1) < self.max_decode_steps
             ):
                 self.cancel(req.request_id)
