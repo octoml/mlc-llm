@@ -60,6 +60,7 @@ class SynchronousInferenceEngine(InferenceEngine):
         assert self.model_artifact_config.max_context_length, "max_context_length must not be zero"
         self.max_context_length = self.model_artifact_config.max_context_length
         self.max_num_batched_tokens = model_module.engine_config.max_num_batched_tokens
+        assert self.max_num_batched_tokens > 0, "max_num_batched_tokens must be defined and be greatly 0"
         self.max_decode_steps = min(
             self.cache_manager.get_kv_cache_size(),
             model_module.engine_config.max_decode_steps,

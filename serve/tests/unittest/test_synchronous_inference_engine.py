@@ -126,10 +126,11 @@ class DummaryModelModule:
             "max_context_length": 1024,
         })
         self.engine_config = get_engine_config({
-            "max_decode_steps": 0, 
-            "min_decode_steps": 0, 
-            "prompt_allocate_ratio": 1.0
-        }, enable_check = False)
+            "max_decode_steps": 2,
+            "min_decode_steps": 1,
+            "prompt_allocate_ratio": 1.0,
+            "use_staging_engine" : False
+        })
 
 
 def create_messages(prompt) -> list[ChatMessage]:
