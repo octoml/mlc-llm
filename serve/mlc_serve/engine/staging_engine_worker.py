@@ -13,11 +13,19 @@ import structlog
 from prometheus_client import Counter, Histogram, Gauge
 
 from .base import FinishReason, RequestId, RequestState, ValidationError
-from .model_module import DecodeRequest, ModelModule, PrefillRequest, SequenceId, TextGenerator, Tokenizer as TokenizerP
+from .model_module import (
+    DecodeRequest,
+    ModelModule,
+    PrefillRequest,
+    SequenceId,
+    TextGenerator,
+    Tokenizer as TokenizerP,
+)
 from ..model.base import ModelArtifactConfig
 from ..logging_utils import configure_logging
 
 LOG = structlog.stdlib.get_logger(__name__)
+
 
 @dataclass
 class ShutdownCommand:
@@ -61,12 +69,14 @@ class GenerationLoopWorkerOutput:
 NUM_CACHE_EVICTONS = "num_cache_evictions"
 E2E_LATENCY = "e2e_latency"
 FIRST_TOKEN_LATENCY = "first_token_latency"
+KV_CACHE_UTILIZATION = "kv_cache_utilization"
 
 
 class PrometheusMetrics:
     def __init__(self):
         self.counters = {}
         self.histograms = {}
+        self.gauges = {}
 
         for label in [NUM_CACHE_EVICTONS]:
             self.counters[label] = Counter(label, label)
@@ -80,11 +90,17 @@ class PrometheusMetrics:
         ]:
             self.histograms[label] = Histogram(label, label, buckets=buckets)
 
+        for label in [KV_CACHE_UTILIZATION]:
+            self.gauges[label] = Gauge(label, label)
+
     def counter(self, label: str):
         return self.counters[label]
 
     def histogram(self, label: str):
         return self.histograms[label]
+
+    def gauge(self, label: str):
+        return self.gauges[label]
 
 
 class GenerationLoopWorker:
@@ -102,7 +118,6 @@ class GenerationLoopWorker:
     cancelled_requests: List[RequestState]
     stopped_requests: List[RequestState]
     current_batch: Dict[RequestId, RequestState]
-
 
     def __init__(
         self,
@@ -133,6 +148,7 @@ class GenerationLoopWorker:
         self.current_batch = dict[RequestId, RequestState]()
 
         self.prom_metrics = PrometheusMetrics()
+        self.inv_kv_cache_size = 1.0 / self.cache_manager.get_kv_cache_size()
 
     def add(self, request_states: list[RequestState]):
         LOG.debug("GenerationLoopWorker", requests_states=request_states)
@@ -156,7 +172,6 @@ class GenerationLoopWorker:
 
             self.queue.extend(valid_states)
             self.has_new_requests.notify_all()
-
 
     def _cacnel_or_stop_request(
         self, request_id: RequestId, requests: list[RequestState]
@@ -301,6 +316,10 @@ class GenerationLoopWorker:
             if is_prompt_batch:
                 ttft = time.time() - state.arrival_timestamp
                 self.prom_metrics.histogram(FIRST_TOKEN_LATENCY).observe(ttft)
+
+        self.prom_metrics.gauge(KV_CACHE_UTILIZATION).set(
+            1.0 - self.cache_manager.get_free_space() * self.inv_kv_cache_size
+        )
 
         LOG.debug("Finished state update and stopping criteria check.")
 
@@ -447,7 +466,6 @@ def run_generation_loop_worker(
     enable_json_logs = False,
     log_level="INFO",
 ):
-
     configure_logging(enable_json_logs, log_level)
     structlog.contextvars.bind_contextvars(**contextvars)
 
