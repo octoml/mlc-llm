@@ -67,7 +67,7 @@ def test(args: argparse.Namespace):
 
     if args.use_random_sampling:
         sampling_params_random = SamplingParams(
-            temperature=0.9,
+            temperature=1.0,
             top_p=1.0,
         )
         sampling_params_choices = [sampling_params_random, sampling_params_greedy]
@@ -77,13 +77,6 @@ def test(args: argparse.Namespace):
     if args.long_prompt:
         with open("serve/tests/data/long_prompts.json", "r") as f:
             prompts = json.load(f)["prompts"]
-            prompts = [prompts[0], prompts[2], prompts[3]]
-        # with open("serve/tests/data/538d0eac8ec082e93d6f273237fafd1f23fb405e35bad84e.json", "r") as f:
-        # with open(
-        #     "serve/tests/data/f67db35cb225c73bb753006bd14fab03942bbe0157a74979.json",
-        #     "r",
-        # ) as f:
-        #     prompts = [json.load(f)["formatted_input"]]
     else:
         prompts = [
             "Hello, my name is",
@@ -144,8 +137,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     args.model_artifact_path = Path(os.path.join(args.artifact_path, args.local_id))
+
     if not os.path.exists(args.model_artifact_path):
         raise Exception(f"Invalid local id: {args.local_id}")
+
+    if args.long_prompt:
+        args.max_input_len = 10000
+        args.max_num_sequences = 5
+
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
