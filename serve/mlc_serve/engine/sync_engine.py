@@ -157,7 +157,7 @@ class SynchronousInferenceEngine(InferenceEngine):
         if not self.current_batch:
             if len(self.queue) > 0:
                 logger.warning(
-                    f"Server has {len(self.queue)} requests to be processed, but non of them are added for execution in _adjust_batch"
+                    f"The engine has {len(self.queue)} requests to be processed in the queue, but none of them were added to the current batch during the execution of SyncEngine._adjust_batch"
                 )
 
         for request_id in previous_requests_to_be_cancelled:
