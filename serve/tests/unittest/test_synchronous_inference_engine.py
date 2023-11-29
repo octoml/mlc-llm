@@ -117,7 +117,7 @@ class DummyTextGenerator:
 
 
 class DummaryModelModule:
-    def __init__(self, max_cached_tokens: int):
+    def __init__(self, max_cached_tokens: int, max_input_len = 512, max_num_sequences = 8):
         self.tokenizer = DummyTokenizer()
         self.conversation_template = DummyConversationTemplate()
         self.text_generator = DummyTextGenerator()
@@ -129,7 +129,9 @@ class DummaryModelModule:
             "max_decode_steps": 2,
             "min_decode_steps": 1,
             "prompt_allocate_ratio": 1.0,
-            "use_staging_engine" : False
+            "use_staging_engine" : False,
+            "max_input_len": max_input_len,
+            "max_num_sequences": max_num_sequences
         })
 
 
@@ -273,3 +275,80 @@ def test_multiple_requests_preempt():
 
     assert len(steps[7].outputs) == 2
     assert get_output_for_request(steps[7].outputs, finished_request_id).is_finished
+
+# Test to verify if evicted request from active batch which in intermediate
+# state exceeding the max_num_batched_tokens can be processed successfully and will
+# not hang the server in infinite attempt to return it back to the active loop
+def test_cache_evict_hang():
+    engine = SynchronousInferenceEngine(DummaryModelModule(40, 10, 2))
+
+    request_id_1 = "1"
+    request_id_2 = "2"
+
+    engine.add(
+        [
+            Request(
+                request_id=request_id_1,
+                messages=create_messages("A " * 10),
+                sampling_params=SamplingParams(temperature=1),
+                stopping_criteria=StoppingCriteria(max_tokens=20),
+            ),
+        ]
+    )
+
+    engine.add(
+        [
+            Request(
+                request_id=request_id_2,
+                messages=create_messages("A " * 10),
+                sampling_params=SamplingParams(temperature=1),
+                stopping_criteria=StoppingCriteria(max_tokens=20),
+            ),
+        ]
+    )
+
+    steps = [engine.step() for _ in range(40)]
+
+    finished = {}
+    empty_step = 0
+    for s in steps:
+        for o in s.outputs:
+            if o.is_finished:
+                finished[o.request_id] = True
+        if not len(s.outputs):
+            empty_step += 1
+
+    assert len(finished) == 2
+    assert empty_step < 10
+
+# Test to verify if new comming request with big prompt can be put into inference
+# and does not have issues with cache size limits verification
+def test_big_prompt_fit_to_cache():
+    engine = SynchronousInferenceEngine(DummaryModelModule(40, 30, 1))
+
+    request_id_1 = "1"
+
+    engine.add(
+        [
+            Request(
+                request_id=request_id_1,
+                messages=create_messages("A " * 30),
+                sampling_params=SamplingParams(temperature=1),
+                stopping_criteria=StoppingCriteria(max_tokens=5),
+            ),
+        ]
+    )
+
+    steps = [engine.step() for _ in range(40)]
+
+    finished = {}
+    return_token_step = 0
+    for s in steps:
+        for o in s.outputs:
+            if o.is_finished:
+                finished[o.request_id] = True
+        if len(s.outputs):
+            return_token_step += 1
+
+    assert len(finished) == 1
+    assert return_token_step >= 5
