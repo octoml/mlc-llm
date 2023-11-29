@@ -18,7 +18,6 @@ from mlc_serve.engine.model_module import (
     SequenceId,
     TextGenerationResult,
 )
-
 from mlc_serve.engine.sync_engine import SynchronousInferenceEngine
 from mlc_serve.engine.staging_engine import StagingInferenceEngine
 
@@ -27,10 +26,8 @@ from tests.unittest.dummary_model import (
     DummaryTokenizerModule,
 )
 
-
 def create_messages(prompt) -> list[ChatMessage]:
     return [ChatMessage(role="user", content=prompt)]
-
 
 def get_output_for_request(
     outputs: list[RequestOutput], request_id: RequestId
@@ -42,7 +39,15 @@ def get_output_for_request(
 
 
 def test_single_request():
-    engine = SynchronousInferenceEngine(DummaryModelModule(30))
+    engine = StagingInferenceEngine(
+        tokenizer_module=DummaryTokenizerModule(),
+        model_module_loader=DummaryModelModule,
+        model_module_loader_kwargs = {
+            "max_cached_tokens": 30
+        }
+        )
+    engine.start()
+
     request_id = "1"
     engine.add(
         [
@@ -56,6 +61,10 @@ def test_single_request():
     )
 
     step = engine.step()
+    # execute everything to free server and allow it to destroy
+    for i in range(0,100):
+        engine.step()
+    engine.stop()
 
     assert step.outputs[0].request_id == request_id
     assert step.outputs[0].error is None
@@ -63,7 +72,14 @@ def test_single_request():
 
 
 def test_single_request_step_to_finish():
-    engine = SynchronousInferenceEngine(DummaryModelModule(30))
+    engine = StagingInferenceEngine(
+        tokenizer_module=DummaryTokenizerModule(),
+        model_module_loader=DummaryModelModule,
+        model_module_loader_kwargs = {
+            "max_cached_tokens": 30
+        }
+        )
+    engine.start()
 
     request_id = "1"
     engine.add(
@@ -78,6 +94,10 @@ def test_single_request_step_to_finish():
     )
 
     steps = [engine.step() for _ in range(11)]
+    # execute everything to free server and allow it to destroy
+    for i in range(0,100):
+        engine.step()
+    engine.stop()
 
     assert steps[-1].outputs[0].request_id == request_id
     assert steps[-1].outputs[0].sequences[0].finish_reason == FinishReason.Length
@@ -85,7 +105,14 @@ def test_single_request_step_to_finish():
 
 
 def test_multiple_requests_wait_queue():
-    engine = SynchronousInferenceEngine(DummaryModelModule(20))
+    engine = StagingInferenceEngine(
+        tokenizer_module=DummaryTokenizerModule(),
+        model_module_loader=DummaryModelModule,
+        model_module_loader_kwargs = {
+            "max_cached_tokens": 20
+        }
+        )
+    engine.start()
 
     request_id_1 = "1"
     request_id_2 = "2"
@@ -113,6 +140,10 @@ def test_multiple_requests_wait_queue():
     )
 
     steps = [engine.step() for _ in range(3)]
+    # execute everything to free server and allow it to destroy
+    for i in range(0,100):
+        engine.step()
+    engine.stop()
 
     assert len(steps[0].outputs) == 1
     assert steps[0].outputs[0].request_id == request_id_1
@@ -131,7 +162,14 @@ def test_multiple_requests_wait_queue():
 
 
 def test_multiple_requests_preempt():
-    engine = SynchronousInferenceEngine(DummaryModelModule(30))
+    engine = StagingInferenceEngine(
+        tokenizer_module=DummaryTokenizerModule(),
+        model_module_loader=DummaryModelModule,
+        model_module_loader_kwargs = {
+            "max_cached_tokens": 30
+        }
+        )
+    engine.start()
 
     request_id_1 = "1"
     request_id_2 = "2"
@@ -158,23 +196,47 @@ def test_multiple_requests_preempt():
         ]
     )
 
-    steps = [engine.step() for _ in range(8)]
+    steps = [engine.step() for _ in range(20)]
+    # execute everything to free server and allow it to destroy
+    for i in range(0,100):
+        engine.step()
+    engine.stop()
 
-    assert len(steps[0].outputs) == 2
-    assert len(steps[5].outputs) == 2
+    # Due to asynchronious nature of request submission and processing, we cannot
+    # track exactly on each step certain request is processed
+    # but we can catch a pattern that it is two requests processed, then 1 and then again 2
+    stage = 0
 
-    assert len(steps[6].outputs) == 1
-    finished_request_id = steps[6].outputs[0].request_id
+    for s in steps:
+        if stage == 0 and len(s.outputs) == 2:
+            stage = 1
+        if stage == 1 and len(s.outputs) == 1:
+            stage = 2
+        if stage == 2 and len(s.outputs) == 2:
+            stage = 3
+        if stage == 3 and len(s.outputs) == 1:
+            stage = 4
+            assert s.outputs[0].is_finished
+        if stage == 4 and len(s.outputs) > 1:
+            stage = 5
 
-    assert len(steps[7].outputs) == 2
-    assert get_output_for_request(steps[7].outputs, finished_request_id).is_finished
+    assert stage == 4
 
 
 # Test to verify if evicted request from active batch which in intermediate
 # state exceeding the max_num_batched_tokens can be processed successfully and will
 # not hang the server in infinite attempt to return it back to the active loop
-def test_cache_evict_hang():
-    engine = SynchronousInferenceEngine(DummaryModelModule(40, 10, 2))
+def test_cache_evict_hang_staging():
+    engine = StagingInferenceEngine(
+        tokenizer_module=DummaryTokenizerModule(),
+        model_module_loader=DummaryModelModule,
+        model_module_loader_kwargs = {
+            "max_cached_tokens": 40,
+            "max_input_len": 10,
+            "max_num_sequences": 2
+        }
+        )
+    engine.start()
 
     request_id_1 = "1"
     request_id_2 = "2"
@@ -202,6 +264,7 @@ def test_cache_evict_hang():
     )
 
     steps = [engine.step() for _ in range(40)]
+    engine.stop()
 
     finished = {}
     empty_step = 0
@@ -218,8 +281,17 @@ def test_cache_evict_hang():
 
 # Test to verify if new comming request with big prompt can be put into inference
 # and does not have issues with cache size limits verification
-def test_big_prompt_fit_to_cache():
-    engine = SynchronousInferenceEngine(DummaryModelModule(40, 30, 1))
+def test_big_prompt_fit_to_cache_staging():
+    engine = StagingInferenceEngine(
+        tokenizer_module=DummaryTokenizerModule(),
+        model_module_loader=DummaryModelModule,
+        model_module_loader_kwargs = {
+            "max_cached_tokens": 40,
+            "max_input_len": 30,
+            "max_num_sequences": 1
+        }
+        )
+    engine.start()
 
     request_id_1 = "1"
 
@@ -235,6 +307,7 @@ def test_big_prompt_fit_to_cache():
     )
 
     steps = [engine.step() for _ in range(40)]
+    engine.stop()
 
     finished = {}
     return_token_step = 0
