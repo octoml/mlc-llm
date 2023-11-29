@@ -153,6 +153,12 @@ class SynchronousInferenceEngine(InferenceEngine):
 
         previous_requests_to_be_cancelled = set(self.requests_to_be_cancelled)
         self._adjust_batch()
+        
+        if not self.current_batch:
+            if len(self.queue) > 0:
+                logger.warning(
+                    f"Server has {len(self.queue)} requests to be processed, but non of them are added for execution in _adjust_batch"
+                )
 
         for request_id in previous_requests_to_be_cancelled:
             if request_id not in self.requests_to_be_cancelled:
