@@ -216,6 +216,10 @@ class GenerationLoopWorker:
         self._adjust_batch()
 
         if not self.current_batch:
+            if len(self.queue) > 0:
+                LOG.warn(
+                    f"Server has {len(self.queue)} requests to be processed, but non of them are added for execution in _adjust_batch"
+                )
             return result
 
         requests = self._get_requests_to_process()
