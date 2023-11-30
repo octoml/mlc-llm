@@ -21,9 +21,9 @@ from mlc_serve.engine.model_module import (
 from mlc_serve.engine.sync_engine import SynchronousInferenceEngine
 from mlc_serve.engine.staging_engine import StagingInferenceEngine
 
-from mlc_serve.model.dummary_model import (
-    DummaryModelModule,
-    DummaryTokenizerModule,
+from mlc_serve.model.dummy_model import (
+    DummyModelModule,
+    DummyTokenizerModule,
 )
 
 def create_messages(prompt) -> list[ChatMessage]:
@@ -40,8 +40,8 @@ def get_output_for_request(
 
 def test_single_request():
     engine = StagingInferenceEngine(
-        tokenizer_module=DummaryTokenizerModule(),
-        model_module_loader=DummaryModelModule,
+        tokenizer_module=DummyTokenizerModule(),
+        model_module_loader=DummyModelModule,
         model_module_loader_kwargs = {
             "max_cached_tokens": 30
         }
@@ -73,8 +73,8 @@ def test_single_request():
 
 def test_single_request_step_to_finish():
     engine = StagingInferenceEngine(
-        tokenizer_module=DummaryTokenizerModule(),
-        model_module_loader=DummaryModelModule,
+        tokenizer_module=DummyTokenizerModule(),
+        model_module_loader=DummyModelModule,
         model_module_loader_kwargs = {
             "max_cached_tokens": 30
         }
@@ -106,8 +106,8 @@ def test_single_request_step_to_finish():
 
 def test_multiple_requests_wait_queue():
     engine = StagingInferenceEngine(
-        tokenizer_module=DummaryTokenizerModule(),
-        model_module_loader=DummaryModelModule,
+        tokenizer_module=DummyTokenizerModule(),
+        model_module_loader=DummyModelModule,
         model_module_loader_kwargs = {
             "max_cached_tokens": 20
         }
@@ -163,8 +163,8 @@ def test_multiple_requests_wait_queue():
 
 def test_multiple_requests_preempt():
     engine = StagingInferenceEngine(
-        tokenizer_module=DummaryTokenizerModule(),
-        model_module_loader=DummaryModelModule,
+        tokenizer_module=DummyTokenizerModule(),
+        model_module_loader=DummyModelModule,
         model_module_loader_kwargs = {
             "max_cached_tokens": 30
         }
@@ -228,8 +228,8 @@ def test_multiple_requests_preempt():
 # not hang the server in infinite attempt to return it back to the active loop
 def test_cache_evict_hang_staging():
     engine = StagingInferenceEngine(
-        tokenizer_module=DummaryTokenizerModule(),
-        model_module_loader=DummaryModelModule,
+        tokenizer_module=DummyTokenizerModule(),
+        model_module_loader=DummyModelModule,
         model_module_loader_kwargs = {
             "max_cached_tokens": 40,
             "max_input_len": 10,
@@ -283,8 +283,8 @@ def test_cache_evict_hang_staging():
 # and does not have issues with cache size limits verification
 def test_big_prompt_fit_to_cache_staging():
     engine = StagingInferenceEngine(
-        tokenizer_module=DummaryTokenizerModule(),
-        model_module_loader=DummaryModelModule,
+        tokenizer_module=DummyTokenizerModule(),
+        model_module_loader=DummyModelModule,
         model_module_loader_kwargs = {
             "max_cached_tokens": 40,
             "max_input_len": 30,
@@ -325,8 +325,8 @@ def test_big_prompt_fit_to_cache_staging():
 # Test to verify if new comming request with big prompt is handled properly
 def test_big_prompt_not_fit_to_cache():
     engine = StagingInferenceEngine(
-        tokenizer_module=DummaryTokenizerModule(),
-        model_module_loader=DummaryModelModule,
+        tokenizer_module=DummyTokenizerModule(),
+        model_module_loader=DummyModelModule,
         model_module_loader_kwargs = {
             "max_cached_tokens": 29,
             "max_input_len": 30,

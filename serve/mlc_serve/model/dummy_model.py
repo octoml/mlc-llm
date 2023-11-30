@@ -114,7 +114,7 @@ class DummyTextGenerator:
         return result
 
 
-class DummaryModelModule:
+class DummyModelModule:
     def __init__(self, max_cached_tokens: int, max_input_len = 512, max_num_sequences = 8):
         self.tokenizer = DummyTokenizer()
         self.conversation_template = DummyConversationTemplate()
@@ -132,7 +132,7 @@ class DummaryModelModule:
         })
 
 
-class DummaryTokenizerModule:
+class DummyTokenizerModule:
     def __init__(self):
         self.tokenizer = DummyTokenizer()
         self.conversation_template = DummyConversationTemplate()
