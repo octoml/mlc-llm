@@ -302,6 +302,8 @@ class SynchronousInferenceEngine(InferenceEngine):
                         num_new_batched_tokens,
                     )
                     break
+                # We add a request to processing only if there is some room in kv_cache to handle
+                # cache for decoded symbols
                 if (
                     (self.cache_manager.get_free_space() - num_tokens) / (len(self.current_batch) + 1)
                         < self.max_decode_steps
