@@ -20,7 +20,7 @@ from mlc_serve.model.paged_cache_model import HfTokenizerModule, PagedCacheModel
 from mlc_serve.logging_utils import configure_logging
 
 
-def test(args: argparse.Namespace):
+def _test(args: argparse.Namespace):
     # Examples. "--max-output-len" can be used to specify the number of output tokens.
     #
     # Profile the gpu memory usage, and use the maximum number of cache blocks possible:
@@ -148,6 +148,7 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
 
+
     configure_logging(enable_json_logs=False, log_level="INFO")
 
-    test(args)
+    _test(args)
