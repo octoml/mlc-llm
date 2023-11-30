@@ -109,6 +109,13 @@ class GenerationLoopWorker:
             # cancel them instead.
             valid_states = []
             for request_state in request_states:
+                # We need to exclude requests having not less value than max_context_length
+                # because decoding of new token would exceed max_context_length and makes
+                # model work in non appropriate mode.
+                # At the same time number of tokens matching to max_num_batched_tokens is
+                # acceptable, max_num_batched_tokens can be processed by model.
+                # We need to have two explicit conditions vs max_context_length and
+                # max_num_batched_tokens
                 if (
                     request_state.validation_err is not None
                     or request_state.prompt_len >= self.max_context_length
@@ -117,7 +124,7 @@ class GenerationLoopWorker:
                 ):
                     self.cancelled_requests.append(request_state)
                     if request_state.validation_err is None:
-                        request_state.validation_err = "Server configuration unable to process the request of such prompt length."
+                        request_state.validation_err = "The prompt is too long for the given set of engine parameters."
                 else:
                     valid_states.append(request_state)
 
@@ -303,7 +310,7 @@ class GenerationLoopWorker:
                 # this can happen if we processed some request and then had to remove it from inference
                 # due to limit of the kv cache. It can appear that new size to process is bigger
                 # than max_num_batched_tokens. Need to roll back to acceptable size
-                if not len(self.current_batch) and num_new_batched_tokens > self.max_num_batched_tokens:
+                if len(self.current_batch) == 0 and num_new_batched_tokens > self.max_num_batched_tokens:
                     state.token_ids = state.token_ids[:self.max_num_batched_tokens]
                     state.next_start_position = num_new_batched_tokens = num_tokens = self.max_num_batched_tokens
                 if num_new_batched_tokens > self.max_num_batched_tokens > 0:

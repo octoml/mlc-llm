@@ -60,7 +60,7 @@ class SynchronousInferenceEngine(InferenceEngine):
         assert self.model_artifact_config.max_context_length, "max_context_length must not be zero"
         self.max_context_length = self.model_artifact_config.max_context_length
         self.max_num_batched_tokens = model_module.engine_config.max_num_batched_tokens
-        assert self.max_num_batched_tokens > 0, "max_num_batched_tokens must be defined and be greatly 0"
+        assert self.max_num_batched_tokens > 0, "max_num_batched_tokens must be positive"
         self.max_decode_steps = min(
             self.cache_manager.get_kv_cache_size(),
             model_module.engine_config.max_decode_steps,
@@ -97,6 +97,13 @@ class SynchronousInferenceEngine(InferenceEngine):
             state = self._get_new_request_state(req)
             new_request_states.append(state)
 
+            # We need to exclude requests having not less value than max_context_length
+            # because decoding of new token would exceed max_context_length and makes
+            # model work in non appropriate mode.
+            # At the same time number of tokens matching to max_num_batched_tokens is
+            # acceptable, max_num_batched_tokens can be processed by model.
+            # We need to have two explicit conditions vs max_context_length and
+            # max_num_batched_tokens
             if (
                 state.validation_err is not None
                 or state.prompt_len >= self.max_context_length
@@ -105,7 +112,7 @@ class SynchronousInferenceEngine(InferenceEngine):
             ):
                 self.cancel(req.request_id)
                 if state.validation_err is None:
-                    state.validation_err = "Server configuration unable to process the request of such prompt length."
+                    state.validation_err = "The prompt is too long for the given set of engine parameters."
 
         with self.queue_lock:
             self.queue.extend(new_request_states)
