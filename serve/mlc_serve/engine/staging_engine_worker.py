@@ -306,9 +306,11 @@ class GenerationLoopWorker:
                 state = self.queue[0]
                 num_tokens = len(state.token_ids)
                 num_new_batched_tokens += num_tokens
-                # this can happen if we processed some request and then had to remove it from inference
-                # due to limit of the kv cache. It can appear that new size to process is bigger
-                # than max_num_batched_tokens. Need to roll back to acceptable size
+                # This can happen when we are recovering from cache eviction and the sum of prompt
+                # and intermediate decode tokens is bigger than the biggest allowable batch size,
+                # self.max_num_batched_tokens. In such cases, we need to discard the recent decode
+                # tokens that cannot fit into a batch, and recompute them after we fill the cache
+                # entries for the older tokens.
                 if len(self.current_batch) == 0 and num_new_batched_tokens > self.max_num_batched_tokens:
                     state.token_ids = state.token_ids[:self.max_num_batched_tokens]
                     state.next_start_position = num_new_batched_tokens = num_tokens = self.max_num_batched_tokens
