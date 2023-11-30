@@ -96,11 +96,11 @@ class SynchronousInferenceEngine(InferenceEngine):
             state = self._get_new_request_state(req)
             new_request_states.append(state)
 
-                # We need to exclude requests having prompt exceeding max_context_length or
-                # max_num_batched_tokens because model will work in non appropriate mode
-                # or because model cannot process number of tokens in one prefill
-                # invocation
-                # As well we need to exclude requests which cannot fit into the kv_cache
+            # We need to exclude requests having prompt exceeding max_context_length or
+            # max_num_batched_tokens because model will work in non appropriate mode
+            # or because model cannot process number of tokens in one prefill
+            # invocation
+            # As well we need to exclude requests which cannot fit into the kv_cache
             if (
                 state.validation_err is not None
                 or state.prompt_len > min(self.max_context_length, self.max_num_batched_tokens)
