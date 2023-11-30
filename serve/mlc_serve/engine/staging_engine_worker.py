@@ -108,14 +108,11 @@ class GenerationLoopWorker:
             # cancel them instead.
             valid_states = []
             for request_state in request_states:
-                # We need to exclude requests having prompt exceeding max_context_length or
-                # max_num_batched_tokens because model will work in non appropriate mode
-                # or because model cannot process number of tokens in one prefill
-                # invocation
-                # As well we need to exclude requests which cannot fit into the kv_cache
                 if (
                     request_state.validation_err is not None
-                    or request_state.prompt_len > min(self.max_context_length,self.max_num_batched_tokens)
+                    or request_state.prompt_len > min(self.max_context_length, self.max_num_batched_tokens)
+                    # Need to exclude requests which cannot fit into the kv_cache and can be processed
+                    # at least max_decode_steps steps
                     or self.cache_manager.get_kv_cache_size() - request_state.prompt_len < self.max_decode_steps
                 ):
                     self.cancelled_requests.append(request_state)
@@ -317,8 +314,7 @@ class GenerationLoopWorker:
                         num_new_batched_tokens,
                     )
                     break
-                # We add a request to processing only if there is some room in kv_cache to handle
-                # cache for decoded symbols
+                # Make sure to leave some free space in the KV cache after a request is added or batched
                 if (
                     (self.cache_manager.get_free_space() - num_tokens) / (len(self.current_batch) + 1)
                         < self.max_decode_steps
