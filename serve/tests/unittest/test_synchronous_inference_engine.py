@@ -22,7 +22,7 @@ from mlc_serve.engine.model_module import (
 from mlc_serve.engine.sync_engine import SynchronousInferenceEngine
 from mlc_serve.engine.staging_engine import StagingInferenceEngine
 
-from tests.unittest.dummary_model import (
+from mlc_serve.model.dummary_model import (
     DummaryModelModule,
     DummaryTokenizerModule,
 )
