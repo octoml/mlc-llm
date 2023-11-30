@@ -320,3 +320,38 @@ def test_big_prompt_fit_to_cache_staging():
 
     assert len(finished) == 1
     assert return_token_step >= 5
+
+
+# Test to verify if new comming request with big prompt is handled properly
+def test_big_prompt_not_fit_to_cache():
+    engine = StagingInferenceEngine(
+        tokenizer_module=DummaryTokenizerModule(),
+        model_module_loader=DummaryModelModule,
+        model_module_loader_kwargs = {
+            "max_cached_tokens": 29,
+            "max_input_len": 30,
+            "max_num_sequences": 1
+        }
+        )
+    engine.start()
+
+    request_id_1 = "1"
+
+    engine.add(
+        [
+            Request(
+                request_id=request_id_1,
+                messages=create_messages("A " * 30),
+                sampling_params=SamplingParams(temperature=1),
+                stopping_criteria=StoppingCriteria(max_tokens=2),
+            ),
+        ]
+    )
+
+    steps = [engine.step() for _ in range(5)]
+    engine.stop()
+
+    assert len(steps[0].outputs) == 1
+    assert steps[0].outputs[0].is_finished
+    assert steps[0].outputs[0].error
+    assert len(steps[1].outputs) == 0

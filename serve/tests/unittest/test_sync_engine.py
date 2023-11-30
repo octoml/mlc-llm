@@ -247,3 +247,33 @@ def test_big_prompt_fit_to_cache():
 
     assert len(finished) == 1
     assert return_token_step >= 5
+
+
+# Test to verify if new comming request with big prompt is handled properly
+def test_big_prompt_not_fit_to_cache():
+    engine = SynchronousInferenceEngine(DummaryModelModule(29, 30, 1))
+
+    request_id_1 = "1"
+
+    engine.add(
+        [
+            Request(
+                request_id=request_id_1,
+                messages=create_messages("A " * 30),
+                sampling_params=SamplingParams(temperature=1),
+                stopping_criteria=StoppingCriteria(max_tokens=2),
+            ),
+        ]
+    )
+
+    steps = [engine.step() for _ in range(5)]
+
+    assert len(steps[0].outputs) == 1
+    assert steps[0].outputs[0].is_finished
+    # TODO(amalyshe): the behaviour of sync and staged engines are not consistent
+    # Staging engine handles this situation better, it returns error and no sequences
+    assert steps[0].outputs[0].sequences[0].finish_reason == FinishReason.Cancelled
+    # TODO(amalyshe:)
+    # There must be error, but currently error is lost in the engine, need to fix
+    # assert steps[0].outputs[0].error
+    assert len(steps[1].outputs) == 0
