@@ -20,7 +20,6 @@ def _test_insufficient_cache_blocks_fail(artifact_path):
                 "max_input_len": 16384,
                 "min_decode_steps": 12,
                 "max_decode_steps": 16,
-                "prompt_allocate_ratio": 2.0,
             }
         )
 

@@ -31,7 +31,7 @@ def create_engine(
         "use_staging_engine": use_staging_engine,
         "max_num_sequences": max_num_sequences,
         "max_input_len": max_input_len,
-        # Use defaults for "min_decode_steps", "max_decode_steps", "prompt_allocate_ratio"
+        # Use defaults for "min_decode_steps", "max_decode_steps"
     })
 
     if use_staging_engine:

@@ -36,7 +36,6 @@ def parse_args():
     args.add_argument("--max-input-len", type=int, default=512)
     args.add_argument("--min-decode-steps", type=int, default=12)
     args.add_argument("--max-decode-steps", type=int, default=16)
-    args.add_argument("--prompt-allocate-ratio", type=float, default=2.0)
     args.add_argument("--debug-logging", action="store_true")
     parsed = args.parse_args()
     return parsed

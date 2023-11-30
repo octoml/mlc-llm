@@ -126,7 +126,6 @@ class DummaryModelModule:
         self.engine_config = get_engine_config({
             "max_decode_steps": 2,
             "min_decode_steps": 1,
-            "prompt_allocate_ratio": 1.0,
             "use_staging_engine" : False,
             "max_input_len": max_input_len,
             "max_num_sequences": max_num_sequences

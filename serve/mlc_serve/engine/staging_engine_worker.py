@@ -65,7 +65,6 @@ class GenerationLoopWorker:
     max_num_batched_tokens: int
     max_decode_steps: int
     min_decode_steps: int
-    prompt_allocate_ratio: float
     queue_lock: Lock
     queue: Deque[RequestState]
     has_new_requests: Condition
