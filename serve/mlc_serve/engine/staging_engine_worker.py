@@ -366,6 +366,8 @@ class GenerationLoopWorker:
         )
 
         if is_prompt_batch:
+            prefill_token_counts = 0
+
             for state in self.current_batch.values():
                 if state.next_start_position == 0:
                     requests.append(
@@ -376,10 +378,14 @@ class GenerationLoopWorker:
                             sampling_params=state.sampling_params,
                         )
                     )
+                    prefill_token_counts += len(state.token_ids)
+
+            self.prom_metrics.histogram(BATCHED_PREFILL_TOKENS).observe(prefill_token_counts)
+
             LOG.debug(
                 "Creating prompt batch.",
                 num_requests=len(requests),
-                total_tokens=sum(len(r.token_ids) for r in requests),
+                total_tokens=prefill_token_counts,
             )
         else:
             for state in self.current_batch.values():
@@ -394,7 +400,11 @@ class GenerationLoopWorker:
                 self.cache_manager.extend(
                     seq_id, len(state.token_ids) - state.next_start_position
                 )
-            LOG.debug("Creating decode batch with %s requests.", len(requests))
+
+            decode_token_counts = len(requests)
+            self.prom_metrics.histogram(BATCHED_DECODE_TOKENS).observe(decode_token_counts)
+
+            LOG.debug("Creating decode batch with %s requests.", decode_token_counts)
 
         return requests, is_prompt_batch
 
