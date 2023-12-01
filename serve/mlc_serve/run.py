@@ -1,5 +1,5 @@
 import argparse
-import logging.config
+import tempfile
 import os
 import uvicorn
 from pathlib import Path
@@ -89,7 +89,6 @@ def run_server():
     log_level = "DEBUG" if args.debug_logging else "INFO"
     configure_logging(enable_json_logs=True, log_level=log_level)
 
-    import tempfile
     with tempfile.TemporaryDirectory() as temp_dir:
         os.environ["PROMETHEUS_MULTIPROC_DIR"] = temp_dir
 
