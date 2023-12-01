@@ -32,8 +32,6 @@ class FTQuantizationSpec(QuantizationSpec):
         else:
             self.sm = None
 
-        self.do_preprocess = True
-
     def get_quantize_func(self, param_info: relax.TensorStructInfo) -> Optional[FQuantize]:
         assert self.sm is not None
 
@@ -49,20 +47,15 @@ class FTQuantizationSpec(QuantizationSpec):
                 primfunc_name_hint="encode",
             )
             packed_weight = bb.normalize(encoded_data[0])
-
-            if self.do_preprocess:
-                encoded_weight = bb.emit(
-                    relax.call_pure_packed(
-                        "cutlass.ft_preprocess_weight",
-                        packed_weight,
-                        self.sm,
-                        self.nbit == 4,
-                        sinfo_args=packed_weight.struct_info,
-                    )
+            encoded_weight = bb.emit(
+                relax.call_pure_packed(
+                    "cutlass.ft_preprocess_weight",
+                    packed_weight,
+                    self.sm,
+                    self.nbit == 4,
+                    sinfo_args=packed_weight.struct_info,
                 )
-            else:
-                encoded_weight = packed_weight
-
+            )
             return bb.emit(relax.Tuple([encoded_weight, encoded_data[1]]))
 
         return f_quantize
@@ -110,7 +103,7 @@ def encoding_func(nbit: int, storage_nbit: int, group_size: int, dtype: str = "f
 
         def f_compute_scale(*idx):
             max_value = tir.max(tir.Cast(dtype, max_abs_value(*idx)), tir.const(1e-4, dtype))
-            return max_value / tir.const(max_int_value + 1, dtype)
+            return max_value / tir.const(max_int_value, dtype)
 
         scale = te.compute(shape=scale_min_shape, fcompute=f_compute_scale, name="scale")
         storage_dtype = "int" + str(storage_nbit)
