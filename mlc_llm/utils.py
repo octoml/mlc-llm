@@ -346,7 +346,7 @@ def copy_tokenizer(args: argparse.Namespace) -> None:
         ]:
             shutil.copy(
                 os.path.join(args.model_path, filename),
-                os.path.join(args.artifact_path, "params"),
+                os.path.join(args.artifact_path, "model") if args.enable_batching else os.path.join(args.artifact_path, "params"),
             )
 
     # If we have `tokenizer.model` but not `tokenizer.json`, try convert it to
