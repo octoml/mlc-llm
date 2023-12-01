@@ -65,18 +65,19 @@ def _get_sampling_params(request: ChatCompletionRequest) -> SamplingParams:
 
 @router.get("/metrics")
 def metrics():
+    # See https://prometheus.github.io/client_python/multiprocess/ for why we need this.
     if "PROMETHEUS_MULTIPROC_DIR" in os.environ:
         from prometheus_client import (
             CollectorRegistry,
             generate_latest,
             multiprocess,
         )
+        from starlette.responses import Response
+
         registry = CollectorRegistry()
         multiprocess.MultiProcessCollector(registry)
 
-        from starlette.responses import Response
-        resp = Response(content=generate_latest(registry))
-        return resp
+        return Response(content=generate_latest(registry))
     else:
         return {}
 
