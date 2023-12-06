@@ -235,13 +235,12 @@ class GenerationLoopWorker:
 
             self.cancelled_requests.clear()
 
-        self._adjust_batch()
+        request_ids_to_cancel = self._adjust_batch()
+
+        for request_id in request_ids_to_cancel:
+            self.cancel_request(request_id)
 
         if not self.current_batch:
-            if len(self.queue) > 0:
-                LOG.warn(
-                     f"The engine has {len(self.queue)} requests to be processed in the queue, but none of them were added to the current batch during the execution of StagingEngine._adjust_batch"
-                )
             return result
 
         requests, is_prompt_batch = self._get_requests_to_process()
@@ -294,7 +293,8 @@ class GenerationLoopWorker:
 
         return result
 
-    def _adjust_batch(self):
+    def _adjust_batch(self) -> List[RequestId]:
+        """Form a new batch and return a list of request IDs that should be cancelled, if any."""
         with self.queue_lock:
             while self.cache_manager.get_max_new_tokens() < 1:
                 self.prom_metrics.counter(NUM_CACHE_EVICTONS).inc()
@@ -313,7 +313,7 @@ class GenerationLoopWorker:
                     "Skip growing the batch due to max_decode_steps. Decode steps: %s",
                     self.cache_manager.get_max_new_tokens(),
                 )
-                return
+                return []
 
             num_new_batched_tokens = len(self.current_batch)
             while self.queue:
@@ -362,6 +362,26 @@ class GenerationLoopWorker:
                 self.queue.popleft()
                 self.cache_manager.allocate(state.request_id, num_tokens)
                 self.current_batch[state.request_id] = state
+
+            if len(self.current_batch) == 0 and len(self.queue) > 0:
+                LOG.warn(
+                    f"The engine has {len(self.queue)} requests to be processed in the queue, but"
+                    " none of them were added to the current batch during the execution of"
+                    " StagingEngine._adjust_batch"
+                )
+
+                hung_request_ids = []
+
+                for state in self.queue:
+                    hung_request_ids.append(state.request_id)
+                    # TODO(masahi): Proper error enum?
+                    state.validation_err = ValidationError(
+                        "Internal Server Error: Canceled due to a hang in the server."
+                    )
+
+                return hung_request_ids
+
+            return []
 
     def _remove_request_from_batch(self, request_id: RequestId):
         del self.current_batch[request_id]
