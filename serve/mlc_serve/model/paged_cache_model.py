@@ -343,6 +343,7 @@ def copy_to_worker_0(sess: di.Session, host_array):
 
 
 def get_tvm_model(config, dev):
+    LOG.info(f"Loading parameters from {config.model_artifact_path}")
     lib_path = os.path.join(config.model_artifact_path, config.library_name)
 
     if config.num_shards == 1:
@@ -763,6 +764,9 @@ class PagedCacheModelModule:
             model.disco_session,
             model_artifact_config.sliding_window,
         )
+
+        LOG.info("Allocated KV cache blocks")
+
         self.engine_config = engine_config
         self.model_artifact_config = model_artifact_config
         self.text_generator = PagedCacheModelTextGenerator(model)
