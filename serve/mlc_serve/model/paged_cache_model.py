@@ -343,7 +343,7 @@ def copy_to_worker_0(sess: di.Session, host_array):
 
 
 def get_tvm_model(config, dev):
-    LOG.info(f"Loading parameters from {config.model_artifact_path}")
+    LOG.info(f"Loading parameters from {config.model_artifact_path}.")
     lib_path = os.path.join(config.model_artifact_path, config.library_name)
 
     if config.num_shards == 1:
@@ -733,6 +733,7 @@ class PagedCacheModelModule:
         )
 
         if engine_config.max_num_batched_tokens > 0:
+            LOG.info("Running memory profiling.")
             num_blocks = get_num_cache_blocks(
                 model,
                 [engine_config.max_input_len] * engine_config.max_num_sequences,
@@ -765,7 +766,7 @@ class PagedCacheModelModule:
             model_artifact_config.sliding_window,
         )
 
-        LOG.info("Allocated KV cache blocks")
+        LOG.info("Allocated KV cache blocks.")
 
         self.engine_config = engine_config
         self.model_artifact_config = model_artifact_config
