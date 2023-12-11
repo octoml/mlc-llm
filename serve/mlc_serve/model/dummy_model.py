@@ -1,28 +1,18 @@
-from typing import Optional, Union
+from typing import Union
 
 from mlc_serve.engine import (
     ChatMessage,
-    DebugOptions,
-    FinishReason,
-    Request,
+    RequestState,
     RequestId,
-    RequestOutput,
-    SamplingParams,
-    StoppingCriteria,
     get_engine_config
 )
 from mlc_serve.model.base import ModelArtifactConfig
 from mlc_serve.engine.model_module import (
-    ConversationTemplate,
     DecodeRequest,
     KVCache,
-    KVCacheManager,
-    ModelModule,
     PrefillRequest,
     SequenceId,
     TextGenerationResult,
-    TextGenerator,
-    Tokenizer,
 )
 
 class DummyTokenizer:
@@ -73,6 +63,10 @@ class DummyCacheManager:
         if sequence_id.sequence_index > 0:
             raise RuntimeError("Multiple generated sequences not supported")
         del self.cache.cached_requests[sequence_id.request_id]
+
+    def free_request(self, state: RequestState):
+        for gen_seq in state.generation_sequences:
+            self.free(gen_seq.seq_id)
 
     def get_kv_cache_size(self) -> int:
         return self.cache.max_cached_tokens
