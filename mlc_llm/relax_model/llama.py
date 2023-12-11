@@ -75,24 +75,27 @@ class LlamaConfig:
 
 class MixtralConfig(LlamaConfig):
     num_experts_per_tok: int
-    num_experts: int
+    num_local_experts: int
+    sliding_window: int
+    router_aux_loss_coef: float  # not sure if needed
     quantization_scheme: QuantizationScheme
 
     def __init__(
         self,
         **kwargs,
     ):
-        kwargs["num_attention_heads"] = kwargs["n_heads"]
-        kwargs["num_key_value_heads"] = kwargs["n_kv_heads"]
-        kwargs["rms_norm_eps"] = kwargs["norm_eps"]
-        kwargs["num_hidden_layers"] = kwargs["n_layers"]
-        kwargs["intermediate_size"] = kwargs["hidden_dim"]
-        kwargs["hidden_size"] = kwargs["dim"]  # n heads * head_size
+        # kwargs["num_attention_heads"] = kwargs["n_heads"]
+        # kwargs["num_key_value_heads"] = kwargs["n_kv_heads"]
+        # kwargs["rms_norm_eps"] = kwargs["norm_eps"]
+        # kwargs["num_hidden_layers"] = kwargs["n_layers"]
+        # kwargs["intermediate_size"] = kwargs["hidden_dim"]
+        # kwargs["hidden_size"] = kwargs["dim"]  # n heads * head_size
 
         super().__init__(**kwargs)
-        moe_config = kwargs["moe"]
-        self.num_experts_per_tok = moe_config["num_experts_per_tok"]
-        self.num_experts = moe_config["num_experts"]
+        self.num_experts_per_tok = kwargs["num_experts_per_tok"]
+        self.num_local_experts = kwargs["num_local_experts"]
+        self.sliding_window = kwargs["sliding_window"]
+        self.router_aux_loss_coef = kwargs["router_aux_loss_coef"]
 
         # FIXME: remove this
         self.quantization_scheme = kwargs["quantization_scheme"]
@@ -655,7 +658,7 @@ class MoELinear(nn.Module):
 class MoEMLP(nn.Module):
     def __init__(self, config: MixtralConfig):
         self.num_experts_per_tok = config.num_experts_per_tok
-        self.num_experts = config.num_experts
+        self.num_experts = config.num_local_experts
         self.combine_matmul = config.combine_matmul
 
         self.num_shards = config.num_shards
@@ -712,12 +715,12 @@ class MoE(nn.Module):
         self.num_shards = config.num_shards
         self.gate = Linear(
             in_features=config.hidden_size,
-            out_features=config.num_experts,
+            out_features=config.num_local_experts,
             bias=False,
             dtype=config.dtype,
         )
         self.num_experts_per_tok = config.num_experts_per_tok
-        self.num_experts = config.num_experts
+        self.num_experts = config.num_local_experts
 
     def topk(self, x, is_ascend, index_dtype, k=-1):
         # topk along axis -1
@@ -738,7 +741,9 @@ class MoE(nn.Module):
             beg = [0] * ndim
             end = [x.struct_info.shape[i] for i in range(ndim - 1)] + [k]
             axes = list(range(ndim))
-            sorted_x = nn.emit(relax.op.strided_slice(sorted_x, axes, beg, end, assume_inbound=True))
+            sorted_x = nn.emit(
+                relax.op.strided_slice(sorted_x, axes, beg, end, assume_inbound=True)
+            )
             indices = nn.emit(relax.op.strided_slice(indices, axes, beg, end, assume_inbound=True))
         return sorted_x, indices
 
@@ -784,6 +789,7 @@ class MoE(nn.Module):
         expert_weights, expert_indices = self.topk(
             scores, is_ascend=False, k=self.num_experts_per_tok, index_dtype="int32"
         )  # (num_tokens, top_k), (num_tokens, top_k)
+        expert_weights = nn.emit(expert_weights / R.sum(expert_weights, axis=-1, keepdims=True))
         flattened_indices = nn.emit(relax.op.flatten(expert_indices))
         sorted_expert_ids, indices = self.topk(
             flattened_indices, is_ascend=True, index_dtype="int32"
@@ -814,7 +820,7 @@ class LlamaDecoderLayer(nn.Module):
         self.self_attn = attn_class(config)
         if isinstance(config, MixtralConfig):
             self.use_moe = True
-            self.feed_forward = MoE(config)
+            self.block_sparse_moe = MoE(config)
         else:
             self.use_moe = False
             self.mlp = LlamaMLP(config)
@@ -837,7 +843,7 @@ class LlamaDecoderLayer(nn.Module):
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
 
-        model = self.feed_forward if self.use_moe else self.mlp
+        model = self.block_sparse_moe if self.use_moe else self.mlp
 
         hidden_states = model(hidden_states)
         if model.num_shards > 1:
@@ -1467,20 +1473,21 @@ def emit_paged_kv_cache_op(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
 
 def setup_params(mod, param_manager, dtype, config, args):
     mappings = [
-        ("embed_tokens", "tok_embeddings"),
-        ("lm_head", "output"),
-        ("input_layernorm", "attention_norm"),
-        ("self_attn", "attention"),
-        ("post_attention_layernorm", "ffn_norm"),
-        ("o_proj", "wo"),
-        ("q_proj", "wq"),
-        ("k_proj", "wk"),
-        ("v_proj", "wv"),
-        ("gate_proj", "w1"),
-        ("down_proj", "w2"),
-        ("up_proj", "w3"),
+        #     ("embed_tokens", "tok_embeddings"),
+        #     ("lm_head", "output"),
+        #     ("input_layernorm", "attention_norm"),
+        #     ("self_attn", "attention"),
+        #     ("post_attention_layernorm", "ffn_norm"),
+        #     ("o_proj", "wo"),
+        #     ("q_proj", "wq"),
+        #     ("k_proj", "wk"),
+        #     ("v_proj", "wv"),
+            ("gate_proj", "w1"),
+            ("down_proj", "w2"),
+            ("up_proj", "w3"),
     ]
 
+    print(config)
     assert isinstance(config, MixtralConfig)
 
     def f_convert_pname_fwd(pname: str) -> List[str]:
@@ -1491,30 +1498,44 @@ def setup_params(mod, param_manager, dtype, config, args):
         if isinstance(config, MixtralConfig):
             for k, v in mappings:
                 pname = pname.replace(k, v)
-            pname = pname.replace("model.", "")
+            # pname = pname.replace("model.", "")
             if config.quantization_scheme.name == "q4f16_ft":
                 if pname.endswith("scales"):
+                    # TODO: remove after quantization integarted
                     pname = pname.replace("scales", "weight")
 
             if config.combine_matmul:
                 if qkv_str in pname:
                     return [
-                        pname.replace(qkv_str, "wq"),
-                        pname.replace(qkv_str, "wk"),
-                        pname.replace(qkv_str, "wv"),
+                        # pname.replace(qkv_str, "wq"),
+                        # pname.replace(qkv_str, "wk"),
+                        # pname.replace(qkv_str, "wv"),
+                        pname.replace(qkv_str, "q_proj"),
+                        pname.replace(qkv_str, "k_proj"),
+                        pname.replace(qkv_str, "v_proj"),
                     ]
                 if "experts.gate_up_combined_proj" in pname:
                     return [
                         pname.replace("experts.gate_up_combined_proj", f"experts.{i}.w1")
-                        for i in range(config.num_experts)
+                        for i in range(config.num_local_experts)
                     ] + [
                         pname.replace("experts.gate_up_combined_proj", f"experts.{i}.w3")
-                        for i in range(config.num_experts)
+                        for i in range(config.num_local_experts)
                     ]
+                    # return [
+                    #     pname.replace("experts.gate_up_combined_proj", f"experts.{i}.gate_proj")
+                    #     for i in range(config.num_local_experts)
+                    # ] + [
+                    #     pname.replace("experts.gate_up_combined_proj", f"experts.{i}.up_proj")
+                    #     for i in range(config.num_local_experts)
+                    # ]
 
             if "experts" in pname:
                 # not needed if using combine_matmul
-                return [pname.replace("experts", f"experts.{i}") for i in range(config.num_experts)]
+                return [
+                    pname.replace("experts", f"experts.{i}")
+                    for i in range(config.num_local_experts)
+                ]
 
         if not config.combine_matmul:
             return [pname]
@@ -1539,8 +1560,8 @@ def setup_params(mod, param_manager, dtype, config, args):
                 return None
             for v, k in mappings:
                 torch_pname = torch_pname.replace(k, v)
-            if "lm_head" not in torch_pname:
-                torch_pname = "model." + torch_pname
+            # if "lm_head" not in torch_pname:
+            #     torch_pname = "model." + torch_pname
         if not config.combine_matmul:
             return [(torch_pname, torch_param.astype(dtype))]
 
@@ -1569,32 +1590,33 @@ def setup_params(mod, param_manager, dtype, config, args):
             if "gate_up_combined_proj" in relax_pname:
                 # combine along out_features dimension and then experts dimension
                 experts = []
-                assert len(torch_params) == 2 * config.num_experts
+                assert len(torch_params) == 2 * config.num_local_experts
 
                 use_pytorch = True
-                if use_pytorch and dtype=='float16':
+                if use_pytorch and dtype == "float16":
                     import torch
+
                     torch_params = [torch.from_numpy(param).cuda() for param in torch_params]
-                    for i in range(config.num_experts):
+                    for i in range(config.num_local_experts):
                         gate, up = (
                             torch_params[i],
-                            torch_params[i + config.num_experts],
+                            torch_params[i + config.num_local_experts],
                         )  # torch weight in col major
                         gate_up = torch.concatenate([gate, up], axis=0).type(torch.float16)
                         experts.append(gate_up.transpose(1, 0))
                     result = torch.stack(experts)
                     result = result.cpu().numpy()
                 else:
-                    for i in range(config.num_experts):
+                    for i in range(config.num_local_experts):
                         gate, up = (
                             torch_params[i],
-                            torch_params[i + config.num_experts],
+                            torch_params[i + config.num_local_experts],
                         )  # torch weight in col major
                         gate_up = np.concatenate([gate, up], axis=0).astype(dtype)
                         experts.append(gate_up.transpose())
                     result = np.stack(experts)
                 # print(config.quantization_scheme.name)
-                if config.quantization_scheme.name == "q4f16_ft" and 'experts' in relax_pname:
+                if config.quantization_scheme.name == "q4f16_ft" and "experts" in relax_pname:
                     result = quantize(result, relax_pname)
                 return result
             if "experts" in relax_pname:
@@ -1603,7 +1625,7 @@ def setup_params(mod, param_manager, dtype, config, args):
                 # torch_params = [torch.from_numpy(param).cuda() for param in torch_params]
                 # experts = [expert.type(dtype).transpose(1, 0) for expert in torch_params]
                 # result = torch.stack(experts).detach().numpy()
-                if config.quantization_scheme.name == "q4f16_ft" and 'experts' in relax_pname:
+                if config.quantization_scheme.name == "q4f16_ft" and "experts" in relax_pname:
                     result = quantize(result, relax_pname)
                 return result
 
@@ -1659,7 +1681,6 @@ def setup_params(mod, param_manager, dtype, config, args):
 
 
 def get_scatter_func(dtype):
-
     @T.prim_func
     def scatter_func(
         x_handle: T.handle,
@@ -1699,13 +1720,13 @@ def get_model(args, hf_config):
     # while Llama-1 variants use `max_sequence_length`.
     # Thus, use `max_sequence_length` if defined. Otherwise, use `max_position_embeddings`.
     # If none of them is defined, throw an error.
-    if "mixtral" in args.model:
+    print(args.model)
+    if "mixtral" in args.model.lower():
         # FIXME
-        hf_config["max_sequence_length"] = 4096
-        # hf_config['num_attention_heads'] =
         config = MixtralConfig(
             **hf_config,
             dtype=dtype,
+            max_sequence_length=hf_config["max_position_embeddings"],
             position_embedding_base=position_embedding_base,
             combine_matmul=True,
             num_shards=args.num_shards,

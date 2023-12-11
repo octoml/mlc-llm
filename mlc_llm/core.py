@@ -476,14 +476,14 @@ def _parse_args(parsed) -> argparse.Namespace:
 
 
 def _setup_model_path(args: argparse.Namespace):  # pylint: disable=too-many-branches
-    if 'mixtral' in args.model:
-        if os.path.isdir(args.model):
-            args.model = os.path.normpath(args.model)  # Remove potential trailing `/`
-            args.model_path = args.model
-            args.model = os.path.basename(args.model)
-        else:
-            args.model_path = os.path.join(args.artifact_path, "models", args.model)
-        return args
+    # if 'mixtral' in args.model:
+    #     if os.path.isdir(args.model):
+    #         args.model = os.path.normpath(args.model)  # Remove potential trailing `/`
+    #         args.model_path = args.model
+    #         args.model = os.path.basename(args.model)
+    #     else:
+    #         args.model_path = os.path.join(args.artifact_path, "models", args.model)
+    #     return args
     if args.hf_path:
         if args.model != "auto":
             assert args.model == os.path.basename(args.hf_path), (
@@ -846,9 +846,9 @@ def build_model_from_args(args: argparse.Namespace):
     if args.model_category == "minigpt":
         # Special case for minigpt, which neither provides nor requires a configuration.
         config = {}
-    elif "mixtral" in args.model:
-        with open(os.path.join(args.model_path, "params.json"), encoding="utf-8") as i_f:
-            config = json.load(i_f)
+    # elif "mixtral" in args.model:
+    #     with open(os.path.join(args.model_path, "params.json"), encoding="utf-8") as i_f:
+    #         config = json.load(i_f)
     else:
         with open(os.path.join(args.model_path, "config.json"), encoding="utf-8") as i_f:
             config = json.load(i_f)
