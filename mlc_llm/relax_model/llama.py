@@ -1620,8 +1620,15 @@ def setup_params(mod, param_manager, dtype, config, args):
                     result = quantize(result, relax_pname)
                 return result
             if "experts" in relax_pname:
-                experts = [expert.astype(dtype).transpose() for expert in torch_params]
-                result = np.stack(experts)
+                use_pytorch = True
+                if use_pytorch and dtype == "float16":
+                    import torch
+                    torch_params = [torch.from_numpy(param).cuda() for param in torch_params]
+                    experts = torch.stack([expert.type(torch.float16).transpose(1, 0) for expert in torch_params])
+                    result = experts.cpu().numpy()
+                else:
+                    experts = [expert.astype(dtype).transpose() for expert in torch_params]
+                    result = np.stack(experts)
                 # torch_params = [torch.from_numpy(param).cuda() for param in torch_params]
                 # experts = [expert.type(dtype).transpose(1, 0) for expert in torch_params]
                 # result = torch.stack(experts).detach().numpy()
