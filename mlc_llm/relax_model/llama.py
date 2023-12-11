@@ -76,6 +76,8 @@ class LlamaConfig:
 class MixtralConfig(LlamaConfig):
     num_experts_per_tok: int
     num_experts: int
+    quantization_scheme: QuantizationScheme
+
     def __init__(
         self,
         **kwargs,
@@ -91,6 +93,9 @@ class MixtralConfig(LlamaConfig):
         moe_config = kwargs["moe"]
         self.num_experts_per_tok = moe_config["num_experts_per_tok"]
         self.num_experts = moe_config["num_experts"]
+
+        # FIXME: remove this
+        self.quantization_scheme = kwargs["quantization_scheme"]
 
 
 class Linear(nn.Module):
@@ -577,72 +582,135 @@ class LlamaAttention(LlamaAttentionBase):
 
 
 class MoELinear(nn.Module):
-    def __init__(self, num_experts, in_features, out_features, bias=False):
+    def __init__(self, config: MixtralConfig, num_experts, in_features, out_features, bias=False):
         assert not bias, "bias not supported"
         self.num_experts = num_experts
         self.in_features = in_features
         self.out_features = out_features
+        self.quantization_scheme = config.quantization_scheme
 
-        # weight is row major
-        self.weight = nn.Parameter(
-            (num_experts, in_features, out_features),
-            dtype="float16",
-            name="expert_weight",
-        )
+        if config.quantization_scheme.name == "q0f16":
+            # weight is row major
+            self.weight = nn.Parameter(
+                (num_experts, in_features, out_features),
+                dtype="float16",
+                name="expert_weight",
+            )
+        elif config.quantization_scheme.name == "q4f16_ft":
+            self.weight = nn.Parameter(
+                (num_experts, in_features, out_features),
+                dtype="int8",
+                name="expert_weight",
+            )
+            self.scales = nn.Parameter(
+                (num_experts, out_features),
+                dtype="float16",
+                name="expert_scales",
+            )
+        else:
+            assert False, "unsupported quantization scheme"
 
     def forward(self, x, rows_before):
         assert len(x.struct_info.shape) == 2
         total_rows = x.struct_info.shape[0]
-        return nn.emit(
-            relax.call_dps_packed(
-                "cutlass.moe_gemm_f16f16",
-                [
-                    x,
-                    self.weight,
-                    rows_before,
-                    total_rows,
-                    self.out_features, # gemm_n
-                    self.in_features, # gemm_k
-                    self.num_experts,
-                ],
-                out_sinfo=x.struct_info,
+        if self.quantization_scheme.name == "q0f16":
+            return nn.emit(
+                relax.call_dps_packed(
+                    "cutlass.moe_gemm_f16f16",
+                    [
+                        x,
+                        self.weight,
+                        rows_before,
+                        total_rows,
+                        self.out_features,  # gemm_n
+                        self.in_features,  # gemm_k
+                        self.num_experts,
+                    ],
+                    out_sinfo=relax.TensorStructInfo(
+                        (total_rows, self.out_features),
+                        x.struct_info.dtype,
+                    ),
+                )
             )
-        )
+
 
 class MoEMLP(nn.Module):
     def __init__(self, config: MixtralConfig):
         self.num_experts_per_tok = config.num_experts_per_tok
         self.num_experts = config.num_experts
-        self.linear1 = MoELinear(self.num_experts, config.hidden_size, config.intermediate_size, bias=False)
-        self.linear2 = MoELinear(self.num_experts, config.intermediate_size, config.hidden_size, bias=False)
-        self.linear3 = MoELinear(self.num_experts, config.hidden_size, config.intermediate_size, bias=False)
+        self.combine_matmul = config.combine_matmul
+
+        self.num_shards = config.num_shards
+        hidden_size = config.hidden_size
+        intermediate_size = config.intermediate_size // self.num_shards
+
+        self.down_proj = MoELinear(
+            config, self.num_experts, intermediate_size, hidden_size, bias=False
+        )
+        if config.combine_matmul:
+            self.gate_up_combined_proj = MoELinear(
+                config,
+                self.num_experts,
+                hidden_size,
+                2 * intermediate_size,
+                bias=False,
+            )
+            # FIXME: rename to 'gate_up_proj' that's consistent with llama. using this name for now to avoid conflicting pname str replacing rules
+            # TODO: check sharding is correct, note that the weight is row major
+            self.gate_up_combined_proj.weight.shard_dim = 2
+            self.gate_up_combined_proj.weight.shard_strategy = "moe_shard_gate_up"
+            self.down_proj.weight.shard_dim = 1
+            self.down_proj.weight.shard_strategy = "moe_shard_mlp_k"
+        else:
+            self.gate_proj = MoELinear(
+                config, self.num_experts, config.hidden_size, config.intermediate_size, bias=False
+            )
+            self.up_proj = MoELinear(
+                config, self.num_experts, config.hidden_size, config.intermediate_size, bias=False
+            )
 
     def forward(self, hidden_states: relax.Expr, rows_before: relax.Expr):
-        # TODO: combine matmul
         # TODO: disco
-        gate_result = self.linear1(hidden_states, rows_before)
-        up_result = self.linear3(hidden_states, rows_before)
-        result = self.linear2(nn.emit(relax.op.nn.silu(gate_result) * up_result), rows_before)
+        if self.combine_matmul:
+            gate_up_results = nn.emit(
+                relax.op.split(
+                    self.gate_up_combined_proj(hidden_states, rows_before),
+                    indices_or_sections=2,
+                    axis=-1,
+                )
+            )
+            gate_result = relax.TupleGetItem(gate_up_results, 0)
+            up_result = relax.TupleGetItem(gate_up_results, 1)
+        else:
+            gate_result = self.gate_proj(hidden_states, rows_before)
+            up_result = self.up_proj(hidden_states, rows_before)
+        result = self.down_proj(nn.emit(relax.op.nn.silu(gate_result) * up_result), rows_before)
         return result
+
 
 class MoE(nn.Module):
     def __init__(self, config: MixtralConfig):
         self.experts = MoEMLP(config)
-        self.gate = Linear(in_features=config.hidden_size, out_features=config.num_experts, bias=False, dtype=config.dtype)
+        self.num_shards = config.num_shards
+        self.gate = Linear(
+            in_features=config.hidden_size,
+            out_features=config.num_experts,
+            bias=False,
+            dtype=config.dtype,
+        )
         self.num_experts_per_tok = config.num_experts_per_tok
         self.num_experts = config.num_experts
 
-    def topk(self, x, is_ascend, index_dtype, k = -1):
+    def topk(self, x, is_ascend, index_dtype, k=-1):
         # topk along axis -1
         result = nn.emit(
             relax.call_dps_packed(
                 "tvm.contrib.thrust.sort_dps",
                 [x, is_ascend],
-                out_sinfo=
-                    [
-                        x.struct_info,
-                        relax.TensorStructInfo(x.struct_info.shape, index_dtype),
-                    ]
+                out_sinfo=[
+                    x.struct_info,
+                    relax.TensorStructInfo(x.struct_info.shape, index_dtype),
+                ],
             )
         )
         sorted_x = relax.TupleGetItem(result, 0)
@@ -660,8 +728,8 @@ class MoE(nn.Module):
         return nn.emit(
             relax.call_dps_packed(
                 "moe_compute_rows_before",
-            [    sorted_expert_ids],
-                out_sinfo=relax.TensorStructInfo([self.num_experts], "int64")
+                [sorted_expert_ids],
+                out_sinfo=relax.TensorStructInfo([self.num_experts], "int64"),
             )
         )
 
@@ -676,7 +744,13 @@ class MoE(nn.Module):
 
     def get_token_indices(self, indices):
         def te_compute(x):
-            return tvm.te.compute(x.shape, lambda *idx: tvm.tir.indexdiv(x(*idx), tvm.runtime.const(self.num_experts_per_tok, dtype="int32")).astype("int32"))
+            return tvm.te.compute(
+                x.shape,
+                lambda *idx: tvm.tir.indexdiv(
+                    x(*idx), tvm.runtime.const(self.num_experts_per_tok, dtype="int32")
+                ).astype("int32"),
+            )
+
         return nn.emit_te(te_compute, indices)
 
     def forward(self, hidden_states):
@@ -689,17 +763,25 @@ class MoE(nn.Module):
         gate = self.gate(hidden_states)
         scores = nn.emit(relax.op.nn.softmax(gate, axis=-1))
 
-        expert_weights, expert_indices = self.topk(scores, is_ascend=False, k=self.num_experts_per_tok, index_dtype="int32") # (num_tokens, top_k), (num_tokens, top_k)
+        expert_weights, expert_indices = self.topk(
+            scores, is_ascend=False, k=self.num_experts_per_tok, index_dtype="int32"
+        )  # (num_tokens, top_k), (num_tokens, top_k)
         flattened_indices = nn.emit(relax.op.flatten(expert_indices))
-        sorted_expert_ids, indices = self.topk(flattened_indices, is_ascend=True, index_dtype="int32")
+        sorted_expert_ids, indices = self.topk(
+            flattened_indices, is_ascend=True, index_dtype="int32"
+        )
 
         rows_before = self.compute_rows_before(sorted_expert_ids)
         token_indices = self.get_token_indices(indices)
         gathered_x = nn.emit(relax.op.take(hidden_states, token_indices, axis=0))
         linear_out = self.experts(gathered_x, rows_before)
         unpermuted = self.scatter(linear_out, indices)
-        unflattened = nn.emit(relax.op.reshape(unpermuted, (-1, self.num_experts_per_tok, hidden_size)))
-        expert_weights = nn.emit(relax.op.reshape(expert_weights, (-1, self.num_experts_per_tok, 1)))
+        unflattened = nn.emit(
+            relax.op.reshape(unpermuted, (-1, self.num_experts_per_tok, hidden_size))
+        )
+        expert_weights = nn.emit(
+            relax.op.reshape(expert_weights, (-1, self.num_experts_per_tok, 1))
+        )
         weighted_sum = nn.emit(relax.op.sum(unflattened * expert_weights, axis=1))
 
         # reshape back to 3D
@@ -737,20 +819,16 @@ class LlamaDecoderLayer(nn.Module):
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
 
-        if not self.use_moe:
-            # Fully Connected
-            hidden_states = self.mlp(hidden_states)
-            if self.mlp.num_shards > 1:
-                residual = nn.emit(
-                    residual / R.const(self.mlp.num_shards, dtype=residual.struct_info.dtype)
-                )
-            hidden_states = nn.emit(residual + hidden_states)
-            if self.mlp.num_shards > 1:
-                hidden_states = nn.emit(ccl.allreduce(hidden_states, "sum"))
-        else:
-            # TODO: disco integration
-            hidden_states = self.feed_forward(hidden_states)
-            hidden_states = nn.emit(residual + hidden_states)
+        model = self.feed_forward if self.use_moe else self.mlp
+
+        hidden_states = model(hidden_states)
+        if model.num_shards > 1:
+            residual = nn.emit(
+                residual / R.const(model.num_shards, dtype=residual.struct_info.dtype)
+            )
+        hidden_states = nn.emit(residual + hidden_states)
+        if model.num_shards > 1:
+            hidden_states = nn.emit(ccl.allreduce(hidden_states, "sum"))
 
         return hidden_states
 
@@ -1370,12 +1448,56 @@ def emit_paged_kv_cache_op(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
 
 
 def setup_params(mod, param_manager, dtype, config, args):
+    mappings = [
+        ("embed_tokens", "tok_embeddings"),
+        ("lm_head", "output"),
+        ("input_layernorm", "attention_norm"),
+        ("self_attn", "attention"),
+        ("post_attention_layernorm", "ffn_norm"),
+        ("o_proj", "wo"),
+        ("q_proj", "wq"),
+        ("k_proj", "wk"),
+        ("v_proj", "wv"),
+        ("gate_proj", "w1"),
+        ("down_proj", "w2"),
+        ("up_proj", "w3"),
+    ]
+
+    assert isinstance(config, MixtralConfig)
+
     def f_convert_pname_fwd(pname: str) -> List[str]:
+        qkv_str = "query_key_value_proj"
+        gate_up_str = "gate_up_proj"
+
+        assert isinstance(config, MixtralConfig)
+        if isinstance(config, MixtralConfig):
+            for k, v in mappings:
+                pname = pname.replace(k, v)
+            pname = pname.replace("model.", "")
+
+            if config.combine_matmul:
+                if qkv_str in pname:
+                    return [
+                        pname.replace(qkv_str, "wq"),
+                        pname.replace(qkv_str, "wk"),
+                        pname.replace(qkv_str, "wv"),
+                    ]
+                if "experts.gate_up_combined_proj" in pname:
+                    return [
+                        pname.replace("experts.gate_up_combined_proj", f"experts.{i}.w1")
+                        for i in range(config.num_experts)
+                    ] + [
+                        pname.replace("experts.gate_up_combined_proj", f"experts.{i}.w3")
+                        for i in range(config.num_experts)
+                    ]
+
+            if "experts" in pname:
+                # not needed if using combine_matmul
+                return [pname.replace("experts", f"experts.{i}") for i in range(config.num_experts)]
+
         if not config.combine_matmul:
             return [pname]
 
-        qkv_str = "query_key_value_proj"
-        gate_up_str = "gate_up_proj"
         if qkv_str in pname:
             return [
                 pname.replace(qkv_str, "q_proj"),
@@ -1391,10 +1513,18 @@ def setup_params(mod, param_manager, dtype, config, args):
             return [pname]
 
     def f_convert_param_bkwd(torch_pname: str, torch_param):
+        if isinstance(config, MixtralConfig):
+            if "experts" in torch_pname:
+                return None
+            for v, k in mappings:
+                torch_pname = torch_pname.replace(k, v)
+            if "lm_head" not in torch_pname:
+                torch_pname = "model." + torch_pname
         if not config.combine_matmul:
             return [(torch_pname, torch_param.astype(dtype))]
 
         combined_layers = ["q_proj", "k_proj", "v_proj", "gate_proj", "up_proj"]
+        # print('bkwd pname ', torch_pname)
         if any([name in torch_pname for name in combined_layers]):
             return None
         return [(torch_pname, torch_param.astype(dtype))]
@@ -1403,6 +1533,29 @@ def setup_params(mod, param_manager, dtype, config, args):
         # Expected to enter this function only for the combined linear matmul weights.
         # Other weights are supposed to be loaded in `f_convert_param_bkwd` since
         # each other relax param has a unique corresponding torch param.
+        if isinstance(config, MixtralConfig):
+            if "gate_up_combined_proj" in relax_pname:
+                # combine along out_features dimension and then experts dimension
+                experts = []
+                assert len(torch_params) == 2 * config.num_experts
+
+                for i in range(config.num_experts):
+                    gate, up = (
+                        torch_params[i],
+                        torch_params[i + config.num_experts],
+                    )  # torch weight in col major
+                    gate_up = np.concatenate([gate, up], axis=0).astype(dtype)
+                    experts.append(gate_up.transpose())
+                result = np.stack(experts)
+                return result
+            if "experts" in relax_pname:
+                experts = [expert.astype(dtype).transpose() for expert in torch_params]
+                result = np.stack(experts)
+                # torch_params = [torch.from_numpy(param).cuda() for param in torch_params]
+                # experts = [expert.type(dtype).transpose(1, 0) for expert in torch_params]
+                # result = torch.stack(experts).detach().numpy()
+                return result
+
         if not config.combine_matmul:
             # When matmul combination is not turned on, each relax param has a unique
             # corresponding torch param, and this function is not expected to be entered.
@@ -1454,6 +1607,30 @@ def setup_params(mod, param_manager, dtype, config, args):
     return mod, param_manager, param_list, config
 
 
+def get_scatter_func(dtype):
+    import tvm.script.tir as T
+
+    @T.prim_func
+    def scatter_func(
+        x_handle: T.handle,
+        indices_handle: T.handle,
+        out_handle: T.handle,
+    ) -> None:
+        total_rows = T.int64()
+        hidden_size = T.int64()
+        x = T.match_buffer(x_handle, (total_rows, hidden_size), dtype)
+        indices = T.match_buffer(indices_handle, (total_rows,), "int32")
+        out = T.match_buffer(out_handle, (total_rows, hidden_size), dtype)
+        T.func_attr({"global_symbol": "scatter", "tir.noalias": True})
+        for i in range(total_rows):
+            for j in range(hidden_size):
+                with T.block("scatter"):
+                    vi, vj = T.axis.remap("SS", [i, j])
+                    out[indices[vi], vj] = x[vi, vj]
+
+    return scatter_func
+
+
 def get_model(args, hf_config):
     model_name = args.model
     dtype = args.quantization.model_dtype
@@ -1472,9 +1649,9 @@ def get_model(args, hf_config):
     # while Llama-1 variants use `max_sequence_length`.
     # Thus, use `max_sequence_length` if defined. Otherwise, use `max_position_embeddings`.
     # If none of them is defined, throw an error.
-    if 'mixtral' in args.model:
+    if "mixtral" in args.model:
         # FIXME
-        hf_config['max_sequence_length'] = 4096
+        hf_config["max_sequence_length"] = 4096
         # hf_config['num_attention_heads'] =
         config = MixtralConfig(
             **hf_config,
@@ -1483,6 +1660,7 @@ def get_model(args, hf_config):
             combine_matmul=True,
             num_shards=args.num_shards,
             build_model_only=args.build_model_only,
+            quantization_scheme=args.quantization,
         )
     elif "max_sequence_length" in hf_config:
         config = LlamaConfig(
@@ -1514,6 +1692,8 @@ def get_model(args, hf_config):
 
     param_manager = ParamManager()
     bb = relax.BlockBuilder()
+
+    bb.add_func(get_scatter_func(dtype), "scatter")
 
     if sep_embed:
         create_embed_func(bb, param_manager, config, args.quantization)
