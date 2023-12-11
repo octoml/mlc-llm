@@ -897,7 +897,7 @@ def build_model_from_args(args: argparse.Namespace):
             # Run pre-quantization if provided.
             args.model_path = param_manager.run_pre_quantize(args.model_path)
             param_manager.init_torch_pname_to_bin_name(args.use_safetensors)
-            parameter_transforms.append(param_manager.create_parameter_transformation())
+            parameter_transforms.append(param_manager.create_parameter_transformation(optimize_parameter_order=False)) # disable to prevent errors
 
             # Run pre-sharding if required
             if args.num_shards > 1 and args.use_presharded_weights:
