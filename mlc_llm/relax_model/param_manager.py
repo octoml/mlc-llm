@@ -606,8 +606,8 @@ class ParamManager:
                     relax_pname,
                     [cached_torch_params[torch_pname] for torch_pname in torch_pnames],
                 )
-                for torch_pname in torch_pnames:
-                    del cached_torch_params[torch_pname]
+                # for torch_pname in torch_pnames:
+                    # del cached_torch_params[torch_pname]
 
             assert i in cached_relax_params
             assert i not in loaded_idx_set

@@ -7,7 +7,7 @@ import tvm
 from tvm import relax, te, tir
 from tvm.relax.op import ccl
 from tvm.relax.testing import nn
-from tvm.script import relax as R
+from tvm.script import relax as R, tir as T
 
 from ..quantization import ParamQuantKind, QuantizationScheme
 from .commons import create_metadata_func
@@ -594,18 +594,16 @@ class MoELinear(nn.Module):
             self.weight = nn.Parameter(
                 (num_experts, in_features, out_features),
                 dtype="float16",
-                name="expert_weight",
             )
         elif config.quantization_scheme.name == "q4f16_ft":
+            assert out_features % 8 == 0
             self.weight = nn.Parameter(
-                (num_experts, in_features, out_features),
+                (num_experts, in_features, out_features // 2),
                 dtype="int8",
-                name="expert_weight",
             )
             self.scales = nn.Parameter(
                 (num_experts, out_features),
                 dtype="float16",
-                name="expert_scales",
             )
         else:
             assert False, "unsupported quantization scheme"
@@ -620,6 +618,26 @@ class MoELinear(nn.Module):
                     [
                         x,
                         self.weight,
+                        rows_before,
+                        total_rows,
+                        self.out_features,  # gemm_n
+                        self.in_features,  # gemm_k
+                        self.num_experts,
+                    ],
+                    out_sinfo=relax.TensorStructInfo(
+                        (total_rows, self.out_features),
+                        x.struct_info.dtype,
+                    ),
+                )
+            )
+        else:
+            return nn.emit(
+                relax.call_dps_packed(
+                    "cutlass.moe_gemm_s4f16",
+                    [
+                        x,
+                        self.weight,
+                        self.scales,
                         rows_before,
                         total_rows,
                         self.out_features,  # gemm_n
@@ -720,8 +738,8 @@ class MoE(nn.Module):
             beg = [0] * ndim
             end = [x.struct_info.shape[i] for i in range(ndim - 1)] + [k]
             axes = list(range(ndim))
-            sorted_x = nn.emit(relax.op.strided_slice(sorted_x, axes, beg, end))
-            indices = nn.emit(relax.op.strided_slice(indices, axes, beg, end))
+            sorted_x = nn.emit(relax.op.strided_slice(sorted_x, axes, beg, end, assume_inbound=True))
+            indices = nn.emit(relax.op.strided_slice(indices, axes, beg, end, assume_inbound=True))
         return sorted_x, indices
 
     def compute_rows_before(self, sorted_expert_ids):
@@ -1142,8 +1160,8 @@ def create_prefill_func_for_single_seq(
     func_name = "prefill_with_embed" if sep_embed else "prefill"
 
     bsz = 1
-    seq_len = tvm.tir.Var("n", "int64")
-    all_seq_len = tvm.tir.Var("m", "int64")
+    seq_len = tvm.tir.SizeVar("n", "int64")
+    all_seq_len = tvm.tir.SizeVar("m", "int64")
     hidden_size = config.hidden_size
     with bb.function(func_name):
         model = LlamaForCausalLM(
@@ -1474,6 +1492,9 @@ def setup_params(mod, param_manager, dtype, config, args):
             for k, v in mappings:
                 pname = pname.replace(k, v)
             pname = pname.replace("model.", "")
+            if config.quantization_scheme.name == "q4f16_ft":
+                if pname.endswith("scales"):
+                    pname = pname.replace("scales", "weight")
 
             if config.combine_matmul:
                 if qkv_str in pname:
@@ -1529,6 +1550,17 @@ def setup_params(mod, param_manager, dtype, config, args):
             return None
         return [(torch_pname, torch_param.astype(dtype))]
 
+    def quantize(experts, relax_pname):
+        print("quantizing experts", relax_pname)
+        func = tvm.get_global_func("cutlass.symmetric_quantize")
+        nd_experts = tvm.nd.array(experts)
+        qweight, qscale = func(nd_experts, True)
+        if relax_pname.endswith("weight"):
+            return qweight
+        else:
+            assert relax_pname.endswith("scales")
+            return qscale
+
     def f_compute_relax_param(relax_pname: str, torch_params: List[Any]):
         # Expected to enter this function only for the combined linear matmul weights.
         # Other weights are supposed to be loaded in `f_convert_param_bkwd` since
@@ -1539,14 +1571,31 @@ def setup_params(mod, param_manager, dtype, config, args):
                 experts = []
                 assert len(torch_params) == 2 * config.num_experts
 
-                for i in range(config.num_experts):
-                    gate, up = (
-                        torch_params[i],
-                        torch_params[i + config.num_experts],
-                    )  # torch weight in col major
-                    gate_up = np.concatenate([gate, up], axis=0).astype(dtype)
-                    experts.append(gate_up.transpose())
-                result = np.stack(experts)
+                use_pytorch = True
+                if use_pytorch and dtype=='float16':
+                    import torch
+                    torch_params = [torch.from_numpy(param).cuda() for param in torch_params]
+                    for i in range(config.num_experts):
+                        gate, up = (
+                            torch_params[i],
+                            torch_params[i + config.num_experts],
+                        )  # torch weight in col major
+                        gate_up = torch.concatenate([gate, up], axis=0).type(torch.float16)
+                        experts.append(gate_up.transpose(1, 0))
+                    result = torch.stack(experts)
+                    result = result.cpu().numpy()
+                else:
+                    for i in range(config.num_experts):
+                        gate, up = (
+                            torch_params[i],
+                            torch_params[i + config.num_experts],
+                        )  # torch weight in col major
+                        gate_up = np.concatenate([gate, up], axis=0).astype(dtype)
+                        experts.append(gate_up.transpose())
+                    result = np.stack(experts)
+                # print(config.quantization_scheme.name)
+                if config.quantization_scheme.name == "q4f16_ft" and 'experts' in relax_pname:
+                    result = quantize(result, relax_pname)
                 return result
             if "experts" in relax_pname:
                 experts = [expert.astype(dtype).transpose() for expert in torch_params]
@@ -1554,6 +1603,8 @@ def setup_params(mod, param_manager, dtype, config, args):
                 # torch_params = [torch.from_numpy(param).cuda() for param in torch_params]
                 # experts = [expert.type(dtype).transpose(1, 0) for expert in torch_params]
                 # result = torch.stack(experts).detach().numpy()
+                if config.quantization_scheme.name == "q4f16_ft" and 'experts' in relax_pname:
+                    result = quantize(result, relax_pname)
                 return result
 
         if not config.combine_matmul:
@@ -1608,7 +1659,6 @@ def setup_params(mod, param_manager, dtype, config, args):
 
 
 def get_scatter_func(dtype):
-    import tvm.script.tir as T
 
     @T.prim_func
     def scatter_func(
