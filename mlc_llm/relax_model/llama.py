@@ -73,6 +73,26 @@ class LlamaConfig:
         return self.num_key_value_heads
 
 
+class MixtralConfig(LlamaConfig):
+    num_experts_per_tok: int
+    num_experts: int
+    def __init__(
+        self,
+        **kwargs,
+    ):
+        kwargs["num_attention_heads"] = kwargs["n_heads"]
+        kwargs["num_key_value_heads"] = kwargs["n_kv_heads"]
+        kwargs["rms_norm_eps"] = kwargs["norm_eps"]
+        kwargs["num_hidden_layers"] = kwargs["n_layers"]
+        kwargs["intermediate_size"] = kwargs["hidden_dim"]
+        kwargs["hidden_size"] = kwargs["dim"]  # n heads * head_size
+
+        super().__init__(**kwargs)
+        moe_config = kwargs["moe"]
+        self.num_experts_per_tok = moe_config["num_experts_per_tok"]
+        self.num_experts = moe_config["num_experts"]
+
+
 class Linear(nn.Module):
     def __init__(self, in_features, out_features, dtype: str, bias=True):
         self.in_features = in_features
@@ -556,12 +576,148 @@ class LlamaAttention(LlamaAttentionBase):
         return attn_output, past_key_values
 
 
+class MoELinear(nn.Module):
+    def __init__(self, num_experts, in_features, out_features, bias=False):
+        assert not bias, "bias not supported"
+        self.num_experts = num_experts
+        self.in_features = in_features
+        self.out_features = out_features
+
+        # weight is row major
+        self.weight = nn.Parameter(
+            (num_experts, in_features, out_features),
+            dtype="float16",
+            name="expert_weight",
+        )
+
+    def forward(self, x, rows_before):
+        assert len(x.struct_info.shape) == 2
+        total_rows = x.struct_info.shape[0]
+        return nn.emit(
+            relax.call_dps_packed(
+                "cutlass.moe_gemm_f16f16",
+                [
+                    x,
+                    self.weight,
+                    rows_before,
+                    total_rows,
+                    self.out_features, # gemm_n
+                    self.in_features, # gemm_k
+                    self.num_experts,
+                ],
+                out_sinfo=x.struct_info,
+            )
+        )
+
+class MoEMLP(nn.Module):
+    def __init__(self, config: MixtralConfig):
+        self.num_experts_per_tok = config.num_experts_per_tok
+        self.num_experts = config.num_experts
+        self.linear1 = MoELinear(self.num_experts, config.hidden_size, config.intermediate_size, bias=False)
+        self.linear2 = MoELinear(self.num_experts, config.intermediate_size, config.hidden_size, bias=False)
+        self.linear3 = MoELinear(self.num_experts, config.hidden_size, config.intermediate_size, bias=False)
+
+    def forward(self, hidden_states: relax.Expr, rows_before: relax.Expr):
+        # TODO: combine matmul
+        # TODO: disco
+        gate_result = self.linear1(hidden_states, rows_before)
+        up_result = self.linear3(hidden_states, rows_before)
+        result = self.linear2(nn.emit(relax.op.nn.silu(gate_result) * up_result), rows_before)
+        return result
+
+class MoE(nn.Module):
+    def __init__(self, config: MixtralConfig):
+        self.experts = MoEMLP(config)
+        self.gate = Linear(in_features=config.hidden_size, out_features=config.num_experts, bias=False, dtype=config.dtype)
+        self.num_experts_per_tok = config.num_experts_per_tok
+        self.num_experts = config.num_experts
+
+    def topk(self, x, is_ascend, index_dtype, k = -1):
+        # topk along axis -1
+        result = nn.emit(
+            relax.call_dps_packed(
+                "tvm.contrib.thrust.sort_dps",
+                [x, is_ascend],
+                out_sinfo=
+                    [
+                        x.struct_info,
+                        relax.TensorStructInfo(x.struct_info.shape, index_dtype),
+                    ]
+            )
+        )
+        sorted_x = relax.TupleGetItem(result, 0)
+        indices = relax.TupleGetItem(result, 1)
+        if k != -1:
+            ndim = len(x.struct_info.shape)
+            beg = [0] * ndim
+            end = [x.struct_info.shape[i] for i in range(ndim - 1)] + [k]
+            axes = list(range(ndim))
+            sorted_x = nn.emit(relax.op.strided_slice(sorted_x, axes, beg, end))
+            indices = nn.emit(relax.op.strided_slice(indices, axes, beg, end))
+        return sorted_x, indices
+
+    def compute_rows_before(self, sorted_expert_ids):
+        return nn.emit(
+            relax.call_dps_packed(
+                "moe_compute_rows_before",
+            [    sorted_expert_ids],
+                out_sinfo=relax.TensorStructInfo([self.num_experts], "int64")
+            )
+        )
+
+    def scatter(self, linear_out, indices):
+        return nn.emit(
+            relax.call_dps_packed(
+                "scatter",
+                [linear_out, indices],
+                out_sinfo=linear_out.struct_info,
+            )
+        )
+
+    def get_token_indices(self, indices):
+        def te_compute(x):
+            return tvm.te.compute(x.shape, lambda *idx: tvm.tir.indexdiv(x(*idx), tvm.runtime.const(self.num_experts_per_tok, dtype="int32")).astype("int32"))
+        return nn.emit_te(te_compute, indices)
+
+    def forward(self, hidden_states):
+        hidden_states_shape = hidden_states.struct_info.shape
+        hidden_size = hidden_states_shape[-1]
+        # reshape to 2D
+        hidden_states = nn.emit(relax.op.reshape(hidden_states, (-1, hidden_size)))
+
+        # TODO: switch topk softmax
+        gate = self.gate(hidden_states)
+        scores = nn.emit(relax.op.nn.softmax(gate, axis=-1))
+
+        expert_weights, expert_indices = self.topk(scores, is_ascend=False, k=self.num_experts_per_tok, index_dtype="int32") # (num_tokens, top_k), (num_tokens, top_k)
+        flattened_indices = nn.emit(relax.op.flatten(expert_indices))
+        sorted_expert_ids, indices = self.topk(flattened_indices, is_ascend=True, index_dtype="int32")
+
+        rows_before = self.compute_rows_before(sorted_expert_ids)
+        token_indices = self.get_token_indices(indices)
+        gathered_x = nn.emit(relax.op.take(hidden_states, token_indices, axis=0))
+        linear_out = self.experts(gathered_x, rows_before)
+        unpermuted = self.scatter(linear_out, indices)
+        unflattened = nn.emit(relax.op.reshape(unpermuted, (-1, self.num_experts_per_tok, hidden_size)))
+        expert_weights = nn.emit(relax.op.reshape(expert_weights, (-1, self.num_experts_per_tok, 1)))
+        weighted_sum = nn.emit(relax.op.sum(unflattened * expert_weights, axis=1))
+
+        # reshape back to 3D
+        weighted_sum = nn.emit(relax.op.reshape(weighted_sum, hidden_states_shape))
+        return weighted_sum
+
+
 class LlamaDecoderLayer(nn.Module):
     def __init__(self, config: LlamaConfig, enable_batching: bool):
         attn_class = LlamaPagedAttention if enable_batching else LlamaAttention
         self.hidden_size = config.hidden_size
         self.self_attn = attn_class(config)
-        self.mlp = LlamaMLP(config)
+        if isinstance(config, MixtralConfig):
+            self.use_moe = True
+            self.feed_forward = MoE(config)
+        else:
+            self.use_moe = False
+            self.mlp = LlamaMLP(config)
         self.input_layernorm = LlamaRMSNorm(
             config.hidden_size, dtype=config.dtype, eps=config.rms_norm_eps
         )
@@ -578,17 +734,23 @@ class LlamaDecoderLayer(nn.Module):
         if self.self_attn.num_shards > 1:
             hidden_states = nn.emit(ccl.allreduce(hidden_states, "sum"))
 
-        # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
-        if self.mlp.num_shards > 1:
-            residual = nn.emit(
-                residual / R.const(self.mlp.num_shards, dtype=residual.struct_info.dtype)
-            )
-        hidden_states = nn.emit(residual + hidden_states)
-        if self.mlp.num_shards > 1:
-            hidden_states = nn.emit(ccl.allreduce(hidden_states, "sum"))
+
+        if not self.use_moe:
+            # Fully Connected
+            hidden_states = self.mlp(hidden_states)
+            if self.mlp.num_shards > 1:
+                residual = nn.emit(
+                    residual / R.const(self.mlp.num_shards, dtype=residual.struct_info.dtype)
+                )
+            hidden_states = nn.emit(residual + hidden_states)
+            if self.mlp.num_shards > 1:
+                hidden_states = nn.emit(ccl.allreduce(hidden_states, "sum"))
+        else:
+            # TODO: disco integration
+            hidden_states = self.feed_forward(hidden_states)
+            hidden_states = nn.emit(residual + hidden_states)
 
         return hidden_states
 
@@ -1310,7 +1472,19 @@ def get_model(args, hf_config):
     # while Llama-1 variants use `max_sequence_length`.
     # Thus, use `max_sequence_length` if defined. Otherwise, use `max_position_embeddings`.
     # If none of them is defined, throw an error.
-    if "max_sequence_length" in hf_config:
+    if 'mixtral' in args.model:
+        # FIXME
+        hf_config['max_sequence_length'] = 4096
+        # hf_config['num_attention_heads'] =
+        config = MixtralConfig(
+            **hf_config,
+            dtype=dtype,
+            position_embedding_base=position_embedding_base,
+            combine_matmul=True,
+            num_shards=args.num_shards,
+            build_model_only=args.build_model_only,
+        )
+    elif "max_sequence_length" in hf_config:
         config = LlamaConfig(
             **hf_config,
             dtype=dtype,
