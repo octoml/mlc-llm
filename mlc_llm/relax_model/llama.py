@@ -1158,8 +1158,8 @@ def create_prefill_func_for_single_seq(
     func_name = "prefill_with_embed" if sep_embed else "prefill"
 
     bsz = 1
-    seq_len = tvm.tir.SizeVar("n", "int64")
-    all_seq_len = tvm.tir.SizeVar("m", "int64")
+    seq_len = tvm.tir.Var("n", "int64")
+    all_seq_len = tvm.tir.Var("m", "int64")
     hidden_size = config.hidden_size
     with bb.function(func_name):
         model = LlamaForCausalLM(
@@ -1470,14 +1470,11 @@ def setup_params(mod, param_manager, dtype, config, args):
             ("up_proj", "w3"),
     ]
 
-    print(config)
-    assert isinstance(config, MixtralConfig)
 
     def f_convert_pname_fwd(pname: str) -> List[str]:
         qkv_str = "query_key_value_proj"
         gate_up_str = "gate_up_proj"
 
-        assert isinstance(config, MixtralConfig)
         if isinstance(config, MixtralConfig):
             for k, v in mappings:
                 pname = pname.replace(k, v)
@@ -1698,7 +1695,6 @@ def get_model(args, hf_config):
     # while Llama-1 variants use `max_sequence_length`.
     # Thus, use `max_sequence_length` if defined. Otherwise, use `max_position_embeddings`.
     # If none of them is defined, throw an error.
-    print(args.model)
     if "mixtral" in args.model.lower():
         # FIXME
         config = MixtralConfig(

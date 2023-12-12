@@ -70,11 +70,6 @@ def argparse_postproc_common(args: argparse.Namespace) -> None:
         "rwkv_world": "rwkv_world",
         "minigpt": "minigpt",
     }
-    # if "mixtral" in args.model_path:
-    #     args.model_category = "mixtral"
-    #     config = open(os.path.join(args.model_path, "params.json"), encoding="utf-8")
-    #     model_path_lower = args.model_path.lower()
-    # else:
     try:
         with open(os.path.join(args.model_path, "config.json"), encoding="utf-8") as i_f:
             config = json.load(i_f)
