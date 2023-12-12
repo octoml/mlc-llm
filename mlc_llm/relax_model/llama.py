@@ -77,25 +77,18 @@ class MixtralConfig(LlamaConfig):
     num_experts_per_tok: int
     num_local_experts: int
     sliding_window: int
-    router_aux_loss_coef: float  # not sure if needed
+    # router_aux_loss_coef: float  # not sure if needed
     quantization_scheme: QuantizationScheme
 
     def __init__(
         self,
         **kwargs,
     ):
-        # kwargs["num_attention_heads"] = kwargs["n_heads"]
-        # kwargs["num_key_value_heads"] = kwargs["n_kv_heads"]
-        # kwargs["rms_norm_eps"] = kwargs["norm_eps"]
-        # kwargs["num_hidden_layers"] = kwargs["n_layers"]
-        # kwargs["intermediate_size"] = kwargs["hidden_dim"]
-        # kwargs["hidden_size"] = kwargs["dim"]  # n heads * head_size
-
         super().__init__(**kwargs)
         self.num_experts_per_tok = kwargs["num_experts_per_tok"]
         self.num_local_experts = kwargs["num_local_experts"]
         self.sliding_window = kwargs["sliding_window"]
-        self.router_aux_loss_coef = kwargs["router_aux_loss_coef"]
+        # self.router_aux_loss_coef = kwargs["router_aux_loss_coef"]
 
         # FIXME: remove this
         self.quantization_scheme = kwargs["quantization_scheme"]
@@ -782,7 +775,6 @@ class MoE(nn.Module):
         # reshape to 2D
         hidden_states = nn.emit(relax.op.reshape(hidden_states, (-1, hidden_size)))
 
-        # TODO: switch topk softmax
         gate = self.gate(hidden_states)
         scores = nn.emit(relax.op.nn.softmax(gate, axis=-1))
 
@@ -1473,15 +1465,6 @@ def emit_paged_kv_cache_op(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
 
 def setup_params(mod, param_manager, dtype, config, args):
     mappings = [
-        #     ("embed_tokens", "tok_embeddings"),
-        #     ("lm_head", "output"),
-        #     ("input_layernorm", "attention_norm"),
-        #     ("self_attn", "attention"),
-        #     ("post_attention_layernorm", "ffn_norm"),
-        #     ("o_proj", "wo"),
-        #     ("q_proj", "wq"),
-        #     ("k_proj", "wk"),
-        #     ("v_proj", "wv"),
             ("gate_proj", "w1"),
             ("down_proj", "w2"),
             ("up_proj", "w3"),
@@ -1507,9 +1490,6 @@ def setup_params(mod, param_manager, dtype, config, args):
             if config.combine_matmul:
                 if qkv_str in pname:
                     return [
-                        # pname.replace(qkv_str, "wq"),
-                        # pname.replace(qkv_str, "wk"),
-                        # pname.replace(qkv_str, "wv"),
                         pname.replace(qkv_str, "q_proj"),
                         pname.replace(qkv_str, "k_proj"),
                         pname.replace(qkv_str, "v_proj"),
@@ -1522,13 +1502,6 @@ def setup_params(mod, param_manager, dtype, config, args):
                         pname.replace("experts.gate_up_combined_proj", f"experts.{i}.w3")
                         for i in range(config.num_local_experts)
                     ]
-                    # return [
-                    #     pname.replace("experts.gate_up_combined_proj", f"experts.{i}.gate_proj")
-                    #     for i in range(config.num_local_experts)
-                    # ] + [
-                    #     pname.replace("experts.gate_up_combined_proj", f"experts.{i}.up_proj")
-                    #     for i in range(config.num_local_experts)
-                    # ]
 
             if "experts" in pname:
                 # not needed if using combine_matmul
@@ -1560,8 +1533,6 @@ def setup_params(mod, param_manager, dtype, config, args):
                 return None
             for v, k in mappings:
                 torch_pname = torch_pname.replace(k, v)
-            # if "lm_head" not in torch_pname:
-            #     torch_pname = "model." + torch_pname
         if not config.combine_matmul:
             return [(torch_pname, torch_param.astype(dtype))]
 
