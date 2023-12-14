@@ -2,9 +2,6 @@ import math
 from collections import defaultdict
 from typing import List, Optional
 
-# TODO: remove this
-import tvm
-
 from ..engine import (
     RequestId,
     SequenceId,
@@ -106,25 +103,11 @@ class DecodeBlockTable:
 
 class KVCache:
     def __init__(
-        self, num_blocks, block_size, num_layers, num_heads, head_size, disco_session
+        self,
+        cache_blocks,
+        block_size,
     ):
-        if disco_session:
-            init_cache_func = disco_session.get_global_func(
-                "tvm.contrib.vllm.allocate_kv_cache"
-            )
-            self.copy_cache_blocks_func = disco_session.get_global_func(
-                "tvm.contrib.vllm.copy_blocks"
-            )
-        else:
-            init_cache_func = tvm.get_global_func("tvm.contrib.vllm.allocate_kv_cache")
-            self.copy_cache_blocks_func = tvm.get_global_func(
-                "tvm.contrib.vllm.copy_blocks"
-            )
-
-        self.cache = init_cache_func(
-            head_size, num_layers, num_heads, block_size, num_blocks
-        )
-
+        self.cache_blocks = cache_blocks
         self.block_size = block_size
 
         # SequenceId -> list[int]
@@ -152,18 +135,13 @@ class CacheManager:
 
     def __init__(
         self,
-        num_blocks,
-        num_layers,
-        num_heads,
-        head_size,
-        disco_session=None,
-        sliding_window=None,
+        cache_blocks,  # This can be any type
+        num_blocks: int,
+        sliding_window: Optional[int] = None,
     ):
         self.num_blocks = num_blocks
         self.free_blocks = list(range(num_blocks))
-        self.kv_cache = KVCache(
-            num_blocks, self.block_size, num_layers, num_heads, head_size, disco_session
-        )
+        self.kv_cache = KVCache(cache_blocks, self.block_size)
         self.allocated_prompt_tokens = dict[SequenceId, int]()
         self.allocated_decode_tokens = dict[SequenceId, int]()
 

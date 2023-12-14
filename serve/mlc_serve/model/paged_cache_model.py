@@ -275,6 +275,15 @@ class Model:
         else:
             self.block_sliding_window = None
 
+        if self.disco_session:
+            self.copy_cache_blocks_func = self.disco_session.get_global_func(
+                "tvm.contrib.vllm.copy_blocks"
+            )
+        else:
+            self.copy_cache_blocks_func = tvm.get_global_func(
+                "tvm.contrib.vllm.copy_blocks"
+            )
+
     def get_used_memory(self):
         if self.disco_session:
             params = self.params.debug_get_from_remote(0)
@@ -376,8 +385,6 @@ class Model:
             seq_lens = copy_to_worker_0(self.disco_session, seq_lens)
             slot_mapping = copy_to_worker_0(self.disco_session, slot_mapping)
 
-        kv_cache = cache.cache
-
         if is_prefill:
             torch.cuda.nvtx.range_push(f"forward prefill {input_shape}")
 
@@ -391,14 +398,19 @@ class Model:
                     input_ids,
                     positions,
                     seq_lens,
-                    kv_cache,
+                    cache.cache_blocks,
                     slot_mapping,
                     indices_within_window,
                     self.params,
                 )
             else:
                 out = self.mod["prefill"](
-                    input_ids, positions, seq_lens, kv_cache, slot_mapping, self.params
+                    input_ids,
+                    positions,
+                    seq_lens,
+                    cache.cache_blocks,
+                    slot_mapping,
+                    self.params,
                 )
 
             if self.disco_session:
@@ -417,7 +429,7 @@ class Model:
                 input_ids,
                 positions,
                 seq_lens,
-                kv_cache,
+                cache.cache_blocks,
                 slot_mapping,
                 block_tables,
                 self.params,
@@ -445,7 +457,7 @@ class Model:
                     "int64",
                 )
 
-            cache.copy_cache_blocks_func(kv_cache, block_mapping)
+            self.copy_cache_blocks_func(cache.cache_blocks, block_mapping)
             cache.pending_copy_from_to = []
 
         try:
@@ -633,12 +645,24 @@ class PagedCacheModelModule:
 
         LOG.info(f"Using {num_blocks} cache blocks.")
 
-        cache_manager = CacheManager(
-            num_blocks,
+        if model.disco_session:
+            init_cache_func = model.disco_session.get_global_func(
+                "tvm.contrib.vllm.allocate_kv_cache"
+            )
+        else:
+            init_cache_func = tvm.get_global_func("tvm.contrib.vllm.allocate_kv_cache")
+
+        cache_blocks = init_cache_func(
+            head_size,
             model_artifact_config.num_hidden_layers,
             num_kv_heads,
-            head_size,
-            model.disco_session,
+            CacheManager.block_size,
+            num_blocks,
+        )
+
+        cache_manager = CacheManager(
+            cache_blocks,
+            num_blocks,
             model_artifact_config.sliding_window,
         )
 
