@@ -447,7 +447,6 @@ class Model:
             block_mapping = tvm.nd.array(
                 np.array(cache.pending_copy_from_to, dtype="int64")
             )
-            assert cache.copy_cache_blocks_func
 
             if self.disco_session:
                 block_mapping = broadcast_from_worker_0(
