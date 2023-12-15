@@ -192,7 +192,6 @@ def _test_stop(
         max_num_sequences,
         max_input_len,
     )
-    ignore_eos = False
     requests = []
     for n, stop in enumerate(["\n", ["\n"], "\n\n", "!", ["n", "!"]]):
         requests.append(create_request(idx=str(n), prompt=prompt, temp=0, max_tokens=300, stop=stop, ignore_eos=False))
@@ -206,16 +205,16 @@ def _test_stop(
             assert len(res.sequences) == 1
             seq = res.sequences[0]
             req_id = int(res.request_id)
+            generated[int(res.request_id)] += seq.delta
+
             if seq.is_finished:
                 assert seq.finish_reason == FinishReason.Stop, f"{seq.finish_reason.name}"
-                assert not seq.delta
                 gen_txt = generated[req_id]
 
                 # stop token should appear only once in the gen text.
                 found = sum([gen_txt.count(str_stop) for str_stop in requests[req_id].stopping_criteria.stop_sequences])
                 assert found == 1, f"{gen_txt!r}, matches: {found}"
-            else:
-                generated[int(res.request_id)] += seq.delta
+
 
     if use_staging_engine:
         engine.stop()
