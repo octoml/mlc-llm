@@ -246,6 +246,8 @@ class StagingInferenceEngine(ScopedInferenceEngine):
 
                 if seq_output.finish_reason is not None:
                     gen_seq.is_finished = True
+                else:
+                    gen_seq.is_finished = False
 
             for request_id, out_seqs in seq_outputs.items():
                 outputs.append(
