@@ -18,6 +18,7 @@ from .base import (
 )
 from .engine_common import (
     should_stop_by_length,
+    should_stop_seq_by_length,
     get_new_request_state,
     get_requests_to_process,
     update_sequence,
@@ -225,11 +226,25 @@ class SynchronousInferenceEngine(InferenceEngine, EngineBase):
                 state.stopping_criteria,
             )
 
+            finish_reason = None
+
+            if gen_seq.is_finished:
+                finish_reason = FinishReason.Stop
+            if should_stop_seq_by_length(
+                gen_seq,
+                state.prompt_len,
+                self.max_context_length,
+                state.stopping_criteria.max_tokens,
+            ):
+                gen_seq.is_finished = True
+                finish_reason = FinishReason.Length
+
             seq_outputs[request_id].append(
                 SequenceOutput(
                     seq_index,
                     delta,
                     num_generated_tokens=len(gen_seq.generated_token_ids),
+                    finish_reason=finish_reason,
                 )
             )
 
