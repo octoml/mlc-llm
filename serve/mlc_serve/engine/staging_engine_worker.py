@@ -10,7 +10,14 @@ from typing import Callable, Optional, Union, Any, Dict, List, Set
 
 import structlog
 
-from .base import FinishReason, RequestId, RequestState, ValidationError, SequenceId
+from .base import (
+    FinishReason,
+    RequestId,
+    RequestState,
+    ValidationError,
+    SequenceId,
+    GenerationSequence,
+)
 from .metrics import PrometheusMetrics
 from .metrics_labels import *
 from .model_module import (
@@ -68,6 +75,7 @@ class GenerationLoopWorkerOutput:
 class GenerationLoopWorker(EngineBase):
     cancelled_requests: List[RequestState]
     stopped_sequences: Set[SequenceId]
+    sequence_map: Dict[SequenceId, GenerationSequence]
     prom_metrics: PrometheusMetrics
     inv_kv_cache_size: float
 
@@ -79,6 +87,7 @@ class GenerationLoopWorker(EngineBase):
 
         self.cancelled_requests = list[RequestState]()
         self.stopped_sequences = set[SequenceId]()
+        self.sequence_map = dict[SequenceId, GenerationSequence]()
 
         self.prom_metrics = PrometheusMetrics()
         self.inv_kv_cache_size = 1.0 / self.cache_manager.get_kv_cache_size()
@@ -101,6 +110,9 @@ class GenerationLoopWorker(EngineBase):
                         )
                 else:
                     valid_states.append(state)
+
+                for seq in state.generation_sequences:
+                    self.sequence_map[seq.seq_id] = seq
 
             self.queue.extend(valid_states)
             self.has_new_requests.notify_all()
@@ -165,22 +177,20 @@ class GenerationLoopWorker(EngineBase):
         outputs = list[SequenceGenerationOutput]()
         result = GenerationLoopWorkerOutput(sequences=outputs)
 
+        for seq_id in self.stopped_sequences:
+            gen_seq = self.sequence_map[seq_id]
+            gen_seq.is_finished = True
+            outputs.append(
+                SequenceGenerationOutput(
+                    id=seq_id,
+                    new_tokens=[],
+                    finish_reason=FinishReason.Stop,
+                )
+            )
+
+        self.stopped_sequences.clear()
+
         for state in list(self.current_batch.values()):
-            for gen_seq in state.generation_sequences:
-                if gen_seq.is_finished:
-                    continue
-
-                # TODO: optimize
-                if gen_seq.seq_id in self.stopped_sequences:
-                    gen_seq.is_finished = True
-                    outputs.append(
-                        SequenceGenerationOutput(
-                            id=gen_seq.seq_id,
-                            new_tokens=[],
-                            finish_reason=FinishReason.Stop,
-                        )
-                    )
-
             if state.is_finished:
                 self.remove_request_from_batch(state.request_id)
 
