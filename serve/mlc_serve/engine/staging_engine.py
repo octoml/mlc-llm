@@ -14,6 +14,7 @@ from .base import (
     InferenceStepResult,
     Request,
     RequestId,
+    SequenceId,
     RequestOutput,
     RequestState,
     ScopedInferenceEngine,
@@ -27,7 +28,7 @@ from .model_module import ModelModule, TokenizerModule
 from .staging_engine_worker import (
     AddRequestsCommand,
     CancelRequestCommand,
-    StopRequestCommand,
+    StopSequenceCommand,
     ShutdownCommand,
     run_generation_loop_worker,
 )
@@ -132,11 +133,11 @@ class StagingInferenceEngine(ScopedInferenceEngine):
             raise RuntimeError("GenerationLoopWorker process is not running")
         self.command_queue.put(CancelRequestCommand(request_id))
 
-    def stop_request(self, request_id: RequestId):
-        LOG.info("StagingInferenceEngine.stop_request", request_id=request_id)
+    def stop_sequence(self, sequence_id: SequenceId):
+        LOG.info("StagingInferenceEngine.stop_sequence", sequence_id=sequence_id)
         if not self._is_ready_to_serve():
             raise RuntimeError("GenerationLoopWorker process is not running")
-        self.command_queue.put(StopRequestCommand(request_id))
+        self.command_queue.put(StopSequenceCommand(sequence_id))
 
     def has_pending_requests(self) -> bool:
         with self.requests_lock:
@@ -197,7 +198,8 @@ class StagingInferenceEngine(ScopedInferenceEngine):
                 request_id = seq_output.id.request_id
                 if request_id not in self.requests:
                     LOG.warn(
-                        "Unknown or already deleted request %s from GenerationLoopWorkerOutput", request_id
+                        "Unknown or already deleted request %s from GenerationLoopWorkerOutput",
+                        request_id,
                     )
                     continue
 
@@ -237,12 +239,8 @@ class StagingInferenceEngine(ScopedInferenceEngine):
                     seq_outputs[request_id].append(output)
                     prompt_len[request_id] = state.prompt_len
 
-                    if gen_seq.is_finished:
-                        print("finished")
-
-                # signal workers to stop generation
-                if state.is_finished:
-                    self.stop_request(state.request_id)
+                if gen_seq.is_finished:
+                    self.stop_sequence(gen_seq.seq_id)
 
                 if seq_output.finish_reason is not None:
                     gen_seq.is_finished = True
