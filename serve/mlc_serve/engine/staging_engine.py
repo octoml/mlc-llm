@@ -242,7 +242,6 @@ class StagingInferenceEngine(ScopedInferenceEngine):
                 prompt_len[request_id] = state.prompt_len
 
                 if gen_seq.is_finished:
-                    print("Stop seq", gen_seq.seq_id)
                     self.stop_sequence(gen_seq.seq_id)
 
                 if seq_output.finish_reason is not None:

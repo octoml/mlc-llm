@@ -170,28 +170,14 @@ class GenerationLoopWorker(EngineBase):
                 if gen_seq.is_finished:
                     continue
 
-                finish_reason = None
-
                 # TODO: optimize
                 if gen_seq.seq_id in self.stopped_sequences:
                     gen_seq.is_finished = True
-                    finish_reason = FinishReason.Stop
-
-                if should_stop_by_length(
-                    gen_seq,
-                    state.prompt_len,
-                    self.max_context_length,
-                    state.stopping_criteria.max_tokens,
-                ):
-                    gen_seq.is_finished = True
-                    finish_reason = FinishReason.Length
-
-                if finish_reason:
                     outputs.append(
                         SequenceGenerationOutput(
                             id=gen_seq.seq_id,
                             new_tokens=[],
-                            finish_reason=finish_reason,
+                            finish_reason=FinishReason.Stop,
                         )
                     )
 
@@ -255,6 +241,8 @@ class GenerationLoopWorker(EngineBase):
                 gen_seq.generated_token_ids
             )
 
+            finish_reason = None
+
             # Need to match at the token-id level
             for i, token_id in enumerate(new_tokens):
                 if (
@@ -263,11 +251,26 @@ class GenerationLoopWorker(EngineBase):
                 ):
                     new_tokens = new_tokens[:i]
                     gen_seq.is_finished = True
+                    finish_reason = FinishReason.Stop
                     break
 
             gen_seq.generated_token_ids.extend(new_tokens)
+
+            if should_stop_by_length(
+                gen_seq,
+                state.prompt_len,
+                self.max_context_length,
+                state.stopping_criteria.max_tokens,
+            ):
+                gen_seq.is_finished = True
+                finish_reason = FinishReason.Length
+
             outputs.append(
-                SequenceGenerationOutput(id=res.sequence_id, new_tokens=new_tokens)
+                SequenceGenerationOutput(
+                    id=res.sequence_id,
+                    new_tokens=new_tokens,
+                    finish_reason=finish_reason,
+                )
             )
 
             if is_prompt_batch:
