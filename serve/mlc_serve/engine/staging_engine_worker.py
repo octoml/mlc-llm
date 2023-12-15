@@ -6,7 +6,7 @@ import multiprocessing
 import multiprocessing.synchronize
 from dataclasses import dataclass
 from threading import Thread
-from typing import Callable, Optional, Union, Any, Dict, List, Set
+from typing import Callable, Optional, Union, Any, Dict, List
 
 import structlog
 
@@ -74,7 +74,7 @@ class GenerationLoopWorkerOutput:
 
 class GenerationLoopWorker(EngineBase):
     cancelled_requests: List[RequestState]
-    stopped_sequences: Set[SequenceId]
+    stopped_sequences: List[SequenceId]
     sequence_map: Dict[SequenceId, GenerationSequence]
     prom_metrics: PrometheusMetrics
     inv_kv_cache_size: float
@@ -86,7 +86,7 @@ class GenerationLoopWorker(EngineBase):
         EngineBase.__init__(self, model_module)
 
         self.cancelled_requests = list[RequestState]()
-        self.stopped_sequences = set[SequenceId]()
+        self.stopped_sequences = list[SequenceId]()
         self.sequence_map = dict[SequenceId, GenerationSequence]()
 
         self.prom_metrics = PrometheusMetrics()
@@ -133,7 +133,7 @@ class GenerationLoopWorker(EngineBase):
                 self.cancelled_requests.append(self.current_batch[request_id])
 
     def stop_sequence(self, sequence_id: SequenceId):
-        self.stopped_sequences.add(sequence_id)
+        self.stopped_sequences.append(sequence_id)
 
     def create_aborted_outputs(
         self,
