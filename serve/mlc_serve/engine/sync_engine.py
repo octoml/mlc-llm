@@ -101,33 +101,6 @@ class SynchronousInferenceEngine(InferenceEngine, EngineBase):
 
         outputs = list[RequestOutput]()
 
-        # TODO: consolidate into a single function
-        for state in list(self.current_batch.values()):
-            finish_reason = None
-            if state.is_finished:
-                finish_reason = FinishReason.Stop
-            if should_stop_by_length(state, self.max_context_length):
-                finish_reason = FinishReason.Length
-
-            if finish_reason is not None:
-                outputs.append(
-                    RequestOutput(
-                        state.request_id,
-                        [
-                            SequenceOutput(
-                                i,
-                                finish_reason=finish_reason,
-                                num_generated_tokens=len(gen_seq.generated_token_ids),
-                            )
-                            for i, gen_seq in enumerate(state.generation_sequences)
-                        ],
-                        num_prompt_tokens=state.prompt_len,
-                    )
-                )
-                self.current_batch.pop(state.request_id)
-                self.cache_manager.free_request(state)
-                del self.num_sequences_per_requests[state.request_id]
-
         previous_requests_to_be_cancelled = set(self.requests_to_be_cancelled)
         self._adjust_batch()
 
@@ -257,6 +230,11 @@ class SynchronousInferenceEngine(InferenceEngine, EngineBase):
                     num_prompt_tokens=state.prompt_len,
                 )
             )
+
+            if state.is_finished:
+                self.current_batch.pop(state.request_id)
+                self.cache_manager.free_request(state)
+                del self.num_sequences_per_requests[state.request_id]
 
         logger.debug("Finished detokenization and output object creation.")
 
