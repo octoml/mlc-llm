@@ -228,18 +228,21 @@ class StagingInferenceEngine(ScopedInferenceEngine):
                         self.tokenizer,
                         state.stopping_criteria,
                     )
+                else:
+                    delta = None
 
-                    output = SequenceOutput(
-                        seq_output.id.sequence_index,
-                        delta,
-                        finish_reason=seq_output.finish_reason,
-                        num_generated_tokens=len(gen_seq.generated_token_ids),
-                    )
+                output = SequenceOutput(
+                    seq_output.id.sequence_index,
+                    delta,
+                    finish_reason=seq_output.finish_reason,
+                    num_generated_tokens=len(gen_seq.generated_token_ids),
+                )
 
-                    seq_outputs[request_id].append(output)
-                    prompt_len[request_id] = state.prompt_len
+                seq_outputs[request_id].append(output)
+                prompt_len[request_id] = state.prompt_len
 
                 if gen_seq.is_finished:
+                    print("Stop seq", gen_seq.seq_id)
                     self.stop_sequence(gen_seq.seq_id)
 
                 if seq_output.finish_reason is not None:
