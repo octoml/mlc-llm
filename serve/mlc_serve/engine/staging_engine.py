@@ -197,7 +197,7 @@ class StagingInferenceEngine(ScopedInferenceEngine):
                 request_id = seq_output.id.request_id
                 if request_id not in self.requests:
                     LOG.warn(
-                        "Unknown request %s from GenerationLoopWorkerOutput", request_id
+                        "Unknown or already deleted request %s from GenerationLoopWorkerOutput", request_id
                     )
                     continue
 
@@ -218,27 +218,31 @@ class StagingInferenceEngine(ScopedInferenceEngine):
                 gen_seq = state.generation_sequences[seq_output.id.sequence_index]
                 new_token_ids = seq_output.new_tokens
 
-                delta = update_sequence(
-                    gen_seq,
-                    new_token_ids,
-                    state.prompt_token_ids,
-                    self.tokenizer,
-                    state.stopping_criteria,
-                )
+                if new_token_ids:
+                    delta = update_sequence(
+                        gen_seq,
+                        new_token_ids,
+                        state.prompt_token_ids,
+                        self.tokenizer,
+                        state.stopping_criteria,
+                    )
+
+                    output = SequenceOutput(
+                        seq_output.id.sequence_index,
+                        delta,
+                        finish_reason=seq_output.finish_reason,
+                        num_generated_tokens=len(gen_seq.generated_token_ids),
+                    )
+
+                    seq_outputs[request_id].append(output)
+                    prompt_len[request_id] = state.prompt_len
+
+                    if gen_seq.is_finished:
+                        print("finished")
 
                 # signal workers to stop generation
                 if state.is_finished:
                     self.stop_request(state.request_id)
-
-                output = SequenceOutput(
-                    seq_output.id.sequence_index,
-                    delta,
-                    finish_reason=seq_output.finish_reason,
-                    num_generated_tokens=len(gen_seq.generated_token_ids),
-                )
-
-                seq_outputs[request_id].append(output)
-                prompt_len[request_id] = state.prompt_len
 
                 if seq_output.finish_reason is not None:
                     gen_seq.is_finished = True

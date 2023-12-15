@@ -65,6 +65,31 @@ class GenerationLoopWorkerOutput:
     error: Optional[str] = None
 
 
+def _should_stop_by_length(state: RequestState, max_context_length: int) -> bool:
+    # TODO: currently, we simply return true for both stopping reasons.
+    #       in the future, we can differentiate these two.
+    # this include prompt tokens and gen tokens so far
+    if state.is_finished or state.stopping_criteria.max_tokens is None:
+        return False
+
+    for gen_seq in state.generation_sequences:
+        if gen_seq.is_finished:
+            continue
+
+        num_context_tokens = state.prompt_len + len(gen_seq.generated_token_ids)
+
+        if num_context_tokens >= max_context_length:
+            gen_seq.is_finished = True
+            continue
+
+        num_gen_tokens = num_context_tokens - state.prompt_len
+
+        if num_gen_tokens < state.stopping_criteria.max_tokens:
+            return False
+
+    return True
+
+
 class GenerationLoopWorker(EngineBase):
     cancelled_requests: List[RequestState]
     stopped_requests: List[RequestState]
@@ -172,10 +197,44 @@ class GenerationLoopWorker(EngineBase):
 
         # TODO: consolidate into a single function
         for state in list(self.current_batch.values()):
+            # for gen_seq in state.generation_sequences:
+            #     if not gen_seq.is_finished:
+            #         continue
+
+            #     assert False
+            #     # We do not know when this sequence has finished, so we might already
+            #     # have sent FinishReason.Stop or FinishReason.Length for it. We keep
+            #     # sending the same empty output for such sequence until all other
+            #     # sequences finish.
+            #     finish_reason = FinishReason.Stop
+
+            #     if should_stop_by_length(
+            #         gen_seq,
+            #         state.prompt_len,
+            #         self.max_context_length,
+            #         state.stopping_criteria.max_tokens,
+            #     ):
+            #         gen_seq.is_finished = True
+            #         finish_reason = FinishReason.Length
+
+            #     outputs.append(
+            #         SequenceGenerationOutput(
+            #             id=gen_seq.seq_id,
+            #             new_tokens=[],
+            #             finish_reason=finish_reason,
+            #         )
+            #     )
+
+            # if state.is_finished:
+            #     self.remove_request_from_batch(state.request_id)
+
+            #     duration = time.time() - state.arrival_timestamp
+            #     self.prom_metrics.histogram(E2E_LATENCY).observe(duration)
+
             finish_reason = None
             if state.is_finished:
                 finish_reason = FinishReason.Stop
-            if should_stop_by_length(state, self.max_context_length):
+            if _should_stop_by_length(state, self.max_context_length):
                 finish_reason = FinishReason.Length
 
             if finish_reason is not None:
@@ -192,6 +251,7 @@ class GenerationLoopWorker(EngineBase):
 
                 duration = time.time() - state.arrival_timestamp
                 self.prom_metrics.histogram(E2E_LATENCY).observe(duration)
+
 
         outputs += self.create_aborted_outputs(
             self.stopped_requests, finish_reason=FinishReason.Stop
