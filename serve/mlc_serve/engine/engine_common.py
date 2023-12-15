@@ -238,7 +238,9 @@ def should_stop_seq_by_length(
     # TODO: currently, we simply return true for both stopping reasons.
     #       in the future, we can differentiate these two.
     # this include prompt tokens and gen tokens so far
-    if gen_seq.is_finished:
+
+    # If max_tokens is None, we do not put any length restriction.
+    if gen_seq.is_finished or max_tokens is None:
         return False
 
     num_context_tokens = prompt_len + len(gen_seq.generated_token_ids)
