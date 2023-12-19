@@ -80,7 +80,6 @@ class GenerationLoopWorker(EngineBase):
     prom_metrics: PrometheusMetrics
     inv_kv_cache_size: float
 
-
     def __init__(
         self,
         model_module: ModelModule,
@@ -159,6 +158,7 @@ class GenerationLoopWorker(EngineBase):
                         error=err,
                     )
                 )
+                del self.sequence_map[gen_seq.seq_id]
 
             if state.request_id in self.current_batch:
                 self.remove_request_from_batch(state.request_id)
@@ -191,6 +191,9 @@ class GenerationLoopWorker(EngineBase):
 
         for state in list(self.current_batch.values()):
             if state.is_finished:
+                for gen_seq in state.generation_sequences:
+                    del self.sequence_map[gen_seq.seq_id]
+
                 self.remove_request_from_batch(state.request_id)
 
                 duration = time.time() - state.arrival_timestamp
