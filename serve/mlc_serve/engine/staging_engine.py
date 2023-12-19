@@ -11,6 +11,7 @@ from collections import defaultdict
 import structlog
 
 from .base import (
+    FinishReason,
     InferenceStepResult,
     Request,
     RequestId,
@@ -231,23 +232,24 @@ class StagingInferenceEngine(ScopedInferenceEngine):
                 else:
                     delta = None
 
+                finish_reason = seq_output.finish_reason
+
+                if seq_output.finish_reason is not None:
+                    gen_seq.is_finished = True
+                elif gen_seq.is_finished:
+                    # update_sequence() has detected a stop word
+                    finish_reason = FinishReason.Stop
+                    self.stop_sequence(gen_seq.seq_id)
+
                 output = SequenceOutput(
                     seq_output.id.sequence_index,
                     delta,
-                    finish_reason=seq_output.finish_reason,
+                    finish_reason,
                     num_generated_tokens=len(gen_seq.generated_token_ids),
                 )
 
                 seq_outputs[request_id].append(output)
                 prompt_len[request_id] = state.prompt_len
-
-                if gen_seq.is_finished:
-                    self.stop_sequence(gen_seq.seq_id)
-
-                if seq_output.finish_reason is not None:
-                    gen_seq.is_finished = True
-                else:
-                    gen_seq.is_finished = False
 
             for request_id, out_seqs in seq_outputs.items():
                 outputs.append(

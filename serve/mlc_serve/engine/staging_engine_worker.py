@@ -181,13 +181,6 @@ class GenerationLoopWorker(EngineBase):
             gen_seq = self.sequence_map[seq_id]
             if not gen_seq.is_finished:
                 gen_seq.is_finished = True
-                outputs.append(
-                    SequenceGenerationOutput(
-                        id=seq_id,
-                        new_tokens=[],
-                        finish_reason=FinishReason.Stop,
-                    )
-                )
 
         self.stopped_sequences.clear()
 
