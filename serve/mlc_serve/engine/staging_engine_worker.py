@@ -5,7 +5,7 @@ import time
 import multiprocessing
 import multiprocessing.synchronize
 from dataclasses import dataclass
-from threading import Thread
+from threading import Thread, Lock
 from typing import Callable, Optional, Union, Any, Dict, List
 
 import structlog
@@ -75,9 +75,11 @@ class GenerationLoopWorkerOutput:
 class GenerationLoopWorker(EngineBase):
     cancelled_requests: List[RequestState]
     stopped_sequences: List[SequenceId]
+    stopped_sequences_lock: Lock
     sequence_map: Dict[SequenceId, GenerationSequence]
     prom_metrics: PrometheusMetrics
     inv_kv_cache_size: float
+
 
     def __init__(
         self,
@@ -87,6 +89,7 @@ class GenerationLoopWorker(EngineBase):
 
         self.cancelled_requests = list[RequestState]()
         self.stopped_sequences = list[SequenceId]()
+        self.stopped_sequences_lock = Lock()
         self.sequence_map = dict[SequenceId, GenerationSequence]()
 
         self.prom_metrics = PrometheusMetrics()
@@ -133,7 +136,8 @@ class GenerationLoopWorker(EngineBase):
                 self.cancelled_requests.append(self.current_batch[request_id])
 
     def stop_sequence(self, sequence_id: SequenceId):
-        self.stopped_sequences.append(sequence_id)
+        with self.stopped_sequences_lock:
+            self.stopped_sequences.append(sequence_id)
 
     def create_aborted_outputs(
         self,
@@ -177,12 +181,13 @@ class GenerationLoopWorker(EngineBase):
         outputs = list[SequenceGenerationOutput]()
         result = GenerationLoopWorkerOutput(sequences=outputs)
 
-        for seq_id in self.stopped_sequences:
-            gen_seq = self.sequence_map[seq_id]
-            if not gen_seq.is_finished:
-                gen_seq.is_finished = True
+        with self.stopped_sequences_lock:
+            for seq_id in self.stopped_sequences:
+                gen_seq = self.sequence_map[seq_id]
+                if not gen_seq.is_finished:
+                    gen_seq.is_finished = True
 
-        self.stopped_sequences.clear()
+            self.stopped_sequences.clear()
 
         for state in list(self.current_batch.values()):
             if state.is_finished:
