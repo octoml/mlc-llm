@@ -178,6 +178,7 @@ class CacheManager:
                 if len(decode_block_table) < num_needed_block:
                     # Need to allocate a new block for this request
                     assert len(decode_block_table) + 1 == num_needed_block
+                    assert len(self.free_blocks) > 0
                     decode_block_table.append(self.free_blocks.pop())
 
                 pos = size - 1
