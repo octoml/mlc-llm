@@ -105,14 +105,18 @@ def sample(
             do_top_p |= top_ps[-1] < 1.0
             do_top_k |= top_ks[-1] != vocab_size
 
-            if not param.presence_penalty == 0.0 or not param.frequency_penalty == 0:
-                for token_id, token_freq in freq.items():
-                    logits[i][token_id] -= token_freq * param.frequency_penalty + param.presence_penalty
+            if not param.presence_penalty == 0.0 or not param.frequency_penalty == 0 and bool(freq):
+                freq_tensor = np.array(list(freq.items()))
+                index = torch.from_numpy(freq_tensor[..., 0]).to(device=logits.device)
+                src = torch.from_numpy(freq_tensor[..., 1]).type_as(logits).to(device=logits.device)
+                logits[i] = torch.scatter_add(logits[i], dim=0, index=index, src=-(src * param.frequency_penalty + param.presence_penalty))
             
             if param.logit_bias:
-                for token_id, token_bias in param.logit_bias.items():
-                    logits[i][token_id] += token_bias
-
+                bias_tensor = np.array(list(param.logit_bias.items()))
+                index = torch.from_numpy(bias_tensor[..., 0]).to(device=logits.device)
+                src = torch.from_numpy(bias_tensor[..., 1]).type_as(logits).to(device=logits.device)
+                logits[i] = torch.scatter_add(logits[i], dim=0, index=index, src=src)
+            
 
     logits_random = logits[mask_random]
 
@@ -478,7 +482,7 @@ class Model:
             ):
                 if not new_token in requests[i].sampling_params.appeared_tokens_freq:
                     requests[i].sampling_params.appeared_tokens_freq[new_token] = 0
-                request.sampling_params.appeared_tokens_freq[new_token] += 1
+                requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
                 if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
                     for seq_id in range(num_sequences[i]):
                         outputs.append(
