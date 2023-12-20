@@ -1,6 +1,5 @@
 import math
 import os
-from collections import defaultdict
 from typing import List, Union, Optional
 from pathlib import Path
 
@@ -62,7 +61,6 @@ def sample(
     sampling_params: List[SamplingParams],
     vocab_size: int,
     check_safety=False,
-    appeared_token_freqs: List[defaultdict]=None,
 ) -> Optional[np.ndarray]:
     def _is_safe_to_sample(prob_like):
         return (
@@ -96,7 +94,7 @@ def sample(
 
     for i in range(num_seq):
         param = sampling_params[i]
-        freq = appeared_token_freqs[i]
+        freq = param.appeared_tokens_freq
 
         if param.sampling_type == SamplingType.RANDOM:
             temperatures.append(param.temperature)
@@ -108,7 +106,7 @@ def sample(
             do_top_k |= top_ks[-1] != vocab_size
 
             if not param.presence_penalty == 0.0 or not param.frequency_penalty == 0:
-                for token_id, token_freq  in freq.items():
+                for token_id, token_freq in freq.items():
                     logits[i][token_id] -= token_freq * param.frequency_penalty + param.presence_penalty
             
             if param.logit_bias:
@@ -281,7 +279,6 @@ class Model:
         self.vocab_size = config.vocab_size
         self.sliding_window = config.sliding_window
         self.num_shards = config.num_shards
-        self.appeared_token_freqs = None
 
         if self.sliding_window:
             self.block_sliding_window = self.sliding_window // CacheManager.block_size
@@ -361,9 +358,6 @@ class Model:
         sequence_ids = []
         prompt_lens = []
         num_sequences = []
-        if is_prefill:
-            self.appeared_token_freqs = [defaultdict(lambda: 0) for _ in range(len(requests))]
-
 
         for request in requests:
             if isinstance(request, PrefillRequest):
@@ -476,15 +470,15 @@ class Model:
             cache.pending_copy_from_to = []
 
         try:
-            next_tokens = sample(logits, sampling_params, self.vocab_size, appeared_token_freqs=self.appeared_token_freqs)
+            next_tokens = sample(logits, sampling_params, self.vocab_size)
             assert next_tokens is not None
-            for next_token,  appeared_token_freq in zip(next_tokens, self.appeared_token_freqs):
-                appeared_token_freq[next_token] += 1
-
             outputs = []
-            for i, (sequence_id, new_token) in enumerate(
-                zip(sequence_ids, next_tokens)
+            for i, (sequence_id, new_token, request) in enumerate(
+                zip(sequence_ids, next_tokens, requests)
             ):
+                if not new_token in request.sampling_params.appeared_tokens_freq:
+                    request.sampling_params.appeared_tokens_freq[new_token] = 0
+                request.sampling_params.appeared_tokens_freq[new_token] += 1
                 if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
                     for seq_id in range(num_sequences[i]):
                         outputs.append(

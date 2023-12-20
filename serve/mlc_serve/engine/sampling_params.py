@@ -3,6 +3,7 @@ Sampling parameters for text generation.
 
 based on https://github.com/vllm-project/vllm/blob/ac5cf86aa6aebbf9e42df51f7e377fbee85bc703/vllm/sampling_params.py
 """
+from collections import defaultdict
 from dataclasses import dataclass
 from enum import IntEnum
 from functools import cached_property
@@ -48,8 +49,10 @@ class SamplingParams:
     top_p: float = 1.0
     top_k: int = -1
     logit_bias: Optional[Dict[str, float]] = None
+    appeared_tokens_freq: Dict[int, int] = None
 
     def __post_init__(self):
+        self.appeared_tokens_freq = {}
         self._verify_args()
         if self.temperature < _SAMPLING_EPS:
             # Zero temperature means greedy sampling.
