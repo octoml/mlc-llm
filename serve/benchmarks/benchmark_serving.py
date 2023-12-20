@@ -110,7 +110,7 @@ async def send_request(
             try:
                 output = json.loads(output)
             except:
-                print(output, prompt)
+                print(f"Cannot convert response to json. Returned response: '{output}', original prompt: {prompt}")
                 return
 
             # Re-send the request if it failed.
