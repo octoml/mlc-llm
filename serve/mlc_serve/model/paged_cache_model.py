@@ -517,9 +517,10 @@ class Model:
                 )
 
                 if maybe_new_token is not None:
-                    if not maybe_new_token in requests[i].sampling_params.appeared_tokens_freq:
-                        requests[i].sampling_params.appeared_tokens_freq[maybe_new_token] = 0
-                    requests[i].sampling_params.appeared_tokens_freq[maybe_new_token] += 1
+                    new_token = maybe_new_token[0]
+                    if not new_token in requests[i].sampling_params.appeared_tokens_freq:
+                        requests[i].sampling_params.appeared_tokens_freq[new_token] = 0
+                    requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
                     if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
                         for seq_id in range(num_sequences[i]):
                             outputs.append(
@@ -527,7 +528,7 @@ class Model:
                                     sequence_id=SequenceId(
                                         sequence_id.request_id, seq_id
                                     ),
-                                    generated_tokens=[maybe_new_token[0]],  # type: ignore
+                                    generated_tokens=[new_token],  # type: ignore
                                     error=None,
                                 )
                             )
@@ -535,7 +536,7 @@ class Model:
                         outputs.append(
                             TextGenerationResult(
                                 sequence_id=sequence_id,
-                                generated_tokens=[maybe_new_token[0]],  # type: ignore
+                                generated_tokens=[new_token],  # type: ignore
                                 error=None,
                             )
                         )
