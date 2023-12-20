@@ -473,11 +473,11 @@ class Model:
             next_tokens = sample(logits, sampling_params, self.vocab_size)
             assert next_tokens is not None
             outputs = []
-            for i, (sequence_id, new_token, request) in enumerate(
-                zip(sequence_ids, next_tokens, requests)
+            for i, (sequence_id, new_token) in enumerate(
+                zip(sequence_ids, next_tokens)
             ):
-                if not new_token in request.sampling_params.appeared_tokens_freq:
-                    request.sampling_params.appeared_tokens_freq[new_token] = 0
+                if not new_token in requests[i].sampling_params.appeared_tokens_freq:
+                    requests[i].sampling_params.appeared_tokens_freq[new_token] = 0
                 request.sampling_params.appeared_tokens_freq[new_token] += 1
                 if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
                     for seq_id in range(num_sequences[i]):

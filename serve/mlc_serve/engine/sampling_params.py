@@ -48,7 +48,7 @@ class SamplingParams:
     temperature: float = 1.0
     top_p: float = 1.0
     top_k: int = -1
-    logit_bias: Optional[Dict[str, float]] = None
+    logit_bias: Optional[Dict[int, float]] = None
     appeared_tokens_freq: Dict[int, int] = None
 
     def __post_init__(self):
