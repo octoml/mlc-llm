@@ -285,9 +285,6 @@ class CacheManager:
                     prompt_shared,
                 )
             else:
-                # Tokens in the partially-shared prompt block are considered to be part of each decode sequence
-                self.token_counts[decode_seq_id] += num_tokens % self.block_size
-
                 if i < num_sequences:
                     # Need to copy the last block in self.kv_cache.block_tables[prompt_seq_id]
                     self.kv_cache.decode_block_tables[decode_seq_id] = DecodeBlockTable(
