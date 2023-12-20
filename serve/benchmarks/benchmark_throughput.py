@@ -74,7 +74,7 @@ def run_mlc(
             temperature=1.0,
             top_p=1.0,
             frequency_penalty=-1,
-            logit_bias={1: -1}
+            logit_bias={1: -1, 3: 1, 2: 2}
         )
 
         engine.add(

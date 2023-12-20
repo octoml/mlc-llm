@@ -106,16 +106,12 @@ def sample(
             do_top_k |= top_ks[-1] != vocab_size
 
             if not param.presence_penalty == 0.0 or not param.frequency_penalty == 0 and bool(freq):
-                freq_tensor = np.array(list(freq.items()))
-                index = torch.from_numpy(freq_tensor[..., 0]).to(device=logits.device)
-                src = torch.from_numpy(freq_tensor[..., 1]).type_as(logits).to(device=logits.device)
-                logits[i] = torch.scatter_add(logits[i], dim=0, index=index, src=-(src * param.frequency_penalty + param.presence_penalty))
+                index = torch.from_numpy(np.array(list(freq.keys()))).to(device=logits.device)
+                src = torch.from_numpy(np.array(list(freq.values()))).type_as(logits).to(device=logits.device)
+                logits[i][index] -= src * param.frequency_penalty + param.presence_penalty
             
             if param.logit_bias:
-                bias_tensor = np.array(list(param.logit_bias.items()))
-                index = torch.from_numpy(bias_tensor[..., 0]).to(device=logits.device)
-                src = torch.from_numpy(bias_tensor[..., 1]).type_as(logits).to(device=logits.device)
-                logits[i] = torch.scatter_add(logits[i], dim=0, index=index, src=src)
+                logits[i][param.logit_bias_index] += torch.Tensor(param.logit_bias_value).type_as(logits).to(device=logits.device)
             
 
     logits_random = logits[mask_random]
@@ -521,6 +517,9 @@ class Model:
                 )
 
                 if maybe_new_token is not None:
+                    if not maybe_new_token in requests[i].sampling_params.appeared_tokens_freq:
+                        requests[i].sampling_params.appeared_tokens_freq[maybe_new_token] = 0
+                    requests[i].sampling_params.appeared_tokens_freq[maybe_new_token] += 1
                     if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
                         for seq_id in range(num_sequences[i]):
                             outputs.append(

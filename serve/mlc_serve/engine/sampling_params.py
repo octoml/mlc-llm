@@ -50,9 +50,13 @@ class SamplingParams:
     top_k: int = -1
     logit_bias: Optional[Dict[int, float]] = None
     appeared_tokens_freq: Dict[int, int] = None
+    logit_bias_index: list[int] = None
+    logit_bias_value: list[float] = None
 
     def __post_init__(self):
         self.appeared_tokens_freq = {}
+        self.logit_bias_index = list(self.logit_bias.keys())
+        self.logit_bias_value = list(self.logit_bias.values())
         self._verify_args()
         if self.temperature < _SAMPLING_EPS:
             # Zero temperature means greedy sampling.
