@@ -130,6 +130,7 @@ class StagingInferenceEngine(ScopedInferenceEngine):
 
     def cancel(self, request_id: RequestId):
         LOG.info("StagingInferenceEngine.cancel", request_id=request_id)
+        print("StagingInferenceEngine.cancel")
         if not self._is_ready_to_serve():
             raise RuntimeError("GenerationLoopWorker process is not running")
         self.command_queue.put(CancelRequestCommand(request_id))

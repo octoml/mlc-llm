@@ -1,6 +1,7 @@
 import asyncio
 import structlog
 from typing import AsyncIterator, Any
+from concurrent.futures import ThreadPoolExecutor
 
 from .base import (
     InferenceEngine,
@@ -16,6 +17,27 @@ from .error import EngineException, TextGenerationError
 LOG = structlog.stdlib.get_logger(__name__)
 
 ResultQueue = asyncio.Queue[RequestOutput]
+
+import contextvars
+import functools
+from asyncio import get_running_loop
+
+CANCELLATION_EXECUTOR = ThreadPoolExecutor(None)
+
+async def to_thread_with_cancel_pool(func, /, *args, **kwargs):
+    """Asynchronously run function *func* in a separate thread.
+
+    Any *args and **kwargs supplied for this function are directly passed
+    to *func*. Also, the current :class:`contextvars.Context` is propagated,
+    allowing context variables from the main thread to be accessed in the
+    separate thread.
+
+    Return a coroutine that can be awaited to get the eventual result of *func*.
+    """
+    loop = get_running_loop()
+    ctx = contextvars.copy_context()
+    func_call = functools.partial(ctx.run, func, *args, **kwargs)
+    return await loop.run_in_executor(CANCELLATION_EXECUTOR, func_call)
 
 class AsyncEngineConnector:
     def __init__(self, engine: InferenceEngine, engine_wait_timeout=1):
@@ -84,8 +106,10 @@ class AsyncEngineConnector:
                     return
         except asyncio.CancelledError:
             LOG.info("AsyncEngineConnector.generate iterator cancelled.", request_id=request.request_id)
-            await asyncio.to_thread(self.engine.cancel, request.request_id)
+            await asyncio.shield(asyncio.to_thread(self.engine.cancel, request.request_id))
+            LOG.info("AsyncEngineConnector.generate request sucessfully cancelled.", request_id=request.request_id)
         finally:
+            LOG.info("AsyncEngineConnector.generate removing request from result queue.", request_id=request.request_id)
             self.result_queues.pop(request.request_id, None)
 
     async def _get_queue_item_until_stopped(self, queue: ResultQueue) -> RequestOutput:
