@@ -117,7 +117,6 @@ def sample(
             if param.logit_bias:
                 logits[i][param.logit_bias_index] += torch.Tensor(param.logit_bias_value).type_as(logits).to(device=logits.device)
 
-
     logits_random = logits[mask_random]
 
     if divide_by_temperature:
