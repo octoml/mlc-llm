@@ -122,6 +122,7 @@ def argparse_postproc_common(args: argparse.Namespace) -> None:
         "codegeex2": "glm",
         "tinyllama": "chatml",
         "openhermes-2.5-mistral": "open_hermes_mistral",
+        "neuralhermes-2.5-mistral": "neural_hermes_mistral",
     }
 
     for prefix, conv_template in model_conv_templates.items():
@@ -348,6 +349,34 @@ def copy_tokenizer(args: argparse.Namespace) -> None:
             shutil.copy(
                 os.path.join(args.model_path, filename),
                 os.path.join(args.artifact_path, "model") if args.enable_batching else os.path.join(args.artifact_path, "params"),
+            )
+
+    # If we have `tokenizer.model` but not `tokenizer.json`, try convert it to
+    # `tokenizer.json` with `transformers`.
+    tokenizer_json_path = os.path.join(args.model_path, "tokenizer.json")
+    tokenizer_model_path = os.path.join(args.model_path, "tokenizer.model")
+    if os.path.exists(tokenizer_model_path) and (not os.path.exists(tokenizer_json_path)):
+        print("Attempting to convert `tokenizer.model` to `tokenizer.json`.")
+        try:
+            # pylint: disable=import-outside-toplevel
+            from transformers import AutoTokenizer
+
+            tokenizer_json_save_dest = os.path.join(args.artifact_path, "params/tokenizer.json")
+            fast_tokenizer = AutoTokenizer.from_pretrained(args.model_path, use_fast=True)
+            fast_tokenizer.backend_tokenizer.save(tokenizer_json_save_dest)
+            print(f"Succesfully converted `tokenizer.model` to: {tokenizer_json_save_dest}")
+        except ImportError:
+            print(
+                "WARNING: The model has `tokenizer.model` but not `tokenizer.json`. It is"
+                + "recommended to use `tokenizer.json`, so we try convert it with `transformers`.\n"
+                + "However, we were unable to import `transformers`, hence skipping this step."
+            )
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            print(
+                "WARNING: The model has `tokenizer.model` but not `tokenizer.json`. It is"
+                + "recommended to use `tokenizer.json`, so we try convert it with `transformers`.\n"
+                + "However, we are skipping this due to an error:\n",
+                error,
             )
 
     # If we have `tokenizer.model` but not `tokenizer.json`, try convert it to
