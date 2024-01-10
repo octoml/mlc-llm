@@ -305,11 +305,7 @@ class GenerationLoopWorker(EngineBase):
 
     def _adjust_batch(self):
         with self.queue_lock:
-            num_eviction = self.evict_request(
-                cancell_callback=lambda request_id: self.cancelled_requests.append(
-                    self.current_batch[request_id]
-                )
-            )
+            num_eviction = self.evict_request()
             self.prom_metrics.counter(NUM_CACHE_EVICTONS).inc(num_eviction)
 
             if self.cache_manager.get_max_new_tokens() <= self.max_decode_steps:

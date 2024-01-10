@@ -320,7 +320,7 @@ class EngineBase:
             < self.max_decode_steps * num_sequences
         )
 
-    def evict_request(self, cancell_callback: Callable[[RequestId], None]) -> int:
+    def evict_request(self) -> int:
         # Must be called with the queue lock held
         num_eviction = 0
 
@@ -346,13 +346,7 @@ class EngineBase:
 
             # TODO(masahi): Properly support evicting a multi-sequence request
             if self.current_batch[request_to_remove.request_id].num_sequences != 1:
-                cancell_callback(request_to_remove.request_id)
-                self.remove_request_from_batch(request_to_remove.request_id)
-                LOG.warn(
-                    "Preempting a multi-sequence request is currently not supported,"
-                    f" cancelling request '{request_to_remove.request_id}'",
-                )
-                continue
+                pass
 
             self.remove_request_from_batch(request_to_remove.request_id)
             request_to_remove.is_prefilled = False
