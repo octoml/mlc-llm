@@ -323,6 +323,7 @@ def prepare_multi_query_decode_inputs(
         positions += [request.num_past_tokens + i for i in range(num_queries)]
 
         if sliding_window:
+            # TODO(masahi): Verify this code path
             seq_lens.append(min(request.num_past_tokens + num_queries, sliding_window))
             num_past = min(request.num_past_tokens, sliding_window)
             past_slot_mapping += all_slot_mappings[request.sequence_id][num_past:]
@@ -331,12 +332,27 @@ def prepare_multi_query_decode_inputs(
             ]
         else:
             seq_lens.append(request.num_past_tokens + num_queries)
-            past_slot_mapping += all_slot_mappings[request.sequence_id][
-                : request.num_past_tokens
-            ]
-            slot_mapping += all_slot_mappings[request.sequence_id][
-                request.num_past_tokens : request.num_past_tokens + num_queries
-            ]
+            prompt_seq_id = get_prompt_sequence_id(request.sequence_id.request_id)
+            prompt_slot_mappings = all_slot_mappings[prompt_seq_id]
+
+            if request.num_past_tokens < len(prompt_slot_mappings):
+                raise RuntimeError(
+                    "For MultiQueryDecodeRequest, the number of past tokens"
+                    "smaller than the prompt length is not supported for now."
+                )
+            elif request.num_past_tokens == len(prompt_slot_mappings):
+                # The case for restoring an evicted parallel-sampling request
+                past_slot_mapping += prompt_slot_mappings[: request.num_past_tokens]
+                slot_mapping += all_slot_mappings[request.sequence_id][:num_queries]
+            else:
+                query_begin_offset = request.num_past_tokens - len(prompt_slot_mappings)
+                past_slot_mapping += (
+                    prompt_slot_mappings
+                    + all_slot_mappings[request.sequence_id][:query_begin_offset]
+                )
+                slot_mapping += all_slot_mappings[request.sequence_id][
+                    query_begin_offset : query_begin_offset + num_queries
+                ]
 
         permute_map += list(
             range(past_offset, past_offset + request.num_past_tokens)
