@@ -276,14 +276,9 @@ def _prepare_eval_queries(
 
         if sliding_window:
             seq_lens.append(min(num_past_tokens + num_queries, sliding_window))
-            # TODO: verify this
-            past_slot_mapping += all_slot_mappings[request_id][
-                : min(num_past_tokens, sliding_window)
-            ]
-            slot_mapping += all_slot_mappings[request_id][
-                min(num_past_tokens, sliding_window) : min(num_past_tokens, sliding_window)
-                + num_queries
-            ]
+            num_past = min(num_past_tokens, sliding_window)
+            past_slot_mapping += all_slot_mappings[request_id][num_past:]
+            slot_mapping += all_slot_mappings[request_id][num_past: num_past + num_queries]
         else:
             seq_lens.append(num_past_tokens + num_queries)
             past_slot_mapping += all_slot_mappings[request_id][:num_past_tokens]
