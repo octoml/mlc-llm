@@ -3,6 +3,7 @@ import argparse
 import functools
 import json
 import os
+import pathlib
 import pickle
 import shutil
 from dataclasses import asdict, dataclass, field, fields
@@ -59,6 +60,9 @@ class BuildArgs:
 
     hf_path: str
         Hugging Face path from which to download params, tokenizer, and config.
+
+    lora: pathlib.Path
+        Path to fine-tuned LoRA params.  Currently, must be a .safetensors file.
 
     quantization: str
         The quantization mode we use to compile.
@@ -173,6 +177,12 @@ class BuildArgs:
     hf_path: str = field(
         default=None,
         metadata={"help": "Hugging Face path from which to download params, tokenizer, and config"},
+    )
+    lora: pathlib.Path = field(
+        default=None,
+        metadata={
+            "help": "Path to fine-tuned LoRA params.  Currently, must be a .safetensors file."
+        },
     )
     quantization: str = field(
         default="q4f16_1",
@@ -463,17 +473,34 @@ def _parse_args(parsed) -> argparse.Namespace:
             "tvm.contrib.vllm.single_query_cached_kv_attention", True
         ), "TVM needs to be built with -DUSE_VLLM=ON."
 
-    model_name = [
-        parsed.model,
-        parsed.quantization.name,
-    ]
-    if parsed.use_presharded_weights:
-        model_name.append(f"presharded-{parsed.num_shards}gpu")
+    if parsed.lora:
+        assert parsed.lora.suffix == ".safetensors", (
+            f"Currently, LoRA must be provided as .safetensors file, "
+            f"but received {parsed.lora} with extension {parsed.lora.suffix}"
+        )
+
+    def _gen_model_name():
+        yield parsed.model
+
+        if parsed.lora:
+            lora_name = parsed.lora.name
+            if lora_name == "adapter_model.safetensors":
+                lora_name = parsed.lora.parent.name
+
+            if lora_name.startswith(parsed.model):
+                lora_name = lora_name[len(parsed.model) :].strip("-")
+
+            yield lora_name
+
+        if parsed.use_presharded_weights:
+            yield f"presharded-{parsed.num_shards}gpu"
+
+        yield parsed.quantization.name
 
     # TODO(@sunggg): currently, we overwrite the artifact_path which forces to rely on name deduction rule.
     # Ideally, it is better to separate its root path and name tag.
     # Until we make the change in upstream, this is a temporary hack.
-    artifact_tag = parsed.artifact_tag if parsed.artifact_tag else "-".join(model_name)
+    artifact_tag = parsed.artifact_tag if parsed.artifact_tag else "-".join(_gen_model_name())
     parsed.artifact_path = os.path.join(parsed.artifact_path, artifact_tag)
 
     parsed.lib_name = (
