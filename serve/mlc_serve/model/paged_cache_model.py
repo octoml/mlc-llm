@@ -312,39 +312,38 @@ def prepare_multi_query_decode_inputs(
     positions = []
     permute_map = []
 
-    query_offset = sum([len(request.past_token_ids) for request in requests])
+    query_offset = sum([request.num_past_tokens for request in requests])
     past_offset = 0
 
     for request in requests:
-        num_past_tokens = len(request.past_token_ids)
         num_queries = request.queries.num_tokens
         query_lens.append(num_queries)
         input_ids += request.queries.token_ids
 
-        positions += [num_past_tokens + i for i in range(num_queries)]
+        positions += [request.num_past_tokens + i for i in range(num_queries)]
 
         if sliding_window:
-            seq_lens.append(min(num_past_tokens + num_queries, sliding_window))
-            num_past = min(num_past_tokens, sliding_window)
+            seq_lens.append(min(request.num_past_tokens + num_queries, sliding_window))
+            num_past = min(request.num_past_tokens, sliding_window)
             past_slot_mapping += all_slot_mappings[request.sequence_id][num_past:]
             slot_mapping += all_slot_mappings[request.sequence_id][
                 num_past : num_past + num_queries
             ]
         else:
-            seq_lens.append(num_past_tokens + num_queries)
+            seq_lens.append(request.num_past_tokens + num_queries)
             past_slot_mapping += all_slot_mappings[request.sequence_id][
-                :num_past_tokens
+                : request.num_past_tokens
             ]
             slot_mapping += all_slot_mappings[request.sequence_id][
-                num_past_tokens : num_past_tokens + num_queries
+                request.num_past_tokens : request.num_past_tokens + num_queries
             ]
 
-        permute_map += list(range(past_offset, past_offset + num_past_tokens)) + list(
-            range(query_offset, query_offset + num_queries)
-        )
+        permute_map += list(
+            range(past_offset, past_offset + request.num_past_tokens)
+        ) + list(range(query_offset, query_offset + num_queries))
 
         query_offset += num_queries
-        past_offset += num_past_tokens
+        past_offset += request.num_past_tokens
 
     input_ids = tvm.nd.array(np.array(input_ids, dtype="int32"), dev)
     positions = tvm.nd.array(np.array(positions, dtype="int32"), dev)

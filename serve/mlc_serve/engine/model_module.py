@@ -54,7 +54,7 @@ class EvictedTokens:
 @dataclass
 class MultiQueryDecodeRequest:
     sequence_id: SequenceId
-    past_token_ids: List[int]
+    num_past_tokens: int
     queries: Union[DraftTokens, EvictedTokens]
     sampling_params: SamplingParams
 

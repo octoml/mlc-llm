@@ -214,7 +214,7 @@ def get_requests_to_process(
                     requests.append(
                         MultiQueryDecodeRequest(
                             sequence_id=gen_seq.seq_id,
-                            past_token_ids=state.prompt_token_ids,
+                            num_past_tokens=state.prompt_len,
                             queries=EvictedTokens(gen_seq.generated_token_ids),
                             sampling_params=state.sampling_params,
                         )
