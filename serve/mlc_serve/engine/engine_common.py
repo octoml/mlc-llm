@@ -20,6 +20,8 @@ from .base import (
 from .model_module import (
     DecodeRequest,
     PrefillRequest,
+    MultiQueryDecodeRequest,
+    EvictedTokens,
     ConversationTemplate,
     KVCacheManager,
     ModelModule,
@@ -185,18 +187,56 @@ def get_requests_to_process(
 
     token_counts = 0
 
+    is_evicted_parallel_sampling_request = (
+        lambda state: not state.is_prefilled
+        and state.num_sequences > 1
+        and any(
+            len(gen_seq.generated_token_ids) > 0
+            for gen_seq in state.generation_sequences
+        )
+    )
+
     if is_prompt_batch:
         for state in current_states:
-            if not state.is_prefilled:
+            if is_evicted_parallel_sampling_request(state):
                 requests.append(
-                    # generated_token_ids is added for the case where the request is
-                    # recovering from cache eviction.
-                    # TODO(masahi): This needs an update when we support evicting
-                    # a parallel-sampling request.
                     PrefillRequest(
                         request_id=state.request_id,
-                        token_ids=state.prompt_token_ids
-                        + state.generation_sequences[0].generated_token_ids,
+                        token_ids=state.prompt_token_ids,
+                        num_sequence=state.num_sequences,
+                        sampling_params=state.sampling_params,
+                    )
+                )
+
+                token_counts += len(state.prompt_token_ids)
+
+                for gen_seq in state.generation_sequences:
+                    requests.append(
+                        MultiQueryDecodeRequest(
+                            sequence_id=gen_seq.seq_id,
+                            past_token_ids=state.prompt_token_ids,
+                            queries=EvictedTokens(gen_seq.generated_token_ids),
+                            sampling_params=state.sampling_params,
+                        )
+                    )
+
+                # TODO(masahi): How to account for token counts in MultiQueryDecodeRequest in
+                # Prometheus metric?
+            elif not state.is_prefilled:
+                token_ids = state.prompt_token_ids
+                # generated_token_ids is added for the case where the request is
+                # recovering from cache eviction.
+
+                if (
+                    state.num_sequences == 1
+                    and state.generation_sequences[0].generated_token_ids
+                ):
+                    token_ids += state.generation_sequences[0].generated_token_ids
+
+                requests.append(
+                    PrefillRequest(
+                        request_id=state.request_id,
+                        token_ids=token_ids,
                         num_sequence=state.num_sequences,
                         sampling_params=state.sampling_params,
                     )
@@ -343,10 +383,6 @@ class EngineBase:
                 candidate_victims = parallel_sample_requests
 
             request_to_remove = min(candidate_victims, key=lambda s: s.num_total_tokens)
-
-            # TODO(masahi): Properly support evicting a multi-sequence request
-            if self.current_batch[request_to_remove.request_id].num_sequences != 1:
-                pass
 
             self.remove_request_from_batch(request_to_remove.request_id)
             request_to_remove.is_prefilled = False
