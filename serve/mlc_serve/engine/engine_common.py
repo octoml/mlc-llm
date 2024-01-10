@@ -219,6 +219,10 @@ def get_requests_to_process(
                             sampling_params=state.sampling_params,
                         )
                     )
+                    cache_manager.extend(
+                        gen_seq.seq_id,
+                        len(gen_seq.generated_token_ids) + 1,
+                    )
 
                 # TODO(masahi): How to account for token counts in MultiQueryDecodeRequest in
                 # Prometheus metric?
@@ -364,7 +368,7 @@ class EngineBase:
         # Must be called with the queue lock held
         num_eviction = 0
 
-        while self.cache_manager.get_max_new_tokens() < 1:
+        while self.cache_manager.get_max_new_tokens() < 9089:
             num_eviction += 1
 
             single_sample_requests = []
@@ -384,6 +388,7 @@ class EngineBase:
 
             request_to_remove = min(candidate_victims, key=lambda s: s.num_total_tokens)
 
+            print("Evicting", request_to_remove.request_id)
             self.remove_request_from_batch(request_to_remove.request_id)
             request_to_remove.is_prefilled = False
             self.queue.appendleft(request_to_remove)
@@ -427,6 +432,8 @@ class EngineBase:
                 gen_seq.next_start_position = (
                     num_new_batched_tokens
                 ) = num_tokens = self.max_num_batched_tokens
+
+            num_kv_slots_needed = min(num_tokens, self.model_context_window_size)
         else:
             prev_generated_token_counts = sum(
                 [
@@ -434,9 +441,15 @@ class EngineBase:
                     for gen_seq in state.generation_sequences
                 ]
             )
+
+            if prev_generated_token_counts > 0:
+                print("Restoring", state.request_id)
+                print("prev_generated_token_counts", prev_generated_token_counts)
+
             # Restoring an evicted parallel-sampling request with sliding-window attention is
-            # difficult to reason about, so we compute crude upper bounds below for now.
-            num_tokens = state.prompt_len + prev_generated_token_counts
+            # difficult to reason about, so we use crude upper bounds below for now.
+            num_tokens = state.prompt_len
+            num_kv_slots_needed = state.prompt_len + prev_generated_token_counts
             # Restoring an evicted parallel-sampling request is done by separate
             # Prefill and MultiQuery requests. The maximum below is an upper bound on the
             # batch size increase due to this request.
@@ -452,7 +465,6 @@ class EngineBase:
         # We make sure that the KV cache will have enough free space for this request to proceed
         # decoding for at least self.max_decode_steps steps.
         # See the comment in check_prompt_too_long for the optimization involving the window size.
-        num_kv_slots_needed = min(num_tokens, self.model_context_window_size)
         if (self.cache_manager.get_free_space() - num_kv_slots_needed) / (
             len(self.current_batch) + 1
         ) < self.max_decode_steps * state.num_sequences:
