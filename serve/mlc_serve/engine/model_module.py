@@ -28,8 +28,26 @@ class PrefillRequest:
 class DecodeRequest:
     sequence_id: SequenceId
     prompt_token_counts: int
-    # All tokens for this request, including prompt
+    # Decoded tokens for this sequence
     token_ids: List[int]
+    sampling_params: SamplingParams
+
+
+@dataclass
+class DraftTokens:
+    token_ids: List[int]
+
+
+@dataclass
+class EvictedTokens:
+    token_ids: List[int]
+
+
+@dataclass
+class MultiQueryDecodeRequest:
+    sequence_id: SequenceId
+    past_token_ids: List[int]
+    queries: Union[DraftTokens, EvictedTokens]
     sampling_params: SamplingParams
 
 

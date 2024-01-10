@@ -24,6 +24,7 @@ from ..engine import (
 from ..engine.model_module import (
     DecodeRequest,
     PrefillRequest,
+    MultiQueryDecodeRequest,
     TextGenerationResult,
 )
 from ..engine.model_module import ModelModule
@@ -277,6 +278,71 @@ def _prepare_inputs(
     )
 
 
+def prepare_multi_query_decode_inputs(
+    requests: List[MultiQueryDecodeRequest],
+    all_slot_mappings,
+    sliding_window,
+    dev,
+):
+    seq_lens = []
+    query_lens = []
+    input_ids = []
+    slot_mapping = []
+    past_slot_mapping = []
+    positions = []
+    permute_map = []
+
+    query_offset = sum([len(request.past_token_ids) for request in requests])
+    past_offset = 0
+
+    for request in requests:
+        num_past_tokens = len(request.past_token_ids)
+        num_queries = len(request.query_token_ids)
+        query_lens.append(num_queries)
+        request_id = request.request_id
+        input_ids += request.query_token_ids
+
+        positions += [num_past_tokens + i for i in range(num_queries)]
+
+        if sliding_window:
+            seq_lens.append(min(num_past_tokens + num_queries, sliding_window))
+            num_past = min(num_past_tokens, sliding_window)
+            past_slot_mapping += all_slot_mappings[request_id][num_past:]
+            slot_mapping += all_slot_mappings[request_id][num_past: num_past + num_queries]
+        else:
+            seq_lens.append(num_past_tokens + num_queries)
+            past_slot_mapping += all_slot_mappings[request_id][:num_past_tokens]
+            slot_mapping += all_slot_mappings[request_id][
+                num_past_tokens : num_past_tokens + num_queries
+            ]
+
+        permute_map += list(range(past_offset, past_offset + num_past_tokens)) + list(
+            range(query_offset, query_offset + num_queries)
+        )
+
+        query_offset += num_queries
+        past_offset += num_past_tokens
+
+    input_ids = tvm.nd.array(np.array(input_ids, dtype="int32"), dev)
+    positions = tvm.nd.array(np.array(positions, dtype="int32"), dev)
+    seq_lens = tvm.nd.array(np.array(seq_lens, dtype="int32"), dev)
+    slot_mapping = tvm.nd.array(np.array(slot_mapping, dtype="int32"), dev)
+
+    query_lens = tvm.nd.array(np.array(query_lens, dtype="int32"), dev)
+    past_slot_mapping = tvm.nd.array(np.array(past_slot_mapping, dtype="int32"), dev)
+    permute_map = tvm.nd.array(np.array(permute_map, dtype="int32"), dev)
+
+    return (
+        input_ids,
+        positions,
+        seq_lens,
+        slot_mapping,
+        query_lens,
+        past_slot_mapping,
+        permute_map,
+    )
+
+
 class Model:
     def __init__(
         self,
@@ -352,32 +418,169 @@ class Model:
 
         return self.get_used_memory()
 
+    def sample_from_logits(self, logits, sequence_ids, requests):
+        sampling_params = [req.sampling_params for req in requests]
+
+        try:
+            next_tokens = sample(logits, sampling_params, self.vocab_size)
+            assert next_tokens is not None
+            outputs = []
+            for i, (sequence_id, new_token) in enumerate(
+                zip(sequence_ids, next_tokens)
+            ):
+                if not new_token in sampling_params[i].appeared_tokens_freq:
+                    requests[i].sampling_params.appeared_tokens_freq[new_token] = 0
+                requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
+                if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
+                    assert isinstance(requests[i], PrefillRequest)
+
+                    for seq_id in range(requests[i].num_sequences):
+                        outputs.append(
+                            TextGenerationResult(
+                                sequence_id=SequenceId(sequence_id.request_id, seq_id),
+                                generated_tokens=[new_token],
+                                error=None,
+                            )
+                        )
+                else:
+                    outputs.append(
+                        TextGenerationResult(
+                            sequence_id=sequence_id,
+                            generated_tokens=[new_token],
+                            error=None,
+                        )
+                    )
+
+            return outputs
+        except RuntimeError:
+            # Fallback to per-token sampling in case some logits values are corrupted.
+            outputs = []
+            err_msg = (
+                "Error from sampling: probability tensor contains either `inf`, `nan`"
+                " or element < 0"
+            )
+
+            for i, (sequence_id, logits_per_token, sampling_param) in enumerate(
+                zip(sequence_ids, torch.from_dlpack(logits), sampling_params)
+            ):
+                maybe_new_token = sample(
+                    torch.unsqueeze(logits_per_token, 0),
+                    [sampling_param],
+                    self.vocab_size,
+                    check_safety=True,
+                )
+
+                if maybe_new_token is not None:
+                    new_token = maybe_new_token[0]
+                    if not new_token in requests[i].sampling_params.appeared_tokens_freq:
+                        requests[i].sampling_params.appeared_tokens_freq[new_token] = 0
+                    requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
+                    if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
+                        assert isinstance(requests[i], PrefillRequest)
+                        for seq_id in range(requests[i].num_sequences):
+                            outputs.append(
+                                TextGenerationResult(
+                                    sequence_id=SequenceId(
+                                        sequence_id.request_id, seq_id
+                                    ),
+                                    generated_tokens=[new_token],  # type: ignore
+                                    error=None,
+                                )
+                            )
+                    else:
+                        outputs.append(
+                            TextGenerationResult(
+                                sequence_id=sequence_id,
+                                generated_tokens=[new_token],  # type: ignore
+                                error=None,
+                            )
+                        )
+                else:
+                    if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
+                        assert isinstance(requests[i], PrefillRequest)
+                        for seq_id in range(requests[i].num_sequences):
+                            outputs.append(
+                                TextGenerationResult(
+                                    sequence_id=SequenceId(
+                                        sequence_id.request_id, seq_id
+                                    ),
+                                    generated_tokens=[],
+                                    error=err_msg,
+                                )
+                            )
+                    else:
+                        outputs.append(
+                            TextGenerationResult(
+                                sequence_id=sequence_id,
+                                generated_tokens=[],
+                                error=err_msg,
+                            )
+                        )
+
+            return outputs
+
+    def generate_multi_query(self, requests:List[MultiQueryDecodeRequest], cache: KVCache) -> List[TextGenerationResult]:
+        sequence_ids = []
+        for request in requests:
+            sequence_ids.append(request.sequence_id)
+
+        (
+            input_ids,
+            positions,
+            seq_lens,
+            slot_mapping,
+            query_lens,
+            past_slot_mapping,
+            permute_map,
+        ) = prepare_multi_query_decode_inputs(
+            requests,
+            cache.slot_mappings,
+            None,
+            self.dev,
+        )
+
+        logits = self.mod["evaluate_multi_query"](
+            input_ids,
+            positions,
+            seq_lens,
+            cache.cache_blocks,
+            slot_mapping,
+            query_lens,
+            past_slot_mapping,
+            permute_map,
+            self.params,
+        )[0].numpy()
+
+        return self.sample_from_logits(logits, sequence_ids, requests)
+
     def generate(
         self,
-        requests: Union[List[PrefillRequest], List[DecodeRequest]],
+        requests: Union[List[PrefillRequest], List[DecodeRequest], List[MultiQueryDecodeRequest]],
         cache: KVCache,
     ) -> List[TextGenerationResult]:
         if len(requests) == 0:
             return []
 
         is_prefill = isinstance(requests[0], PrefillRequest)
+        is_multi_query_decode = isinstance(requests[0], MultiQueryDecodeRequest)
 
+        if is_multi_query_decode:
+            return self.generate_multi_query(requests, cache)
+
+        # Prefill or decode
         all_token_ids = []
-        sampling_params = []
         sequence_ids = []
         prompt_lens = []
-        num_sequences = []
 
         for request in requests:
             if isinstance(request, PrefillRequest):
                 sequence_ids.append(get_prompt_sequence_id(request.request_id))
-                num_sequences.append(request.num_sequence)
-            else:
+            elif isinstance(request, DecodeRequest):
                 sequence_ids.append(request.sequence_id)
                 prompt_lens.append(request.prompt_token_counts)
 
+            assert not isinstance(request, MultiQueryDecodeRequest)
             all_token_ids.append(request.token_ids)
-            sampling_params.append(request.sampling_params)
 
         (
             input_ids,
@@ -478,99 +681,7 @@ class Model:
             self.copy_cache_blocks_func(cache.cache_blocks, block_mapping)
             cache.pending_copy_from_to = []
 
-        try:
-            next_tokens = sample(logits, sampling_params, self.vocab_size)
-            assert next_tokens is not None
-            outputs = []
-            for i, (sequence_id, new_token) in enumerate(
-                zip(sequence_ids, next_tokens)
-            ):
-                if not new_token in requests[i].sampling_params.appeared_tokens_freq:
-                    requests[i].sampling_params.appeared_tokens_freq[new_token] = 0
-                requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
-                if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
-                    for seq_id in range(num_sequences[i]):
-                        outputs.append(
-                            TextGenerationResult(
-                                sequence_id=SequenceId(sequence_id.request_id, seq_id),
-                                generated_tokens=[new_token],
-                                error=None,
-                            )
-                        )
-                else:
-                    outputs.append(
-                        TextGenerationResult(
-                            sequence_id=sequence_id,
-                            generated_tokens=[new_token],
-                            error=None,
-                        )
-                    )
-
-            return outputs
-        except RuntimeError:
-            # Fallback to per-token sampling in case some logits values are corrupted.
-            outputs = []
-            err_msg = (
-                "Error from sampling: probability tensor contains either `inf`, `nan`"
-                " or element < 0"
-            )
-
-            for i, (sequence_id, logits_per_token, sampling_param) in enumerate(
-                zip(sequence_ids, torch.from_dlpack(logits), sampling_params)
-            ):
-                maybe_new_token = sample(
-                    torch.unsqueeze(logits_per_token, 0),
-                    [sampling_param],
-                    self.vocab_size,
-                    check_safety=True,
-                )
-
-                if maybe_new_token is not None:
-                    new_token = maybe_new_token[0]
-                    if not new_token in requests[i].sampling_params.appeared_tokens_freq:
-                        requests[i].sampling_params.appeared_tokens_freq[new_token] = 0
-                    requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
-                    if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
-                        for seq_id in range(num_sequences[i]):
-                            outputs.append(
-                                TextGenerationResult(
-                                    sequence_id=SequenceId(
-                                        sequence_id.request_id, seq_id
-                                    ),
-                                    generated_tokens=[new_token],  # type: ignore
-                                    error=None,
-                                )
-                            )
-                    else:
-                        outputs.append(
-                            TextGenerationResult(
-                                sequence_id=sequence_id,
-                                generated_tokens=[new_token],  # type: ignore
-                                error=None,
-                            )
-                        )
-                else:
-                    if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
-                        for seq_id in range(num_sequences[i]):
-                            outputs.append(
-                                TextGenerationResult(
-                                    sequence_id=SequenceId(
-                                        sequence_id.request_id, seq_id
-                                    ),
-                                    generated_tokens=[],
-                                    error=err_msg,
-                                )
-                            )
-                    else:
-                        outputs.append(
-                            TextGenerationResult(
-                                sequence_id=sequence_id,
-                                generated_tokens=[],
-                                error=err_msg,
-                            )
-                        )
-
-            return outputs
+        return self.sample_from_logits(logits, sequence_ids, requests)
 
 
 def get_gpu_memory(gpu: int = 0) -> int:
@@ -600,16 +711,19 @@ class PagedCacheModelTextGenerator:
         self.model = model
 
     def generate(
-        self, requests: list[Union[PrefillRequest, DecodeRequest]], kv_cache
+        self, requests: list[Union[PrefillRequest, DecodeRequest, MultiQueryDecodeRequest]], kv_cache
     ) -> list[TextGenerationResult]:
         prefill_requests = [r for r in requests if isinstance(r, PrefillRequest)]
         decode_requests = [r for r in requests if isinstance(r, DecodeRequest)]
+        multi_query_decode_requests = [r for r in requests if isinstance(r, MultiQueryDecodeRequest)]
 
         out = []
         if prefill_requests:
             out.extend(self.model.generate(prefill_requests, kv_cache))
         if decode_requests:
             out.extend(self.model.generate(decode_requests, kv_cache))
+        if multi_query_decode_requests:
+            out.extend(self.model.generate(multi_query_decode_requests, kv_cache))
 
         return out
 
