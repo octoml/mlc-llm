@@ -106,17 +106,33 @@ def sample(
 
             # TODO(vvchernov): need to strictly define order of using penalties and logit bias or
             # prohibit simultaneous using of them. At the latter case it can be LogitProcessor
-            if (not param.presence_penalty == 0.0 or not param.frequency_penalty == 0) and bool(freq):
-                index = torch.from_numpy(np.array(list(freq.keys()))).to(device=logits.device)
-                src = torch.from_numpy(np.array(list(freq.values()))).type_as(logits).to(device=logits.device)
-                logits[i][index] -= src * param.frequency_penalty + param.presence_penalty
+            if (
+                not param.presence_penalty == 0.0 or not param.frequency_penalty == 0
+            ) and bool(freq):
+                index = torch.from_numpy(np.array(list(freq.keys()))).to(
+                    device=logits.device
+                )
+                src = (
+                    torch.from_numpy(np.array(list(freq.values())))
+                    .type_as(logits)
+                    .to(device=logits.device)
+                )
+                logits[i][index] -= (
+                    src * param.frequency_penalty + param.presence_penalty
+                )
 
             if not param.repetition_penalty == 1.0 and bool(freq):
-                index = torch.from_numpy(np.array(list(freq.keys()))).to(device=logits.device)
+                index = torch.from_numpy(np.array(list(freq.keys()))).to(
+                    device=logits.device
+                )
                 logits[i][index] /= param.repetition_penalty
 
             if param.logit_bias:
-                logits[i][param.logit_bias_index] += torch.Tensor(param.logit_bias_value).type_as(logits).to(device=logits.device)
+                logits[i][param.logit_bias_index] += (
+                    torch.Tensor(param.logit_bias_value)
+                    .type_as(logits)
+                    .to(device=logits.device)
+                )
 
     logits_random = logits[mask_random]
 
@@ -185,7 +201,10 @@ def get_tvm_model(config, dev):
         vm = relax.VirtualMachine(ex, dev)
 
         from tvm.contrib import tvmjs  # pylint: disable=import-outside-toplevel
-        _params, _meta = tvmjs.load_ndarray_cache(f"{config.model_artifact_path}/params", dev)
+
+        _params, _meta = tvmjs.load_ndarray_cache(
+            f"{config.model_artifact_path}/params", dev
+        )
         params = []
         for i in range(_meta["ParamSize"]):
             params.append(_params[f"param_{i}"])
@@ -308,7 +327,9 @@ def prepare_multi_query_decode_inputs(
             seq_lens.append(min(num_past_tokens + num_queries, sliding_window))
             num_past = min(num_past_tokens, sliding_window)
             past_slot_mapping += all_slot_mappings[request_id][num_past:]
-            slot_mapping += all_slot_mappings[request_id][num_past: num_past + num_queries]
+            slot_mapping += all_slot_mappings[request_id][
+                num_past : num_past + num_queries
+            ]
         else:
             seq_lens.append(num_past_tokens + num_queries)
             past_slot_mapping += all_slot_mappings[request_id][:num_past_tokens]
@@ -472,7 +493,10 @@ class Model:
 
                 if maybe_new_token is not None:
                     new_token = maybe_new_token[0]
-                    if not new_token in requests[i].sampling_params.appeared_tokens_freq:
+                    if (
+                        not new_token
+                        in requests[i].sampling_params.appeared_tokens_freq
+                    ):
                         requests[i].sampling_params.appeared_tokens_freq[new_token] = 0
                     requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
                     if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
@@ -519,7 +543,9 @@ class Model:
 
             return outputs
 
-    def generate_multi_query(self, requests:List[MultiQueryDecodeRequest], cache: KVCache) -> List[TextGenerationResult]:
+    def generate_multi_query(
+        self, requests: List[MultiQueryDecodeRequest], cache: KVCache
+    ) -> List[TextGenerationResult]:
         sequence_ids = []
         for request in requests:
             sequence_ids.append(request.sequence_id)
@@ -555,7 +581,9 @@ class Model:
 
     def generate(
         self,
-        requests: Union[List[PrefillRequest], List[DecodeRequest], List[MultiQueryDecodeRequest]],
+        requests: Union[
+            List[PrefillRequest], List[DecodeRequest], List[MultiQueryDecodeRequest]
+        ],
         cache: KVCache,
     ) -> List[TextGenerationResult]:
         if len(requests) == 0:
@@ -711,11 +739,15 @@ class PagedCacheModelTextGenerator:
         self.model = model
 
     def generate(
-        self, requests: list[Union[PrefillRequest, DecodeRequest, MultiQueryDecodeRequest]], kv_cache
+        self,
+        requests: list[Union[PrefillRequest, DecodeRequest, MultiQueryDecodeRequest]],
+        kv_cache,
     ) -> list[TextGenerationResult]:
         prefill_requests = [r for r in requests if isinstance(r, PrefillRequest)]
         decode_requests = [r for r in requests if isinstance(r, DecodeRequest)]
-        multi_query_decode_requests = [r for r in requests if isinstance(r, MultiQueryDecodeRequest)]
+        multi_query_decode_requests = [
+            r for r in requests if isinstance(r, MultiQueryDecodeRequest)
+        ]
 
         out = []
         if prefill_requests:
