@@ -482,7 +482,7 @@ class Model:
                 requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
                 if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
                     assert isinstance(requests[i], PrefillRequest)
-                    for seq_id in range(requests[i].num_sequences):
+                    for seq_id in range(requests[i].num_sequence):
                         outputs.append(
                             TextGenerationResult(
                                 sequence_id=SequenceId(sequence_id.request_id, seq_id),
@@ -528,7 +528,7 @@ class Model:
                     requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
                     if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
                         assert isinstance(requests[i], PrefillRequest)
-                        for seq_id in range(requests[i].num_sequences):
+                        for seq_id in range(requests[i].num_sequence):
                             outputs.append(
                                 TextGenerationResult(
                                     sequence_id=SequenceId(
@@ -549,7 +549,7 @@ class Model:
                 else:
                     if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
                         assert isinstance(requests[i], PrefillRequest)
-                        for seq_id in range(requests[i].num_sequences):
+                        for seq_id in range(requests[i].num_sequence):
                             outputs.append(
                                 TextGenerationResult(
                                     sequence_id=SequenceId(
