@@ -428,13 +428,8 @@ class EngineBase:
                     num_new_batched_tokens
                 ) = num_tokens = self.max_num_batched_tokens
         else:
-            # Evicting and recovering multi-sequence requests is not supported for now.
-            assert all(
-                gen_seq.next_start_position == state.prompt_len
-                for gen_seq in state.generation_sequences
-            )
-            num_tokens = state.prompt_len
-            num_new_batched_tokens += num_tokens
+            num_tokens = state.prompt_len + sum([len(gen_seq.generated_token_ids) for gen_seq in state.generation_sequences])
+            num_new_batched_tokens += state.prompt_len
 
         if num_new_batched_tokens > self.max_num_batched_tokens:
             LOG.debug(
