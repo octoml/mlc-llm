@@ -317,24 +317,25 @@ def prepare_multi_query_decode_inputs(
 
     for request in requests:
         num_past_tokens = len(request.past_token_ids)
-        num_queries = len(request.query_token_ids)
+        num_queries = request.queries.num_tokens
         query_lens.append(num_queries)
-        request_id = request.request_id
-        input_ids += request.query_token_ids
+        input_ids += request.queries.token_ids
 
         positions += [num_past_tokens + i for i in range(num_queries)]
 
         if sliding_window:
             seq_lens.append(min(num_past_tokens + num_queries, sliding_window))
             num_past = min(num_past_tokens, sliding_window)
-            past_slot_mapping += all_slot_mappings[request_id][num_past:]
-            slot_mapping += all_slot_mappings[request_id][
+            past_slot_mapping += all_slot_mappings[request.sequence_id][num_past:]
+            slot_mapping += all_slot_mappings[request.sequence_id][
                 num_past : num_past + num_queries
             ]
         else:
             seq_lens.append(num_past_tokens + num_queries)
-            past_slot_mapping += all_slot_mappings[request_id][:num_past_tokens]
-            slot_mapping += all_slot_mappings[request_id][
+            past_slot_mapping += all_slot_mappings[request.sequence_id][
+                :num_past_tokens
+            ]
+            slot_mapping += all_slot_mappings[request.sequence_id][
                 num_past_tokens : num_past_tokens + num_queries
             ]
 
@@ -351,6 +352,8 @@ def prepare_multi_query_decode_inputs(
     slot_mapping = tvm.nd.array(np.array(slot_mapping, dtype="int32"), dev)
 
     query_lens = tvm.nd.array(np.array(query_lens, dtype="int32"), dev)
+    # TODO(masahi): These inputs need to be replaced by block_table when a proper attention kernel
+    # becomes available.
     past_slot_mapping = tvm.nd.array(np.array(past_slot_mapping, dtype="int32"), dev)
     permute_map = tvm.nd.array(np.array(permute_map, dtype="int32"), dev)
 
@@ -440,7 +443,14 @@ class Model:
 
         return self.get_used_memory()
 
-    def sample_from_logits(self, logits, sequence_ids, requests):
+    def sample_from_logits(
+        self,
+        logits: Union[tvm.nd.NDArray, torch.Tensor],
+        sequence_ids: List[SequenceId],
+        requests: Union[
+            List[PrefillRequest], List[DecodeRequest], List[MultiQueryDecodeRequest]
+        ],
+    ):
         assert logits.shape[0] == len(requests)
 
         sampling_params = [req.sampling_params for req in requests]
@@ -457,7 +467,6 @@ class Model:
                 requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
                 if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
                     assert isinstance(requests[i], PrefillRequest)
-
                     for seq_id in range(requests[i].num_sequences):
                         outputs.append(
                             TextGenerationResult(
@@ -576,6 +585,8 @@ class Model:
             None,
             self.dev,
         )
+
+        # TODO(masahi): Disco, sliding window
 
         torch.cuda.nvtx.range_push(f"forward multi-query decode {input_ids.shape}")
 
