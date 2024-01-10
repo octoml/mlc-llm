@@ -428,8 +428,19 @@ class EngineBase:
                     num_new_batched_tokens
                 ) = num_tokens = self.max_num_batched_tokens
         else:
-            num_tokens = state.prompt_len + sum([len(gen_seq.generated_token_ids) for gen_seq in state.generation_sequences])
-            num_new_batched_tokens += state.prompt_len
+            prev_generated_token_counts = sum(
+                [
+                    len(gen_seq.generated_token_ids)
+                    for gen_seq in state.generation_sequences
+                ]
+            )
+            # Restoring an evicted parallel-sampling request with sliding-window attention is
+            # difficult to reason about, so we compute crude upper bounds below for now.
+            num_tokens = state.prompt_len + prev_generated_token_counts
+            # Restoring an evicted parallel-sampling request is done by separate
+            # Prefill and MultiQuery requests. The maximum below is an upper bound on the
+            # batch size increase due to this request.
+            num_new_batched_tokens += max(state.prompt_len, prev_generated_token_counts)
 
         if num_new_batched_tokens > self.max_num_batched_tokens:
             LOG.debug(
@@ -453,7 +464,6 @@ class EngineBase:
             return None
 
         self.queue.popleft()
-        # TODO parallel sampling: Need update here when evicting multi-sequence requests is supported.
         self.cache_manager.allocate(state.request_id, num_tokens, state.num_sequences)
         self.current_batch[state.request_id] = state
 
