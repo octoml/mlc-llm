@@ -24,6 +24,7 @@ from ..engine import (
 from ..engine.model_module import (
     DecodeRequest,
     PrefillRequest,
+    DraftTokens,
     MultiQueryDecodeRequest,
     TextGenerationResult,
 )
@@ -440,6 +441,8 @@ class Model:
         return self.get_used_memory()
 
     def sample_from_logits(self, logits, sequence_ids, requests):
+        assert logits.shape[0] == len(requests)
+
         sampling_params = [req.sampling_params for req in requests]
 
         try:
@@ -547,8 +550,17 @@ class Model:
         self, requests: List[MultiQueryDecodeRequest], cache: KVCache
     ) -> List[TextGenerationResult]:
         sequence_ids = []
+        last_query_offsets = []
         for request in requests:
+            assert not isinstance(request.queries, DraftTokens)
             sequence_ids.append(request.sequence_id)
+
+            if len(last_query_offsets) == 0:
+                last_query_offsets.append(request.queries.num_tokens - 1)
+            else:
+                last_query_offsets.append(
+                    last_query_offsets[-1] + request.queries.num_tokens
+                )
 
         (
             input_ids,
@@ -565,6 +577,8 @@ class Model:
             self.dev,
         )
 
+        torch.cuda.nvtx.range_push(f"forward multi-query decode {input_ids.shape}")
+
         logits = self.mod["evaluate_multi_query"](
             input_ids,
             positions,
@@ -577,7 +591,12 @@ class Model:
             self.params,
         )[0].numpy()
 
-        return self.sample_from_logits(logits, sequence_ids, requests)
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
+
+        last_query_logits = logits[last_query_offsets]
+
+        return self.sample_from_logits(last_query_logits, sequence_ids, requests)
 
     def generate(
         self,
@@ -593,7 +612,7 @@ class Model:
         is_multi_query_decode = isinstance(requests[0], MultiQueryDecodeRequest)
 
         if is_multi_query_decode:
-            return self.generate_multi_query(requests, cache)
+            return self.generate_multi_query(requests, cache)  # type: ignore
 
         # Prefill or decode
         all_token_ids = []

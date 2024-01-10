@@ -37,10 +37,18 @@ class DecodeRequest:
 class DraftTokens:
     token_ids: List[int]
 
+    @property
+    def num_tokens(self):
+        return len(self.token_ids)
+
 
 @dataclass
 class EvictedTokens:
     token_ids: List[int]
+
+    @property
+    def num_tokens(self):
+        return len(self.token_ids)
 
 
 @dataclass
