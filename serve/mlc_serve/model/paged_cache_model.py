@@ -344,6 +344,10 @@ def prepare_multi_query_decode_inputs(
                 # The case for restoring an evicted parallel-sampling request
                 past_slot_mapping += prompt_slot_mappings[: request.num_past_tokens]
                 slot_mapping += all_slot_mappings[request.sequence_id][:num_queries]
+                print(
+                    "len(all_slot_mappings[request.sequence_id]",
+                    len(all_slot_mappings[request.sequence_id]),
+                )
             else:
                 query_begin_offset = request.num_past_tokens - len(prompt_slot_mappings)
                 past_slot_mapping += (
@@ -797,9 +801,11 @@ class PagedCacheModelTextGenerator:
         out = []
         if prefill_requests:
             out.extend(self.model.generate(prefill_requests, kv_cache))
+            print("finished prefill")
         if decode_requests:
             out.extend(self.model.generate(decode_requests, kv_cache))
         if multi_query_decode_requests:
+            print("doing multi query decode")
             out.extend(self.model.generate(multi_query_decode_requests, kv_cache))
 
         return out
