@@ -5,7 +5,8 @@ from typing import List, Union, Tuple
 import structlog
 import numpy as np
 import torch
-import tvm
+
+from vllm.model_executor.models.llama import LlamaForCausalLM
 
 from .base import ModelArtifactConfig
 from .paged_cache_manager import KVCache, CacheManager
@@ -36,6 +37,8 @@ class Model:
         self,
         config,
     ):
+        self.pt_model = LlamaForCausalLM(config)
+
         self.vocab_size = config.vocab_size
         self.sliding_window = config.sliding_window
         self.num_shards = config.num_shards
@@ -206,15 +209,20 @@ class Model:
 
 
 def init_torch_model(
-    model_artifact_config: ModelArtifactConfig, engine_config: MLCServeEngineConfig
-) -> Tuple[TextGenerator, CacheManager]:
-    model = Model(model_artifact_config)
+    model_path, engine_config: MLCServeEngineConfig
+) -> Tuple[TextGenerator, CacheManager, ModelArtifactConfig]:
+    from transformers import AutoConfig
+    hf_config = AutoConfig.from_pretrained(model_path)
+
+    model = Model(hf_config)
+    # TODO
+    num_shards = 1
 
     num_kv_heads = (
-        model_artifact_config.num_key_value_heads // model_artifact_config.num_shards
+        hf_config.num_key_value_heads // num_shards
     )
     head_size = (
-        model_artifact_config.hidden_size // model_artifact_config.num_attention_heads
+        hf_config.hidden_size // hf_config.num_attention_heads
     )
 
     if engine_config.max_num_batched_tokens > 0:
@@ -222,7 +230,7 @@ def init_torch_model(
         num_blocks = get_num_cache_blocks(
             model,
             [engine_config.max_input_len] * engine_config.max_num_sequences,
-            model_artifact_config.num_hidden_layers,
+            hf_config.num_hidden_layers,
             num_kv_heads,
             head_size,
         )
@@ -247,10 +255,22 @@ def init_torch_model(
     cache_manager = CacheManager(
         cache_blocks,
         num_blocks,
-        model_artifact_config.sliding_window,
+        hf_config.sliding_window,
     )
 
     LOG.info("Allocated KV cache blocks.")
 
+    artifact_config = ModelArtifactConfig(
+        model_artifact_path=model_path,
+        num_shards=1,
+        quantization=None,
+        max_context_length=hf_config.max_position_embeddings, # TODO,
+        vocab_size=hf_config.vocab_size,
+        sliding_window=hf_config.sliding_window,
+        num_key_value_heads=hf_config.num_key_value_heads,
+        num_attention_heads=hf_config.nnum_attention_heads,
+        num_hidden_layers=hf_config.num_hidden_layers,
+        hidden_size=hf_config.hidden_size,
+    )
     # TODO(masahi): Make mypy understand that model confirms to TextGenerator Protocol.
-    return model, cache_manager  # type: ignore
+    return model, cache_manager, artifact_config  # type: ignore

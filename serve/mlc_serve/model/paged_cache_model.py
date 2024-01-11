@@ -6,6 +6,7 @@ from .base import get_model_artifact_config
 from .paged_cache_manager import CacheManager
 from .tokenizer import HfTokenizerModule, ConversationTemplate, Tokenizer
 from .tvm_model import init_tvm_model
+from .torch_model import init_torch_model
 
 from ..engine import MLCServeEngineConfig
 from ..engine.model_module import (
@@ -50,10 +51,15 @@ class PagedCacheModelModule:
         model_artifact_path: Path,
         engine_config: MLCServeEngineConfig,
     ):
-        model_artifact_config = get_model_artifact_config(model_artifact_path)
-
-        # TODO(masahi): Make the model type configurable.
-        model, cache_manager = init_tvm_model(model_artifact_config, engine_config)
+        if engine_config.model_type == "tvm":
+            model_artifact_config = get_model_artifact_config(model_artifact_path)
+            model, cache_manager = init_tvm_model(model_artifact_config, engine_config)
+        elif engine_config.model_type == "torch":
+            model, cache_manager, model_artifact_config = init_torch_model(
+                model_artifact_path, engine_config
+            )
+        else:
+            raise RuntimeError(f"Unknown model type {engine_config.model_type}")
 
         self.engine_config = engine_config
         self.model_artifact_config = model_artifact_config
