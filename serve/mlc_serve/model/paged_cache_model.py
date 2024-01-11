@@ -326,7 +326,7 @@ def prepare_multi_query_decode_inputs(
             # TODO(masahi): Verify this code path
             seq_lens.append(min(request.num_past_tokens + num_queries, sliding_window))
             num_past = min(request.num_past_tokens, sliding_window)
-            past_slot_mapping += all_slot_mappings[request.sequence_id][num_past:]
+            past_slot_mapping += all_slot_mappings[request.sequence_id][:num_past]
             slot_mapping += all_slot_mappings[request.sequence_id][
                 num_past : num_past + num_queries
             ]
@@ -344,10 +344,6 @@ def prepare_multi_query_decode_inputs(
                 # The case for restoring an evicted parallel-sampling request
                 past_slot_mapping += prompt_slot_mappings[: request.num_past_tokens]
                 slot_mapping += all_slot_mappings[request.sequence_id][:num_queries]
-                print(
-                    "len(all_slot_mappings[request.sequence_id]",
-                    len(all_slot_mappings[request.sequence_id]),
-                )
             else:
                 query_begin_offset = request.num_past_tokens - len(prompt_slot_mappings)
                 past_slot_mapping += (
@@ -625,6 +621,7 @@ class Model:
         torch.cuda.nvtx.range_pop()
 
         last_query_logits = logits[last_query_offsets]
+        print("last_query_logits.shape", last_query_logits.shape)
 
         return self.sample_from_logits(last_query_logits, sequence_ids, requests)
 
@@ -803,6 +800,7 @@ class PagedCacheModelTextGenerator:
             out.extend(self.model.generate(prefill_requests, kv_cache))
             print("finished prefill")
         if decode_requests:
+            print("doing decode")
             out.extend(self.model.generate(decode_requests, kv_cache))
         if multi_query_decode_requests:
             print("doing multi query decode")
