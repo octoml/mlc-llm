@@ -319,21 +319,25 @@ def prepare_multi_query_decode_inputs(
         num_queries = request.queries.num_tokens
         query_lens.append(num_queries)
         input_ids += request.queries.token_ids
-
         positions += [request.num_past_tokens + i for i in range(num_queries)]
 
-        if sliding_window:
-            # TODO(masahi): Verify this code path
-            seq_lens.append(min(request.num_past_tokens + num_queries, sliding_window))
-            num_past = min(request.num_past_tokens, sliding_window)
-            past_slot_mapping += all_slot_mappings[request.sequence_id][:num_past]
-            slot_mapping += all_slot_mappings[request.sequence_id][
-                num_past : num_past + num_queries
+        prompt_seq_id = get_prompt_sequence_id(request.sequence_id.request_id)
+        prompt_slot_mappings = all_slot_mappings[prompt_seq_id]
+
+        if sliding_window and request.num_past_tokens + num_queries >= sliding_window:
+            seq_lens.append(sliding_window)
+            prompt_and_decode_slot_mappings = (
+                prompt_slot_mappings + all_slot_mappings[request.sequence_id]
+            )
+            past_slot_mapping += prompt_and_decode_slot_mappings[
+                request.num_past_tokens
+                - (sliding_window - num_queries) : request.num_past_tokens
+            ]
+            slot_mapping += prompt_and_decode_slot_mappings[
+                request.num_past_tokens : request.num_past_tokens + num_queries
             ]
         else:
             seq_lens.append(request.num_past_tokens + num_queries)
-            prompt_seq_id = get_prompt_sequence_id(request.sequence_id.request_id)
-            prompt_slot_mappings = all_slot_mappings[prompt_seq_id]
 
             if request.num_past_tokens < len(prompt_slot_mappings):
                 raise RuntimeError(
@@ -342,7 +346,7 @@ def prepare_multi_query_decode_inputs(
                 )
             elif request.num_past_tokens == len(prompt_slot_mappings):
                 # The case for restoring an evicted parallel-sampling request
-                past_slot_mapping += prompt_slot_mappings[: request.num_past_tokens]
+                past_slot_mapping += prompt_slot_mappings
                 slot_mapping += all_slot_mappings[request.sequence_id][:num_queries]
             else:
                 query_begin_offset = request.num_past_tokens - len(prompt_slot_mappings)
@@ -629,9 +633,7 @@ class Model:
         if self.disco_session:
             logits, _ = out.debug_get_from_remote(0)
         else:
-            logits = out[
-                0
-            ]
+            logits = out[0]
 
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
