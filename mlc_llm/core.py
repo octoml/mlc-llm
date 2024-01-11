@@ -570,7 +570,6 @@ def get_cuda_sm_version():
 
 def mod_transform_before_build(
     mod: tvm.IRModule,
-    param_manager: param_manager.ParamManager,
     args: argparse.Namespace,
     config: Dict,
 ) -> tvm.IRModule:
@@ -602,7 +601,6 @@ def mod_transform_before_build(
         if args.model.lower().startswith("rwkv-"):
             model_names += ["reset_kv_cache"]
 
-    mod = param_manager.transform_dequantize()(mod)
     mod = relax.transform.BundleModelParams()(mod)
 
     use_ft_quant = args.quantization.name in [
@@ -892,6 +890,7 @@ def build_model_from_args(args: argparse.Namespace):
         for qspec_updater_class in param_manager.qspec_updater_classes:
             qspec_updater = qspec_updater_class(param_manager)
             qspec_updater.visit_module(mod)
+        mod = param_manager.transform_dequantize()(mod)
 
         if not args.build_model_only:
             parameter_transforms = []
@@ -1012,7 +1011,7 @@ def build_model_from_args(args: argparse.Namespace):
         if args.convert_weights_only:
             exit(0)
 
-        mod = mod_transform_before_build(mod, param_manager, args, model_config)
+        mod = mod_transform_before_build(mod, args, model_config)
         if args.num_shards > 1:
             # We require a "create_sharding_info" function for all
             # multi-GPU models, even if they are using pre-sharded
