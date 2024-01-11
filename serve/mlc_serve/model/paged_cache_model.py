@@ -601,11 +601,20 @@ class Model:
             self.dev,
         )
 
-        # TODO(masahi): Disco, sliding window
-
         torch.cuda.nvtx.range_push(f"forward multi-query decode {input_ids.shape}")
 
-        logits = self.mod["evaluate_multi_query"](
+        if self.disco_session:
+            input_ids = copy_to_worker_0(self.disco_session, input_ids)
+            positions = copy_to_worker_0(self.disco_session, positions)
+            seq_lens = copy_to_worker_0(self.disco_session, seq_lens)
+            slot_mapping = copy_to_worker_0(self.disco_session, slot_mapping)
+            query_lens = copy_to_worker_0(self.disco_session, query_lens)
+            past_slot_mapping = copy_to_worker_0(self.disco_session, past_slot_mapping)
+            permute_map = copy_to_worker_0(self.disco_session, permute_map)
+
+        # TODO(masahi): sliding window
+
+        out = self.mod["evaluate_multi_query"](
             input_ids,
             positions,
             seq_lens,
@@ -615,12 +624,19 @@ class Model:
             past_slot_mapping,
             permute_map,
             self.params,
-        )[0].numpy()
+        )
+
+        if self.disco_session:
+            logits, _ = out.debug_get_from_remote(0)
+        else:
+            logits = out[
+                0
+            ]
 
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
 
-        last_query_logits = logits[last_query_offsets]
+        last_query_logits = torch.from_dlpack(logits)[last_query_offsets]
 
         return self.sample_from_logits(last_query_logits, sequence_ids, requests)
 

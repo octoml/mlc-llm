@@ -70,8 +70,8 @@ def _test(args: argparse.Namespace):
         prompts = [
             "Hello, my name is",
             "The capital of France is",
-            # "The president of the United States is a powerful man. But he can also be",
-            # "The future of AI is full of promise. But we need to carefully",
+            "The president of the United States is a powerful man. But he can also be",
+            "The future of AI is full of promise. But we need to carefully",
         ]
 
     for i, prompt in enumerate(prompts):

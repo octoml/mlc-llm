@@ -349,7 +349,6 @@ class EngineBase:
         self.has_new_requests = Condition(lock=self.queue_lock)
 
         self.current_batch = dict[RequestId, RequestState]()
-        self.has_evicted = False
 
     def check_prompt_too_long(self, prompt_len: int, num_sequences: int = 1) -> bool:
         # We make sure that the KV cache will have enough free space for this request to proceed
@@ -369,9 +368,8 @@ class EngineBase:
         # Must be called with the queue lock held
         num_eviction = 0
 
-        mx = 1 if self.has_evicted else 9089
-        while self.cache_manager.get_max_new_tokens() < mx:
-            self.has_evicted = True
+        # print("self.cache_manager.get_max_new_tokens()", self.cache_manager.get_max_new_tokens())
+        while self.cache_manager.get_max_new_tokens() < 1:
             num_eviction += 1
 
             single_sample_requests = []
