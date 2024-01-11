@@ -4,8 +4,9 @@ import functools
 import json
 import math
 import os
+import pathlib
 import shutil
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 
 import numpy as np
 import tvm
@@ -284,7 +285,11 @@ def convert_weights(
     return loaded_params
 
 
-def save_params(params: List[tvm.nd.NDArray], artifact_path: str, num_presharded: int = 1) -> None:
+def save_params(
+    params: List[tvm.nd.NDArray], artifact_path: Union[str, pathlib.Path], num_presharded: int = 1
+) -> None:
+    artifact_path = pathlib.Path(artifact_path)
+
     from tvm.contrib import tvmjs  # pylint: disable=import-outside-toplevel
 
     assert len(params) % num_presharded == 0
@@ -308,8 +313,14 @@ def save_params(params: List[tvm.nd.NDArray], artifact_path: str, num_presharded
     )
     total_size_gb = total_size_bytes / (1024**3)
     print(f"Total param size: {total_size_gb} GB")
+
+    param_path = artifact_path.joinpath("params")
+    assert param_path.is_dir() or not param_path.exists(), (
+        f"If the path provided to utils.save_params already exists, "
+        f"it must be a directory.  However, {param_path} is not a directory."
+    )
     tvmjs.dump_ndarray_cache(
-        param_dict, f"{artifact_path}/params", meta_data=meta_data, encode_format="raw"
+        param_dict, param_path.as_posix(), meta_data=meta_data, encode_format="raw"
     )
 
 
@@ -325,8 +336,14 @@ def load_params(artifact_path: str, device) -> List[tvm.nd.NDArray]:
 
 
 def copy_tokenizer(args: argparse.Namespace) -> None:
-    for filename in os.listdir(args.model_path):
-        if filename in [
+    model_path = pathlib.Path(args.model_path)
+    artifact_path = pathlib.Path(args.artifact_path)
+    param_path = artifact_path.joinpath("model" if args.enable_batching else "params")
+
+    param_path.mkdir(parents=True, exist_ok=True)
+
+    for filepath in model_path.iterdir():
+        if filepath.name in [
             "tokenizer.model",
             "tokenizer.json",
             "vocab.json",
@@ -334,16 +351,13 @@ def copy_tokenizer(args: argparse.Namespace) -> None:
             "added_tokens.json",
             "tokenizer_config.json",
         ]:
-            shutil.copy(
-                os.path.join(args.model_path, filename),
-                os.path.join(args.artifact_path, "model") if args.enable_batching else os.path.join(args.artifact_path, "params"),
-            )
+            shutil.copy(filepath, param_path.joinpath(filepath.name))
 
     # If we have `tokenizer.model` but not `tokenizer.json`, try convert it to
     # `tokenizer.json` with `transformers`.
-    tokenizer_json_path = os.path.join(args.model_path, "tokenizer.json")
-    tokenizer_model_path = os.path.join(args.model_path, "tokenizer.model")
-    if os.path.exists(tokenizer_model_path) and (not os.path.exists(tokenizer_json_path)):
+    tokenizer_json_path = model_path.joinpath("tokenizer.json")
+    tokenizer_model_path = model_path.joinpath("tokenizer.model")
+    if tokenizer_model_path.exists() and not tokenizer_json_path.exists():
         print("Attempting to convert `tokenizer.model` to `tokenizer.json`.")
         try:
             # pylint: disable=import-outside-toplevel
