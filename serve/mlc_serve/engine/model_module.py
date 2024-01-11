@@ -143,7 +143,7 @@ class TextGenerator(Protocol):
 
     def generate(
         self,
-        requests: List[Union[PrefillRequest, DecodeRequest]],
+        requests: List[Union[PrefillRequest, DecodeRequest, MultiQueryDecodeRequest]],
         kv_cache: KVCache,
     ) -> List[TextGenerationResult]:
         """

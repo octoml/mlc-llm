@@ -486,7 +486,7 @@ class Model:
                 requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
                 if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
                     assert isinstance(requests[i], PrefillRequest)
-                    for seq_id in range(requests[i].num_sequence):
+                    for seq_id in range(requests[i].num_sequence):  # type: ignore
                         outputs.append(
                             TextGenerationResult(
                                 sequence_id=SequenceId(sequence_id.request_id, seq_id),
@@ -532,7 +532,7 @@ class Model:
                     requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
                     if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
                         assert isinstance(requests[i], PrefillRequest)
-                        for seq_id in range(requests[i].num_sequence):
+                        for seq_id in range(requests[i].num_sequence):  # type: ignore
                             outputs.append(
                                 TextGenerationResult(
                                     sequence_id=SequenceId(
@@ -553,7 +553,7 @@ class Model:
                 else:
                     if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
                         assert isinstance(requests[i], PrefillRequest)
-                        for seq_id in range(requests[i].num_sequence):
+                        for seq_id in range(requests[i].num_sequence):  # type: ignore
                             outputs.append(
                                 TextGenerationResult(
                                     sequence_id=SequenceId(
@@ -578,7 +578,7 @@ class Model:
         self, requests: List[MultiQueryDecodeRequest], cache: KVCache
     ) -> List[TextGenerationResult]:
         sequence_ids = []
-        last_query_offsets = []
+        last_query_offsets: List[int] = []
         for request in requests:
             assert not isinstance(request.queries, DraftTokens)
             sequence_ids.append(request.sequence_id)
