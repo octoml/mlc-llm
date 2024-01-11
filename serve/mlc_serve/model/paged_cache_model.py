@@ -469,7 +469,7 @@ class Model:
         requests: Union[
             List[PrefillRequest], List[DecodeRequest], List[MultiQueryDecodeRequest]
         ],
-    ):
+    ) -> List[TextGenerationResult]:
         assert logits.shape[0] == len(requests)
 
         sampling_params = [req.sampling_params for req in requests]
@@ -615,8 +615,6 @@ class Model:
             query_lens = copy_to_worker_0(self.disco_session, query_lens)
             past_slot_mapping = copy_to_worker_0(self.disco_session, past_slot_mapping)
             permute_map = copy_to_worker_0(self.disco_session, permute_map)
-
-        # TODO(masahi): sliding window
 
         out = self.mod["evaluate_multi_query"](
             input_ids,
@@ -812,13 +810,31 @@ class PagedCacheModelTextGenerator:
             r for r in requests if isinstance(r, MultiQueryDecodeRequest)
         ]
 
+        multi_query_decode_requests = []
+        multi_query_decode_request_ids = set()
+
+        for r in requests:
+            if isinstance(r, MultiQueryDecodeRequest):
+                multi_query_decode_requests.append(r)
+                multi_query_decode_request_ids.add(r.sequence_id.request_id)
+
         out = []
+
         if prefill_requests:
             prefill_res = self.model.generate(prefill_requests, kv_cache)
+
             if not multi_query_decode_requests:
                 out.extend(prefill_res)
+            else:
+                # Prefill requests from restoration of evicted parallel-sampling requests
+                # must not return outputs.
+                for res in prefill_res:
+                    if res.sequence_id.request_id not in multi_query_decode_request_ids:
+                        out.append(res)
+
         if decode_requests:
             out.extend(self.model.generate(decode_requests, kv_cache))
+
         if multi_query_decode_requests:
             out.extend(self.model.generate(multi_query_decode_requests, kv_cache))
 
