@@ -52,10 +52,8 @@ class PagedCacheModelModule:
     ):
         model_artifact_config = get_model_artifact_config(model_artifact_path)
 
-        if engine_config.model_type == "tvm":
-            model, cache_manager = init_tvm_model(model_artifact_config, engine_config)
-        else:
-            raise RuntimeError(f"Unknown model type {engine_config.model_type}")
+        # TODO(masahi): Make the model type configurable.
+        model, cache_manager = init_tvm_model(model_artifact_config, engine_config)
 
         self.engine_config = engine_config
         self.model_artifact_config = model_artifact_config

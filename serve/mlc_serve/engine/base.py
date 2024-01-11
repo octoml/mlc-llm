@@ -30,7 +30,6 @@ class MLCServeEngineConfig:
     min_decode_steps: int = 32
     max_decode_steps: int = 48
     init_timeout: int = 120
-    model_type: str = "tvm"  # "tvm", "torch"
 
     @classmethod
     def _from_json(config_cls, json_obj: Dict[Any, Any]):
