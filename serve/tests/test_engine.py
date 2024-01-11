@@ -1,3 +1,4 @@
+import os
 import argparse
 import json
 import random
@@ -17,6 +18,11 @@ from mlc_serve.utils import get_default_mlc_serve_argparser, postproc_mlc_serve_
 
 
 def _test(args: argparse.Namespace):
+    model_type = "tvm"
+
+    if not os.path.exists(args.model_artifact_path.joinpath("mlc-model-config.json")):
+        model_type = "torch"
+
     engine_config = get_engine_config(
         {
             "use_staging_engine": args.use_staging_engine,
@@ -24,6 +30,7 @@ def _test(args: argparse.Namespace):
             "max_input_len": args.max_input_len,
             "min_decode_steps": args.min_decode_steps,
             "max_decode_steps": args.max_decode_steps,
+            "model_type": model_type,
         }
     )
 

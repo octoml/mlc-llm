@@ -54,10 +54,12 @@ class PagedCacheModelModule:
         if engine_config.model_type == "tvm":
             model_artifact_config = get_model_artifact_config(model_artifact_path)
             model, cache_manager = init_tvm_model(model_artifact_config, engine_config)
+            tokenizer_module = HfTokenizerModule(model_artifact_path.joinpath("model"))
         elif engine_config.model_type == "torch":
             model, cache_manager, model_artifact_config = init_torch_model(
                 model_artifact_path, engine_config
             )
+            tokenizer_module = HfTokenizerModule(model_artifact_path)
         else:
             raise RuntimeError(f"Unknown model type {engine_config.model_type}")
 
@@ -66,7 +68,6 @@ class PagedCacheModelModule:
         self.text_generator = PagedCacheModelTextGenerator(model)
         self.cache_manager = cache_manager
 
-        tokenizer_module = HfTokenizerModule(model_artifact_path)
         self.tokenizer = tokenizer_module.tokenizer
         self.conversation_template = tokenizer_module.conversation_template
 

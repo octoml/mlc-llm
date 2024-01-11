@@ -35,10 +35,10 @@ LOG = structlog.stdlib.get_logger(__name__)
 class Model:
     def __init__(
         self,
+        pt_model,
         config,
     ):
-        self.pt_model = LlamaForCausalLM(config)
-
+        self.pt_model = pt_model
         self.vocab_size = config.vocab_size
         self.sliding_window = config.sliding_window
         self.num_shards = config.num_shards
@@ -208,13 +208,46 @@ class Model:
             return outputs
 
 
+def init_cache_blocks(head_size, num_layers, num_heads, block_size, num_gpu_blocks):
+    element_size = 2
+    x = 16 // element_size
+
+    key_block_shape = (num_heads, head_size // x, block_size, x)
+    value_block_shape = (num_heads, head_size, block_size)
+
+    gpu_cache = []
+    for _ in range(num_layers):
+        key_blocks = torch.empty(
+            size=(num_gpu_blocks, *key_block_shape),
+            dtype=torch.float16,
+            device="cuda",
+        )
+        value_blocks = torch.empty(
+            size=(num_gpu_blocks, *value_block_shape),
+            dtype=torch.float16,
+            device="cuda",
+        )
+        gpu_cache.append((key_blocks, value_blocks))
+    return gpu_cache
+
+
 def init_torch_model(
     model_path, engine_config: MLCServeEngineConfig
 ) -> Tuple[TextGenerator, CacheManager, ModelArtifactConfig]:
     from transformers import AutoConfig
+    from vllm.model_executor.utils import set_random_seed
+    from vllm.model_executor.parallel_utils.parallel_state import (
+        initialize_model_parallel,
+    )
+
+    torch.distributed.init_process_group(
+        backend="nccl", world_size=1, rank=0, init_method="tcp://localhost:59157"
+    )
+    initialize_model_parallel(1, 1)
+
+    print("model_path", model_path)
     hf_config = AutoConfig.from_pretrained(model_path)
 
-    model = Model(hf_config)
     # TODO
     num_shards = 1
 
@@ -224,6 +257,28 @@ def init_torch_model(
     head_size = (
         hf_config.hidden_size // hf_config.num_attention_heads
     )
+
+    if not hasattr(hf_config, "sliding_window"):
+        hf_config.sliding_window = None
+
+    hf_config.num_shards = num_shards
+
+    artifact_config = ModelArtifactConfig(
+        model_artifact_path=model_path,
+        num_shards=1,
+        quantization=None,
+        max_context_length=hf_config.max_position_embeddings, # TODO,
+        vocab_size=hf_config.vocab_size,
+        sliding_window=hf_config.sliding_window,
+        num_key_value_heads=num_kv_heads,
+        num_attention_heads=hf_config.num_attention_heads,
+        num_hidden_layers=hf_config.num_hidden_layers,
+        hidden_size=hf_config.hidden_size,
+    )
+
+    pt_model = LlamaForCausalLM(hf_config)
+    pt_model.load_weights(model_path, None, "auto", None)
+    model = Model(pt_model, hf_config)
 
     if engine_config.max_num_batched_tokens > 0:
         LOG.info("Running memory profiling.")
@@ -250,7 +305,10 @@ def init_torch_model(
 
     LOG.info(f"Using {num_blocks} cache blocks.")
 
-    cache_blocks = None
+    cache_blocks = init_cache_blocks(
+        head_size, hf_config.num_hidden_layers,
+        hf_config.num_attention_heads, CacheManager.block_size, num_blocks
+    )
 
     cache_manager = CacheManager(
         cache_blocks,
@@ -260,17 +318,5 @@ def init_torch_model(
 
     LOG.info("Allocated KV cache blocks.")
 
-    artifact_config = ModelArtifactConfig(
-        model_artifact_path=model_path,
-        num_shards=1,
-        quantization=None,
-        max_context_length=hf_config.max_position_embeddings, # TODO,
-        vocab_size=hf_config.vocab_size,
-        sliding_window=hf_config.sliding_window,
-        num_key_value_heads=hf_config.num_key_value_heads,
-        num_attention_heads=hf_config.nnum_attention_heads,
-        num_hidden_layers=hf_config.num_hidden_layers,
-        hidden_size=hf_config.hidden_size,
-    )
     # TODO(masahi): Make mypy understand that model confirms to TextGenerator Protocol.
     return model, cache_manager, artifact_config  # type: ignore
