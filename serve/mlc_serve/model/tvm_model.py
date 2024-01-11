@@ -111,22 +111,16 @@ def _prepare_inputs(
         is_prefill,
     )
 
-    for inp in [
-        input_ids,
-        positions,
-        seq_lens,
-        slot_mapping,
-        indices_within_window,
-        block_tables,
-    ]:
-        if inp:
-            inp = tvm.nd.from_dlpack(inp)
+    if block_tables is not None:
+        block_tables = tvm.nd.from_dlpack(block_tables)
+    if indices_within_window is not None:
+        indices_within_window = tvm.nd.from_dlpack(indices_within_window)
 
     return (
-        input_ids,
-        positions,
-        seq_lens,
-        slot_mapping,
+        tvm.nd.from_dlpack(input_ids),
+        tvm.nd.from_dlpack(positions),
+        tvm.nd.from_dlpack(seq_lens),
+        tvm.nd.from_dlpack(slot_mapping),
         indices_within_window,
         block_tables,
     )
