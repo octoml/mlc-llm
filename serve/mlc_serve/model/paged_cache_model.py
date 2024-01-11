@@ -797,7 +797,9 @@ class PagedCacheModelTextGenerator:
 
         out = []
         if prefill_requests:
-            out.extend(self.model.generate(prefill_requests, kv_cache))
+            prefill_res = self.model.generate(prefill_requests, kv_cache)
+            if not multi_query_decode_requests:
+                out.extend(prefill_res)
             print("finished prefill")
         if decode_requests:
             print("doing decode")
