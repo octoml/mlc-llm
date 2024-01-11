@@ -298,7 +298,7 @@ def _prepare_inputs(
     )
 
 
-def prepare_multi_query_decode_inputs(
+def _prepare_multi_query_decode_inputs(
     requests: List[MultiQueryDecodeRequest],
     all_slot_mappings,
     sliding_window,
@@ -598,7 +598,7 @@ class Model:
             query_lens,
             past_slot_mapping,
             permute_map,
-        ) = prepare_multi_query_decode_inputs(
+        ) = _prepare_multi_query_decode_inputs(
             requests,
             cache.slot_mappings,
             None,

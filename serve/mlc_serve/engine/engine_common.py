@@ -368,7 +368,6 @@ class EngineBase:
         # Must be called with the queue lock held
         num_eviction = 0
 
-        # print("self.cache_manager.get_max_new_tokens()", self.cache_manager.get_max_new_tokens())
         while self.cache_manager.get_max_new_tokens() < 1:
             num_eviction += 1
 
@@ -389,7 +388,6 @@ class EngineBase:
 
             request_to_remove = min(candidate_victims, key=lambda s: s.num_total_tokens)
 
-            print("Evicting", request_to_remove.request_id)
             self.remove_request_from_batch(request_to_remove.request_id)
             request_to_remove.is_prefilled = False
             self.queue.appendleft(request_to_remove)
@@ -442,9 +440,6 @@ class EngineBase:
                     for gen_seq in state.generation_sequences
                 ]
             )
-
-            if prev_generated_token_counts > 0:
-                print("Restoring", state.request_id)
 
             # Restoring an evicted parallel-sampling request with sliding-window attention is
             # difficult to reason about, so we use crude upper bounds below for now.
