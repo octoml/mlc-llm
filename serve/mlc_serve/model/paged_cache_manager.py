@@ -230,11 +230,6 @@ class CacheManager:
                     slot = block_number * self.block_size + block_offset
                     self.kv_cache.slot_mappings[id].append(slot)
 
-                print(
-                    "len(self.kv_cache.slot_mappings[id]",
-                    len(self.kv_cache.slot_mappings[id]),
-                )
-
             elif id not in self.kv_cache.prompt_block_tables:
                 assert (
                     len(self.free_blocks) >= num_needed_block
@@ -334,7 +329,6 @@ class CacheManager:
         allocated = self.token_counts[sequence_id]
         self.set_size([sequence_id], [allocated + new_tokens])
         self.token_counts[sequence_id] += new_tokens
-        print("sequence_id, allocated, new_tokens", sequence_id, allocated, new_tokens)
 
     def free(self, sequence_id: SequenceId):
         """

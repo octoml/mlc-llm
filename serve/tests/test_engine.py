@@ -100,11 +100,10 @@ def _test(args: argparse.Namespace):
             if any(seq.is_finished for seq in res.sequences):
                 any_finished.add(res.request_id)
 
-            # if res.request_id not in any_finished:
-            #     # If all sequences are still running, we should always get num_sequences samples back.
-            #     assert len(res.sequences) == num_sequences, res
+            if res.request_id not in any_finished:
+                # If all sequences are still running, we should always get num_sequences samples back.
+                assert len(res.sequences) == num_sequences, res
 
-            print("len(res.sequences)", len(res.sequences))
             for i, seq in enumerate(res.sequences):
                 if seq.delta:
                     generated[int(res.request_id)][i] += seq.delta

@@ -621,7 +621,6 @@ class Model:
         torch.cuda.nvtx.range_pop()
 
         last_query_logits = logits[last_query_offsets]
-        print("last_query_logits.shape", last_query_logits.shape)
 
         return self.sample_from_logits(last_query_logits, sequence_ids, requests)
 
@@ -800,12 +799,9 @@ class PagedCacheModelTextGenerator:
             prefill_res = self.model.generate(prefill_requests, kv_cache)
             if not multi_query_decode_requests:
                 out.extend(prefill_res)
-            print("finished prefill")
         if decode_requests:
-            print("doing decode")
             out.extend(self.model.generate(decode_requests, kv_cache))
         if multi_query_decode_requests:
-            print("doing multi query decode")
             out.extend(self.model.generate(multi_query_decode_requests, kv_cache))
 
         return out

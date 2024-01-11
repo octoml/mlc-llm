@@ -447,7 +447,6 @@ class EngineBase:
 
             if prev_generated_token_counts > 0:
                 print("Restoring", state.request_id)
-                print("prev_generated_token_counts", prev_generated_token_counts)
 
             # Restoring an evicted parallel-sampling request with sliding-window attention is
             # difficult to reason about, so we use crude upper bounds below for now.
