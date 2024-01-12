@@ -174,6 +174,7 @@ def prepare_inputs(
     all_decode_block_tables,
     sliding_window,
     is_prefill,
+    torch_ids_type=torch.int
 ):
     block_tables = []
     seq_lens = []
@@ -216,8 +217,8 @@ def prepare_inputs(
     def to_torch(arr, torch_dtype):
         return torch.tensor(arr, dtype=torch_dtype, device="cuda")
 
-    input_ids = to_torch(input_ids, torch.int)
-    positions = to_torch(positions, torch.int)
+    input_ids = to_torch(input_ids, torch_ids_type)
+    positions = to_torch(positions, torch_ids_type)
     seq_lens = to_torch(seq_lens, torch.int)
     slot_mapping = to_torch(slot_mapping, torch.int)
 

@@ -167,6 +167,7 @@ class Model:
             cache.decode_block_tables,
             self.sliding_window,
             is_prefill,
+            torch.long,
         )
 
         if block_tables is None:
