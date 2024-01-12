@@ -4,6 +4,8 @@ import structlog
 import torch
 
 from transformers import AutoConfig
+
+from vllm.model_executor.layers.sampler import get_logits
 from vllm.model_executor.models.llama import LlamaForCausalLM
 from vllm.sequence import SequenceData
 from vllm.model_executor import InputMetadata
@@ -15,6 +17,7 @@ from vllm.model_executor.parallel_utils.parallel_state import (
 from .base import ModelArtifactConfig
 from .paged_cache_manager import KVCache, CacheManager
 from .model_common import (
+    sample,
     prepare_inputs,
     get_num_cache_blocks,
 )
@@ -195,24 +198,27 @@ class Model:
             block_tables=block_tables,
         )
 
-        # TODO(masahi): Do sampling outside of model
         with torch.no_grad():
-            outs = self.pt_model.forward(
+            hidden_states = self.pt_model.model(
                 input_ids,
                 positions,
                 cache.cache_blocks,
                 input_metadata,
-                cache_events=None,  # TODO: what to do about this?
+                # No need for this until parallel sampling is supported.
+                cache_events=None,
             )
 
-        next_tokens = []
-        for samples in outs:
-            next_tokens.append(samples[0].output_token)
+            logits = get_logits(
+                self.pt_model.lm_head.weight,
+                hidden_states,
+                input_metadata,
+                self.vocab_size,
+            )
 
-        torch.cuda.synchronize()
-        torch.cuda.nvtx.range_pop()
+            torch.cuda.synchronize()
+            torch.cuda.nvtx.range_pop()
 
-        assert next_tokens is not None
+        next_tokens = sample(logits, sampling_params, self.vocab_size)
 
         outputs = []
 
