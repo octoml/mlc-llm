@@ -166,6 +166,10 @@ def sample(
     return res
 
 
+def _pad_to_alignment(x: List[int], multiple_of: int) -> List[int]:
+    return x + [0] * ((-len(x)) % multiple_of)
+
+
 def prepare_inputs(
     sequence_ids,
     all_token_ids,
@@ -174,7 +178,8 @@ def prepare_inputs(
     all_decode_block_tables,
     sliding_window,
     is_prefill,
-    torch_ids_type=torch.int
+    torch_ids_type=torch.int,
+    align=None,
 ):
     block_tables = []
     seq_lens = []
@@ -216,6 +221,10 @@ def prepare_inputs(
 
     def to_torch(arr, torch_dtype):
         return torch.tensor(arr, dtype=torch_dtype, device="cuda")
+
+    if align:
+        input_ids = _pad_to_alignment(input_ids, multiple_of=align)
+        positions = _pad_to_alignment(positions, multiple_of=align)
 
     input_ids = to_torch(input_ids, torch_ids_type)
     positions = to_torch(positions, torch_ids_type)

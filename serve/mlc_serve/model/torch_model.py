@@ -169,6 +169,7 @@ class Model:
             self.sliding_window,
             is_prefill,
             torch.long,
+            align=8,
         )
 
         input_shape = input_ids.shape
