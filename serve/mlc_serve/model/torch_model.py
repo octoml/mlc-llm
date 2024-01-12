@@ -5,7 +5,7 @@ import torch
 
 from transformers import AutoConfig
 from vllm.model_executor.models.llama import LlamaForCausalLM
-from vllm.sequence import SequenceGroupMetadata, SequenceData
+from vllm.sequence import SequenceData
 from vllm.model_executor import InputMetadata
 from vllm.sampling_params import SamplingParams
 from vllm.model_executor.parallel_utils.parallel_state import (
@@ -24,6 +24,7 @@ from ..engine import (
     PROMPT_SEQEUNCE_INDEX,
     get_prompt_sequence_id,
     MLCServeEngineConfig,
+    SamplingParams as MLCSamplingParams,
 )
 from ..engine.model_module import (
     DecodeRequest,
@@ -33,6 +34,16 @@ from ..engine.model_module import (
 )
 
 LOG = structlog.stdlib.get_logger(__name__)
+
+
+def convert_sampling_params(mlc_params: MLCSamplingParams) -> SamplingParams:
+    return SamplingParams(
+        presence_penalty=mlc_params.presence_penalty,
+        frequency_penalty=mlc_params.frequency_penalty,
+        temperature=mlc_params.temperature,
+        top_p=mlc_params.top_p,
+        top_k=mlc_params.top_k,
+    )
 
 
 class Model:
@@ -122,6 +133,8 @@ class Model:
         sequence_ids = []
         prompt_lens = []
         num_sequences = []
+        seq_groups: List[Tuple[List[SequenceId], SamplingParams]] = []
+        seq_data = {}
 
         for request in requests:
             if isinstance(request, PrefillRequest):
@@ -134,12 +147,17 @@ class Model:
             all_token_ids.append(request.token_ids)
             sampling_params.append(request.sampling_params)
 
+            seq_data[sequence_ids[-1]] = SequenceData(request.token_ids)
+            seq_groups.append(
+                ([sequence_ids[-1]], convert_sampling_params(request.sampling_params))
+            )
+
         (
             input_ids,
             positions,
             seq_lens,
             slot_mapping,
-            indices_within_window,
+            _,
             block_tables,
         ) = prepare_inputs(
             sequence_ids,
@@ -151,6 +169,24 @@ class Model:
             is_prefill,
         )
 
+        if block_tables is None:
+            block_tables = torch.cuda.IntTensor([])
+            context_lens = torch.cuda.IntTensor([])
+            max_context_len = 0
+        else:
+            context_lens = seq_lens,
+            max_context_len = torch.max(seq_lens)
+
+        input_metadata = InputMetadata(
+            seq_groups=seq_groups,
+            seq_data=seq_data,
+            prompt_lens=prompt_lens,
+            slot_mapping=slot_mapping,
+            context_lens=context_lens,
+            max_context_len=max_context_len,
+            block_tables=block_tables,
+        )
+
         input_shape = input_ids.shape
 
         if is_prefill:
@@ -159,7 +195,15 @@ class Model:
             torch.cuda.nvtx.range_push(f"forward decode {input_shape}")
 
         # TODO(masahi): Do sampling outside of model
-        next_tokens = None
+        with torch.no_grad():
+            next_tokens = self.pt_model.forward(
+                input_ids,
+                positions,
+                cache.cache_blocks,
+                input_metadata,
+                cache_events=None,
+            )
+            print(next_tokens)
 
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
@@ -299,8 +343,5 @@ def init_torch_model(
 
     LOG.info("Allocated KV cache blocks.")
 
-    import ipdb
-
-    ipdb.set_trace()
     # TODO(masahi): Make mypy understand that model confirms to TextGenerator Protocol.
     return model, cache_manager, artifact_config  # type: ignore
