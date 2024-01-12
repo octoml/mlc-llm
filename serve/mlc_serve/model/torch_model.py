@@ -140,6 +140,7 @@ class Model:
             if isinstance(request, PrefillRequest):
                 sequence_ids.append(get_prompt_sequence_id(request.request_id))
                 num_sequences.append(request.num_sequence)
+                prompt_lens.append(len(request.token_ids))
             else:
                 sequence_ids.append(request.sequence_id)
                 prompt_lens.append(request.prompt_token_counts)
@@ -170,13 +171,18 @@ class Model:
             torch.long,
         )
 
+        input_shape = input_ids.shape
+
         if block_tables is None:
+            torch.cuda.nvtx.range_push(f"forward prefill {input_shape}")
             block_tables = torch.cuda.IntTensor([])
             context_lens = torch.cuda.IntTensor([])
             max_context_len = 0
         else:
-            context_lens = seq_lens,
+            torch.cuda.nvtx.range_push(f"forward decode {input_shape}")
+            context_lens = seq_lens
             max_context_len = torch.max(seq_lens)
+            prompt_lens = []
 
         input_metadata = InputMetadata(
             seq_groups=seq_groups,
@@ -188,23 +194,19 @@ class Model:
             block_tables=block_tables,
         )
 
-        input_shape = input_ids.shape
-
-        if is_prefill:
-            torch.cuda.nvtx.range_push(f"forward prefill {input_shape}")
-        else:
-            torch.cuda.nvtx.range_push(f"forward decode {input_shape}")
-
         # TODO(masahi): Do sampling outside of model
         with torch.no_grad():
-            next_tokens = self.pt_model.forward(
+            outs = self.pt_model.forward(
                 input_ids,
                 positions,
                 cache.cache_blocks,
                 input_metadata,
                 cache_events=None,
             )
-            print(next_tokens)
+
+        next_tokens = []
+        for samples in outs:
+            next_tokens.append(samples[0].output_token)
 
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
