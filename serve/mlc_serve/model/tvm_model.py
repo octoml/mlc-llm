@@ -1,6 +1,6 @@
 import math
 import os
-from typing import List, Union, Tuple
+from typing import List, Union, Tuple, Sequence
 
 import structlog
 import numpy as np
@@ -203,7 +203,7 @@ class Model:
 
     def generate(
         self,
-        requests: Union[List[PrefillRequest], List[DecodeRequest]],
+        requests: Sequence[Union[PrefillRequest, DecodeRequest]],
         cache: KVCache,
     ) -> List[TextGenerationResult]:
         if len(requests) == 0:
@@ -490,5 +490,4 @@ def init_tvm_model(
 
     LOG.info("Allocated KV cache blocks.")
 
-    # TODO(masahi): Make mypy understand that model confirms to TextGenerator Protocol.
-    return model, cache_manager  # type: ignore
+    return model, cache_manager

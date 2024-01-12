@@ -118,7 +118,7 @@ class TextGenerator(Protocol):
     def generate(
         self,
         requests: Sequence[Union[PrefillRequest, DecodeRequest]],
-        kv_cache: KVCache,
+        kv_cache,
     ) -> List[TextGenerationResult]:
         """
         A unified entrypoint for text generation.
