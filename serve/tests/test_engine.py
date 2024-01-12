@@ -20,7 +20,7 @@ from mlc_serve.utils import get_default_mlc_serve_argparser, postproc_mlc_serve_
 def _test(args: argparse.Namespace):
     model_type = "tvm"
 
-    if not os.path.exists(args.model_artifact_path.joinpath("mlc-model-config.json")):
+    if not os.path.exists(args.model_artifact_path.joinpath("build_config.json")):
         model_type = "torch"
 
     engine_config = get_engine_config(

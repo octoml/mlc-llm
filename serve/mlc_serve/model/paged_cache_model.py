@@ -5,8 +5,8 @@ import structlog
 from .base import get_model_artifact_config
 from .paged_cache_manager import CacheManager
 from .tokenizer import HfTokenizerModule, ConversationTemplate, Tokenizer
-from .tvm_model import init_tvm_model
 from .torch_model import init_torch_model
+from .tvm_model import init_tvm_model
 
 from ..engine import MLCServeEngineConfig
 from ..engine.model_module import (

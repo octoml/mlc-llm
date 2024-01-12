@@ -6,10 +6,14 @@ import structlog
 import numpy as np
 import torch
 
+from transformers import AutoConfig
 from vllm.model_executor.models.llama import LlamaForCausalLM
 from vllm.sequence import SequenceGroupMetadata, SequenceData
 from vllm.model_executor import InputMetadata
 from vllm.sampling_params import SamplingParams
+from vllm.model_executor.parallel_utils.parallel_state import (
+    initialize_model_parallel,
+)
 
 from .base import ModelArtifactConfig
 from .paged_cache_manager import KVCache, CacheManager
@@ -172,14 +176,18 @@ class Model:
             seqs.append(seq)
 
         input_ids, positions, input_metadata = prepare_inputs(
-            seqs, CacheManager.block_size,
+            seqs,
+            CacheManager.block_size,
         )
 
         kv_caches = [(None, None)] * self.num_hidden_layers
 
         with torch.no_grad():
             self.pt_model.forward(
-                input_ids, positions, kv_caches, input_metadata,
+                input_ids,
+                positions,
+                kv_caches,
+                input_metadata,
                 cache_events=None,
             )
 
@@ -372,12 +380,6 @@ def init_cache_blocks(head_size, num_layers, num_heads, block_size, num_gpu_bloc
 def init_torch_model(
     model_path, engine_config: MLCServeEngineConfig
 ) -> Tuple[TextGenerator, CacheManager, ModelArtifactConfig]:
-    from transformers import AutoConfig
-    from vllm.model_executor.utils import set_random_seed
-    from vllm.model_executor.parallel_utils.parallel_state import (
-        initialize_model_parallel,
-    )
-
     torch.distributed.init_process_group(
         backend="nccl", world_size=1, rank=0, init_method="tcp://localhost:59157"
     )
@@ -389,12 +391,8 @@ def init_torch_model(
     # TODO
     num_shards = 1
 
-    num_kv_heads = (
-        hf_config.num_key_value_heads // num_shards
-    )
-    head_size = (
-        hf_config.hidden_size // hf_config.num_attention_heads
-    )
+    num_kv_heads = hf_config.num_key_value_heads // num_shards
+    head_size = hf_config.hidden_size // hf_config.num_attention_heads
 
     if not hasattr(hf_config, "sliding_window"):
         hf_config.sliding_window = None
@@ -405,7 +403,7 @@ def init_torch_model(
         model_artifact_path=model_path,
         num_shards=1,
         quantization=None,
-        max_context_length=hf_config.max_position_embeddings, # TODO,
+        max_context_length=hf_config.max_position_embeddings,  # TODO,
         vocab_size=hf_config.vocab_size,
         sliding_window=hf_config.sliding_window,
         num_key_value_heads=num_kv_heads,
@@ -414,8 +412,11 @@ def init_torch_model(
         hidden_size=hf_config.hidden_size,
     )
 
-    pt_model = LlamaForCausalLM(hf_config)
-    pt_model.load_weights(model_path, None, "auto", None)
+    with torch.device("cuda"):
+        torch.set_default_dtype(torch.float16)
+        pt_model = LlamaForCausalLM(hf_config)
+        pt_model.load_weights(model_path, None, "auto", None)
+
     model = Model(pt_model, hf_config)
 
     if engine_config.max_num_batched_tokens > 0:
@@ -444,8 +445,11 @@ def init_torch_model(
     LOG.info(f"Using {num_blocks} cache blocks.")
 
     cache_blocks = init_cache_blocks(
-        head_size, hf_config.num_hidden_layers,
-        hf_config.num_attention_heads, CacheManager.block_size, num_blocks
+        head_size,
+        hf_config.num_hidden_layers,
+        hf_config.num_attention_heads,
+        CacheManager.block_size,
+        num_blocks,
     )
 
     cache_manager = CacheManager(
@@ -455,8 +459,6 @@ def init_torch_model(
     )
 
     LOG.info("Allocated KV cache blocks.")
-
-    assert False
 
     # TODO(masahi): Make mypy understand that model confirms to TextGenerator Protocol.
     return model, cache_manager, artifact_config  # type: ignore
