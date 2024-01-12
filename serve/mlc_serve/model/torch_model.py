@@ -202,7 +202,7 @@ class Model:
                 positions,
                 cache.cache_blocks,
                 input_metadata,
-                cache_events=None,
+                cache_events=None,  # TODO: what to do about this?
             )
 
         next_tokens = []

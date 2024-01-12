@@ -179,8 +179,6 @@ class Model:
             math.prod(param.shape) * np.dtype(param.dtype).itemsize for param in params
         )
 
-        print("peak memory:", (peak_memory + param_bytes) / 1e9)
-
         return peak_memory + param_bytes
 
     def profile_memory_usage(self, seq_lens):
