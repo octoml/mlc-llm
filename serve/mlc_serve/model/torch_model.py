@@ -1,9 +1,6 @@
-import math
-import os
 from typing import List, Union, Tuple
 
 import structlog
-import numpy as np
 import torch
 
 from transformers import AutoConfig
@@ -18,8 +15,7 @@ from vllm.model_executor.parallel_utils.parallel_state import (
 from .base import ModelArtifactConfig
 from .paged_cache_manager import KVCache, CacheManager
 from .model_common import (
-    sample,
-    # prepare_inputs,
+    prepare_inputs,
     get_num_cache_blocks,
 )
 
@@ -37,107 +33,6 @@ from ..engine.model_module import (
 )
 
 LOG = structlog.stdlib.get_logger(__name__)
-
-
-def prepare_inputs(
-    seq_group_metadata_list: List[SequenceGroupMetadata],
-    block_size,
-) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata]:
-    seq_groups: List[Tuple[List[int], SamplingParams]] = []
-    input_tokens: List[int] = []
-    input_positions: List[int] = []
-    slot_mapping: List[int] = []
-
-    prompt_lens: List[int] = []
-    for seq_group_metadata in seq_group_metadata_list:
-        if not seq_group_metadata.is_prompt:
-            continue
-
-        seq_ids = list(seq_group_metadata.seq_data.keys())
-        sampling_params = seq_group_metadata.sampling_params
-        seq_groups.append((seq_ids, sampling_params))
-
-        seq_id = seq_ids[0]
-
-        seq_data = seq_group_metadata.seq_data[seq_id]
-        prompt_tokens = seq_data.get_token_ids()
-        prompt_len = len(prompt_tokens)
-        prompt_lens.append(prompt_len)
-
-        input_tokens.extend(prompt_tokens)
-        input_positions.extend(range(len(prompt_tokens)))
-
-        if seq_group_metadata.block_tables is None:
-            slot_mapping.extend([0] * prompt_len)
-            continue
-
-        block_table = seq_group_metadata.block_tables[seq_id]
-        for i in range(prompt_len):
-            block_number = block_table[i // block_size]
-            block_offset = i % block_size
-            slot = block_number * block_size + block_offset
-            slot_mapping.append(slot)
-
-    max_context_len = 0
-    max_num_blocks_per_seq = 0
-    context_lens: List[int] = []
-    generation_block_tables: List[List[int]] = []
-    for seq_group_metadata in seq_group_metadata_list:
-        if seq_group_metadata.is_prompt:
-            continue
-
-        seq_ids = list(seq_group_metadata.seq_data.keys())
-        sampling_params = seq_group_metadata.sampling_params
-        seq_groups.append((seq_ids, sampling_params))
-
-        for seq_id in seq_ids:
-            seq_data = seq_group_metadata.seq_data[seq_id]
-            generation_token = seq_data.get_last_token_id()
-            input_tokens.append(generation_token)
-
-            context_len = seq_data.get_len()
-            position = context_len - 1
-            input_positions.append(position)
-
-            block_table = seq_group_metadata.block_tables[seq_id]
-            generation_block_tables.append(list(block_table))
-
-            max_context_len = max(max_context_len, context_len)
-            max_num_blocks_per_seq = max(max_num_blocks_per_seq, len(block_table))
-            context_lens.append(context_len)
-
-            block_number = block_table[position // block_size]
-            block_offset = position % block_size
-            slot = block_number * block_size + block_offset
-            slot_mapping.append(slot)
-
-    def _pad_to_max(x: List[int], max_len: int) -> List[int]:
-        return x + [0] * (max_len - len(x))
-
-    tokens_tensor = torch.cuda.LongTensor(input_tokens)
-    positions_tensor = torch.cuda.LongTensor(input_positions)
-    slot_mapping_tensor = torch.cuda.IntTensor(slot_mapping)
-    context_lens_tensor = torch.cuda.IntTensor(context_lens)
-    padded_block_tables = [
-        _pad_to_max(block_table, max_num_blocks_per_seq)
-        for block_table in generation_block_tables
-    ]
-    block_tables_tensor = torch.cuda.IntTensor(padded_block_tables)
-
-    seq_data = {}
-    for seq_group_metadata in seq_group_metadata_list:
-        seq_data.update(seq_group_metadata.seq_data)
-
-    input_metadata = InputMetadata(
-        seq_groups=seq_groups,
-        seq_data=seq_data,
-        prompt_lens=prompt_lens,
-        slot_mapping=slot_mapping_tensor,
-        context_lens=context_lens_tensor,
-        max_context_len=max_context_len,
-        block_tables=block_tables_tensor,
-    )
-    return tokens_tensor, positions_tensor, input_metadata
 
 
 class Model:
@@ -161,23 +56,35 @@ class Model:
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
 
-        seqs: List[SequenceGroupMetadata] = []
         sampling_params = SamplingParams(top_p=0.99)
 
-        for i, seq_len in enumerate(seq_lens):
-            seq_data = SequenceData([0] * seq_len)
-            seq = SequenceGroupMetadata(
-                request_id=str(i),
-                is_prompt=True,
-                seq_data={i: seq_data},
-                sampling_params=sampling_params,
-                block_tables=None,
-            )
-            seqs.append(seq)
+        seq_groups: List[Tuple[List[int], SamplingParams]] = []
+        seq_data = {}
+        input_tokens: List[int] = []
+        input_positions: List[int] = []
+        slot_mapping: List[int] = []
 
-        input_ids, positions, input_metadata = prepare_inputs(
-            seqs,
-            CacheManager.block_size,
+        for i, seq_len in enumerate(seq_lens):
+            seq_groups.append(([i], sampling_params))
+            prompt_tokens = [0] * seq_len
+            seq_data[i] = SequenceData(prompt_tokens)
+
+            input_tokens.extend(prompt_tokens)
+            input_positions.extend(range(seq_len))
+            slot_mapping.extend([0] * seq_len)
+
+        input_ids = torch.cuda.LongTensor(input_tokens)
+        positions = torch.cuda.LongTensor(input_positions)
+        slot_mapping_tensor = torch.cuda.IntTensor(slot_mapping)
+
+        input_metadata = InputMetadata(
+            seq_groups=seq_groups,
+            seq_data=seq_data,
+            prompt_lens=seq_lens,
+            slot_mapping=slot_mapping_tensor,
+            context_lens=torch.cuda.IntTensor([]),
+            max_context_len=0,
+            block_tables=torch.cuda.IntTensor([]),
         )
 
         kv_caches = [(None, None)] * self.num_hidden_layers
@@ -251,107 +158,39 @@ class Model:
         else:
             torch.cuda.nvtx.range_push(f"forward decode {input_shape}")
 
+        # TODO(masahi): Do sampling outside of model
+        next_tokens = None
+
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
 
-        logits = None
+        assert next_tokens is not None
 
-        try:
-            next_tokens = sample(logits, sampling_params, self.vocab_size)
-            assert next_tokens is not None
-            outputs = []
-            for i, (sequence_id, new_token) in enumerate(
-                zip(sequence_ids, next_tokens)
-            ):
-                if not new_token in requests[i].sampling_params.appeared_tokens_freq:
-                    requests[i].sampling_params.appeared_tokens_freq[new_token] = 0
-                requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
-                if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
-                    for seq_id in range(num_sequences[i]):
-                        outputs.append(
-                            TextGenerationResult(
-                                sequence_id=SequenceId(sequence_id.request_id, seq_id),
-                                generated_tokens=[new_token],
-                                error=None,
-                            )
-                        )
-                else:
+        outputs = []
+
+        for i, (sequence_id, new_token) in enumerate(zip(sequence_ids, next_tokens)):
+            if not new_token in requests[i].sampling_params.appeared_tokens_freq:
+                requests[i].sampling_params.appeared_tokens_freq[new_token] = 0
+            requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
+            if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
+                for seq_id in range(num_sequences[i]):
                     outputs.append(
                         TextGenerationResult(
-                            sequence_id=sequence_id,
+                            sequence_id=SequenceId(sequence_id.request_id, seq_id),
                             generated_tokens=[new_token],
                             error=None,
                         )
                     )
-
-            return outputs
-        except RuntimeError:
-            # Fallback to per-token sampling in case some logits values are corrupted.
-            outputs = []
-            err_msg = (
-                "Error from sampling: probability tensor contains either `inf`, `nan`"
-                " or element < 0"
-            )
-
-            for i, (sequence_id, logits_per_token, sampling_param) in enumerate(
-                zip(sequence_ids, torch.from_dlpack(logits), sampling_params)
-            ):
-                maybe_new_token = sample(
-                    torch.unsqueeze(logits_per_token, 0),
-                    [sampling_param],
-                    self.vocab_size,
-                    check_safety=True,
+            else:
+                outputs.append(
+                    TextGenerationResult(
+                        sequence_id=sequence_id,
+                        generated_tokens=[new_token],
+                        error=None,
+                    )
                 )
 
-                if maybe_new_token is not None:
-                    new_token = maybe_new_token[0]
-                    if (
-                        not new_token
-                        in requests[i].sampling_params.appeared_tokens_freq
-                    ):
-                        requests[i].sampling_params.appeared_tokens_freq[new_token] = 0
-                    requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
-                    if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
-                        for seq_id in range(num_sequences[i]):
-                            outputs.append(
-                                TextGenerationResult(
-                                    sequence_id=SequenceId(
-                                        sequence_id.request_id, seq_id
-                                    ),
-                                    generated_tokens=[new_token],  # type: ignore
-                                    error=None,
-                                )
-                            )
-                    else:
-                        outputs.append(
-                            TextGenerationResult(
-                                sequence_id=sequence_id,
-                                generated_tokens=[new_token],  # type: ignore
-                                error=None,
-                            )
-                        )
-                else:
-                    if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
-                        for seq_id in range(num_sequences[i]):
-                            outputs.append(
-                                TextGenerationResult(
-                                    sequence_id=SequenceId(
-                                        sequence_id.request_id, seq_id
-                                    ),
-                                    generated_tokens=[],
-                                    error=err_msg,
-                                )
-                            )
-                    else:
-                        outputs.append(
-                            TextGenerationResult(
-                                sequence_id=sequence_id,
-                                generated_tokens=[],
-                                error=err_msg,
-                            )
-                        )
-
-            return outputs
+        return outputs
 
 
 def init_cache_blocks(head_size, num_layers, num_heads, block_size, num_gpu_blocks):
@@ -460,5 +299,8 @@ def init_torch_model(
 
     LOG.info("Allocated KV cache blocks.")
 
+    import ipdb
+
+    ipdb.set_trace()
     # TODO(masahi): Make mypy understand that model confirms to TextGenerator Protocol.
     return model, cache_manager, artifact_config  # type: ignore
