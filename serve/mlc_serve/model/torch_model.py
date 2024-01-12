@@ -7,12 +7,15 @@ import numpy as np
 import torch
 
 from vllm.model_executor.models.llama import LlamaForCausalLM
+from vllm.sequence import SequenceGroupMetadata, SequenceData
+from vllm.model_executor import InputMetadata
+from vllm.sampling_params import SamplingParams
 
 from .base import ModelArtifactConfig
 from .paged_cache_manager import KVCache, CacheManager
 from .model_common import (
     sample,
-    prepare_inputs,
+    # prepare_inputs,
     get_num_cache_blocks,
 )
 
@@ -32,6 +35,107 @@ from ..engine.model_module import (
 LOG = structlog.stdlib.get_logger(__name__)
 
 
+def prepare_inputs(
+    seq_group_metadata_list: List[SequenceGroupMetadata],
+    block_size,
+) -> Tuple[torch.Tensor, torch.Tensor, InputMetadata]:
+    seq_groups: List[Tuple[List[int], SamplingParams]] = []
+    input_tokens: List[int] = []
+    input_positions: List[int] = []
+    slot_mapping: List[int] = []
+
+    prompt_lens: List[int] = []
+    for seq_group_metadata in seq_group_metadata_list:
+        if not seq_group_metadata.is_prompt:
+            continue
+
+        seq_ids = list(seq_group_metadata.seq_data.keys())
+        sampling_params = seq_group_metadata.sampling_params
+        seq_groups.append((seq_ids, sampling_params))
+
+        seq_id = seq_ids[0]
+
+        seq_data = seq_group_metadata.seq_data[seq_id]
+        prompt_tokens = seq_data.get_token_ids()
+        prompt_len = len(prompt_tokens)
+        prompt_lens.append(prompt_len)
+
+        input_tokens.extend(prompt_tokens)
+        input_positions.extend(range(len(prompt_tokens)))
+
+        if seq_group_metadata.block_tables is None:
+            slot_mapping.extend([0] * prompt_len)
+            continue
+
+        block_table = seq_group_metadata.block_tables[seq_id]
+        for i in range(prompt_len):
+            block_number = block_table[i // block_size]
+            block_offset = i % block_size
+            slot = block_number * block_size + block_offset
+            slot_mapping.append(slot)
+
+    max_context_len = 0
+    max_num_blocks_per_seq = 0
+    context_lens: List[int] = []
+    generation_block_tables: List[List[int]] = []
+    for seq_group_metadata in seq_group_metadata_list:
+        if seq_group_metadata.is_prompt:
+            continue
+
+        seq_ids = list(seq_group_metadata.seq_data.keys())
+        sampling_params = seq_group_metadata.sampling_params
+        seq_groups.append((seq_ids, sampling_params))
+
+        for seq_id in seq_ids:
+            seq_data = seq_group_metadata.seq_data[seq_id]
+            generation_token = seq_data.get_last_token_id()
+            input_tokens.append(generation_token)
+
+            context_len = seq_data.get_len()
+            position = context_len - 1
+            input_positions.append(position)
+
+            block_table = seq_group_metadata.block_tables[seq_id]
+            generation_block_tables.append(list(block_table))
+
+            max_context_len = max(max_context_len, context_len)
+            max_num_blocks_per_seq = max(max_num_blocks_per_seq, len(block_table))
+            context_lens.append(context_len)
+
+            block_number = block_table[position // block_size]
+            block_offset = position % block_size
+            slot = block_number * block_size + block_offset
+            slot_mapping.append(slot)
+
+    def _pad_to_max(x: List[int], max_len: int) -> List[int]:
+        return x + [0] * (max_len - len(x))
+
+    tokens_tensor = torch.cuda.LongTensor(input_tokens)
+    positions_tensor = torch.cuda.LongTensor(input_positions)
+    slot_mapping_tensor = torch.cuda.IntTensor(slot_mapping)
+    context_lens_tensor = torch.cuda.IntTensor(context_lens)
+    padded_block_tables = [
+        _pad_to_max(block_table, max_num_blocks_per_seq)
+        for block_table in generation_block_tables
+    ]
+    block_tables_tensor = torch.cuda.IntTensor(padded_block_tables)
+
+    seq_data = {}
+    for seq_group_metadata in seq_group_metadata_list:
+        seq_data.update(seq_group_metadata.seq_data)
+
+    input_metadata = InputMetadata(
+        seq_groups=seq_groups,
+        seq_data=seq_data,
+        prompt_lens=prompt_lens,
+        slot_mapping=slot_mapping_tensor,
+        context_lens=context_lens_tensor,
+        max_context_len=max_context_len,
+        block_tables=block_tables_tensor,
+    )
+    return tokens_tensor, positions_tensor, input_metadata
+
+
 class Model:
     def __init__(
         self,
@@ -42,17 +146,51 @@ class Model:
         self.vocab_size = config.vocab_size
         self.sliding_window = config.sliding_window
         self.num_shards = config.num_shards
+        self.num_hidden_layers = config.num_hidden_layers
 
         if self.sliding_window:
             self.block_sliding_window = self.sliding_window // CacheManager.block_size
         else:
             self.block_sliding_window = None
 
-    def get_used_memory(self):
-        return 0
-
     def profile_memory_usage(self, seq_lens):
-        return self.get_used_memory()
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+
+        seqs: List[SequenceGroupMetadata] = []
+        sampling_params = SamplingParams(top_p=0.99)
+
+        for i, seq_len in enumerate(seq_lens):
+            seq_data = SequenceData([0] * seq_len)
+            seq = SequenceGroupMetadata(
+                request_id=str(i),
+                is_prompt=True,
+                seq_data={i: seq_data},
+                sampling_params=sampling_params,
+                block_tables=None,
+            )
+            seqs.append(seq)
+
+        input_ids, positions, input_metadata = prepare_inputs(
+            seqs, CacheManager.block_size,
+        )
+
+        kv_caches = [(None, None)] * self.num_hidden_layers
+
+        with torch.no_grad():
+            self.pt_model.forward(
+                input_ids, positions, kv_caches, input_metadata,
+                cache_events=None,
+            )
+
+        torch.cuda.synchronize()
+
+        peak_memory = torch.cuda.max_memory_allocated()
+        print("peak memory", peak_memory / 1e9)
+
+        torch.cuda.empty_cache()
+
+        return peak_memory
 
     def generate(
         self,
@@ -317,6 +455,8 @@ def init_torch_model(
     )
 
     LOG.info("Allocated KV cache blocks.")
+
+    assert False
 
     # TODO(masahi): Make mypy understand that model confirms to TextGenerator Protocol.
     return model, cache_manager, artifact_config  # type: ignore
