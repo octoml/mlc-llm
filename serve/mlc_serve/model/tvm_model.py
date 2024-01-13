@@ -208,8 +208,8 @@ class Model:
         self,
         logits: Union[tvm.nd.NDArray, torch.Tensor],
         sequence_ids: List[SequenceId],
-        requests: Union[
-            List[PrefillRequest], List[DecodeRequest], List[MultiQueryDecodeRequest]
+        requests: Sequence[
+            Union[PrefillRequest, DecodeRequest, MultiQueryDecodeRequest]
         ],
     ) -> List[TextGenerationResult]:
         assert logits.shape[0] == len(requests)
@@ -384,8 +384,8 @@ class Model:
 
     def generate(
         self,
-        requests: Union[
-            List[PrefillRequest], List[DecodeRequest], List[MultiQueryDecodeRequest]
+        requests: Sequence[
+            Union[PrefillRequest, DecodeRequest, MultiQueryDecodeRequest]
         ],
         cache: KVCache,
     ) -> List[TextGenerationResult]:
