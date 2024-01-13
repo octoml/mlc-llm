@@ -1,4 +1,5 @@
 from typing import List, Union, Tuple, Sequence
+from collections import defaultdict
 
 import structlog
 import torch
@@ -136,25 +137,33 @@ class Model:
         sequence_ids = []
         prompt_lens = []
         num_sequences = []
-        seq_groups: List[Tuple[List[SequenceId], SamplingParams]] = []
         seq_data = {}
+        seq_group_sequence_ids = defaultdict(list)
+        seq_group_sampling_params = {}
 
         for request in requests:
             if isinstance(request, PrefillRequest):
                 sequence_ids.append(get_prompt_sequence_id(request.request_id))
                 num_sequences.append(request.num_sequence)
                 prompt_lens.append(len(request.token_ids))
+                seq_group_sequence_ids[request.request_id].append(sequence_ids[-1])
+                seq_group_sampling_params[request.request_id] = request.sampling_params
             else:
                 sequence_ids.append(request.sequence_id)
                 prompt_lens.append(request.prompt_token_counts)
+                req_id = request.sequence_id.request_id
+                seq_group_sequence_ids[req_id].append(request.sequence_id)
+                seq_group_sampling_params[req_id] = request.sampling_params
 
             all_token_ids.append(request.token_ids)
             sampling_params.append(request.sampling_params)
 
             seq_data[sequence_ids[-1]] = SequenceData(request.token_ids)
-            seq_groups.append(
-                ([sequence_ids[-1]], convert_sampling_params(request.sampling_params))
-            )
+
+        seq_groups: List[Tuple[List[SequenceId], SamplingParams]] = []
+
+        for req_id, seq_ids in seq_group_sequence_ids.items():
+            seq_groups.append((seq_ids, seq_group_sampling_params[req_id]))
 
         (
             input_ids,
@@ -217,6 +226,8 @@ class Model:
 
             torch.cuda.synchronize()
             torch.cuda.nvtx.range_pop()
+
+            print("logits.shape", logits.shape)
 
         next_tokens = sample(logits, sampling_params, self.vocab_size)
 
