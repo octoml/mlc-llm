@@ -36,7 +36,7 @@ def _test(args: argparse.Namespace):
 
     if args.use_staging_engine:
         engine = StagingInferenceEngine(
-            tokenizer_module=HfTokenizerModule(args.model_artifact_path),
+            tokenizer_module=HfTokenizerModule(args.model_artifact_path.joinpath("model")),
             model_module_loader=PagedCacheModelModule,
             model_module_loader_kwargs={
                 "model_artifact_path": args.model_artifact_path,
