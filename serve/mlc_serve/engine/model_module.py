@@ -2,7 +2,7 @@
 Required interfaces for the actual inference capability in InferenceEngine.
 """
 from dataclasses import dataclass
-from typing import Optional, Protocol, Union, List
+from typing import Optional, Protocol, Union, List, Sequence
 
 from .base import ChatMessage, RequestId, MLCServeEngineConfig, RequestState, SequenceId
 from ..model.base import ModelArtifactConfig
