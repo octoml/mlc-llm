@@ -420,7 +420,7 @@ class Model:
             slot_mapping,
             indices_within_window,
             block_tables,
-        ) = prepare_inputs(
+        ) = _prepare_inputs(
             sequence_ids,
             all_token_ids,
             prompt_lens,
