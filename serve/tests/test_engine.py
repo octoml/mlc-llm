@@ -35,8 +35,13 @@ def _test(args: argparse.Namespace):
     )
 
     if args.use_staging_engine:
+        if model_type == "tvm":
+            tokenizer_path = args.model_artifact_path.joinpath("model")
+        else:
+            tokenizer_path = args.model_artifact_path
+
         engine = StagingInferenceEngine(
-            tokenizer_module=HfTokenizerModule(args.model_artifact_path.joinpath("model")),
+            tokenizer_module=HfTokenizerModule(tokenizer_path),
             model_module_loader=PagedCacheModelModule,
             model_module_loader_kwargs={
                 "model_artifact_path": args.model_artifact_path,
