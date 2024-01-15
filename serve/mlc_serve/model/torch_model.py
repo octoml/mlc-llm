@@ -147,13 +147,13 @@ class Model:
                 num_sequences.append(request.num_sequence)
                 prompt_lens.append(len(request.token_ids))
                 seq_group_sequence_ids[request.request_id].append(sequence_ids[-1])
-                seq_group_sampling_params[request.request_id] = request.sampling_params
+                seq_group_sampling_params[request.request_id] = convert_sampling_params(request.sampling_params)
             else:
                 sequence_ids.append(request.sequence_id)
                 prompt_lens.append(request.prompt_token_counts)
                 req_id = request.sequence_id.request_id
                 seq_group_sequence_ids[req_id].append(request.sequence_id)
-                seq_group_sampling_params[req_id] = request.sampling_params
+                seq_group_sampling_params[req_id] = convert_sampling_params(request.sampling_params)
 
             all_token_ids.append(request.token_ids)
             sampling_params.append(request.sampling_params)
@@ -208,6 +208,18 @@ class Model:
         )
 
         with torch.no_grad():
+            # outs = self.pt_model.forward(
+            #      input_ids,
+            #      positions,
+            #      cache.cache_blocks,
+            #      input_metadata,
+            #      cache_events=None,  # TODO: what to do about this?
+            #  )
+
+            # next_tokens = []
+            # for samples in outs:
+            #     next_tokens.append(samples[0].output_token)
+
             hidden_states = self.pt_model.model(
                 input_ids,
                 positions,
@@ -217,20 +229,24 @@ class Model:
                 cache_events=None,
             )
 
-            logits = get_logits(
-                self.pt_model.lm_head.weight,
-                hidden_states,
-                input_metadata,
-                self.vocab_size,
-            )
+            if hidden_states.shape[0] != len(
+                input_metadata.prompt_lens
+            ) and hidden_states.shape[0] != len(input_metadata.context_lens):
+                logits = get_logits(
+                    self.pt_model.lm_head.weight,
+                    hidden_states,
+                    input_metadata,
+                    self.vocab_size,
+                )
+
+            next_tokens = sample(logits, sampling_params, self.vocab_size)
 
             torch.cuda.synchronize()
             torch.cuda.nvtx.range_pop()
 
             print("logits.shape", logits.shape)
 
-        next_tokens = sample(logits, sampling_params, self.vocab_size)
-
+        print("next tokens", next_tokens)
         outputs = []
 
         for i, (sequence_id, new_token) in enumerate(zip(sequence_ids, next_tokens)):

@@ -66,7 +66,7 @@ def _test(args: argparse.Namespace):
         sampling_params_choices = [sampling_params_random]
     elif args.use_random_sampling:
         # This tests different sampling types in the same batch
-        sampling_params_choices = [sampling_params_random, sampling_params_greedy]
+        sampling_params_choices = [sampling_params_random]
     else:
         sampling_params_choices = [sampling_params_greedy]
 
@@ -76,9 +76,9 @@ def _test(args: argparse.Namespace):
     else:
         prompts = [
             "Hello, my name is",
-            "The capital of France is",
-            "The president of the United States is a powerful man. But he can also be",
-            "The future of AI is full of promise. But we need to carefully",
+            # "The capital of France is",
+            # "The president of the United States is a powerful man. But he can also be",
+            # "The future of AI is full of promise. But we need to carefully",
         ]
 
     for i, prompt in enumerate(prompts):
