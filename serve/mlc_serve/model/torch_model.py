@@ -14,6 +14,7 @@ from vllm.sampling_params import SamplingParams
 from vllm.model_executor.parallel_utils.parallel_state import (
     initialize_model_parallel,
 )
+from vllm.engine.ray_utils import RayWorker, ray
 
 from .base import ModelArtifactConfig
 from .paged_cache_manager import KVCache, CacheManager
@@ -297,6 +298,77 @@ def init_cache_blocks(head_size, num_layers, num_heads, block_size, num_gpu_bloc
     return gpu_cache
 
 
+def run_workers(
+    workers,
+    method: str,
+    *args,
+    get_all_outputs: bool = False,
+    **kwargs,
+):
+    """Runs the given method on all workers."""
+    from functools import partial
+
+    all_outputs = []
+    for worker in workers:
+        executor = partial(worker.execute_method.remote, method)
+
+        output = executor(*args, **kwargs)
+        all_outputs.append(output)
+
+    all_outputs = ray.get(all_outputs)
+
+    if get_all_outputs:
+        return all_outputs
+
+    # Make sure all workers have the same results.
+    output = all_outputs[0]
+    for other_output in all_outputs[1:]:
+        assert output == other_output
+
+    return output
+
+
+def init_workers_ray(placement_group: "PlacementGroup"):
+    import copy
+    from vllm.worker.worker import Worker  # pylint: disable=import-outside-toplevel
+    from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+    from ray.air.util.torch_dist import init_torch_dist_process_group
+
+    workers: List[Worker] = []
+    for bundle in placement_group.bundle_specs:
+        if not bundle.get("GPU", 0):
+            continue
+        worker = ray.remote(
+            num_cpus=0,
+            num_gpus=1,
+            scheduling_strategy=PlacementGroupSchedulingStrategy(
+                placement_group=placement_group,
+                placement_group_capture_child_tasks=True),
+            **ray_remote_kwargs,
+        )(RayWorker).remote(False)
+
+        workers.append(worker)
+
+    # Initialize torch distributed process group for the workers.
+    init_torch_dist_process_group(self.workers, backend="nccl")
+    model_config = copy.deepcopy(self.model_config)
+    parallel_config = copy.deepcopy(self.parallel_config)
+    scheduler_config = copy.deepcopy(self.scheduler_config)
+    run_workers("init_worker",
+                      get_all_outputs=True,
+                      worker_init_fn=lambda: Worker(
+                          model_config,
+                          parallel_config,
+                          scheduler_config,
+                          None,
+                          None,
+                      ))
+    run_workers(
+        "init_model",
+        get_all_outputs=True,
+    )
+
+
 def init_torch_model(
     model_path, engine_config: MLCServeEngineConfig
 ) -> Tuple[TextGenerator, CacheManager, ModelArtifactConfig]:
@@ -310,6 +382,13 @@ def init_torch_model(
 
     # TODO
     num_shards = 1
+
+    if num_shards > 1:
+        from vllm.config import ParallelConfig
+        from vllm.engine.ray_utils import initialize_cluster
+        parallel_config = ParallelConfig(1, num_shards, True)
+        _, placement_group = initialize_cluster(parallel_config)
+        init_workers_ray(placement_group)
 
     num_kv_heads = hf_config.num_key_value_heads // num_shards
     head_size = hf_config.hidden_size // hf_config.num_attention_heads
