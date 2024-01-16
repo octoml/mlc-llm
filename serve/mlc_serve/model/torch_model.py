@@ -6,6 +6,9 @@ import torch
 
 from transformers import AutoConfig
 
+import ray
+from ray.air.util.torch_dist import TorchDistributedWorker
+
 from vllm.model_executor.layers.sampler import get_logits
 from vllm.model_executor.models.llama import LlamaForCausalLM
 from vllm.sequence import SequenceData
@@ -14,7 +17,6 @@ from vllm.sampling_params import SamplingParams
 from vllm.model_executor.parallel_utils.parallel_state import (
     initialize_model_parallel,
 )
-from vllm.engine.ray_utils import RayWorker, ray
 
 from .base import ModelArtifactConfig
 from .paged_cache_manager import KVCache, CacheManager
@@ -298,6 +300,117 @@ def init_cache_blocks(head_size, num_layers, num_heads, block_size, num_gpu_bloc
     return gpu_cache
 
 
+def _init_distributed_environment(
+    parallel_config: ParallelConfig,
+    rank: int,
+    distributed_init_method: Optional[str] = None,
+) -> None:
+    """Initialize the distributed environment."""
+    if torch.distributed.is_initialized():
+        torch_world_size = torch.distributed.get_world_size()
+        if torch_world_size != parallel_config.world_size:
+            raise RuntimeError(
+                "torch.distributed is already initialized but the torch world "
+                "size does not match parallel_config.world_size "
+                f"({torch_world_size} vs. {parallel_config.world_size}).")
+    elif not distributed_init_method:
+        raise ValueError(
+            "distributed_init_method must be set if torch.distributed "
+            "is not already initialized")
+    else:
+        torch.distributed.init_process_group(
+            backend="nccl",
+            world_size=parallel_config.world_size,
+            rank=rank,
+            init_method=distributed_init_method,
+        )
+
+    # A small all_reduce for warmup.
+    torch.distributed.all_reduce(torch.zeros(1).cuda())
+    initialize_model_parallel(parallel_config.tensor_parallel_size,
+                              parallel_config.pipeline_parallel_size)
+
+
+class RayWorker(TorchDistributedWorker):
+    def __init__(self) -> None:
+        self.model = None
+        self.cache_manager = None
+
+    def init_worker(self, hf_config, model_path, engine_config):
+        # os.environ.pop("NCCL_ASYNC_ERROR_HANDLING", None)
+        # # Env vars will be set by Ray.
+        # self.rank = self.rank if self.rank is not None else int(
+        #     os.getenv("RANK", "-1"))
+        # local_rank = int(os.getenv("LOCAL_RANK", "0"))
+        # self.device = torch.device(f"cuda:{local_rank}")
+        # if self.rank < 0:
+        #     raise ValueError("Invalid or unspecified rank.")
+        # torch.cuda.set_device(self.device)
+
+        # # Initialize the distributed environment.
+        # _init_distributed_environment(self.parallel_config, self.rank,
+        #                               self.distributed_init_method)
+
+        # # Initialize the model.
+        # set_random_seed(self.model_config.seed)
+
+        with torch.device("cuda"):
+            torch.set_default_dtype(torch.float16)
+            pt_model = LlamaForCausalLM(hf_config)
+            pt_model.load_weights(model_path, None, "auto", None)
+
+        self.model = Model(pt_model, hf_config)
+
+        head_size = hf_config.hidden_size // hf_config.num_attention_heads
+        num_kv_heads = hf_config.num_key_value_heads // num_shards
+
+        if engine_config.max_num_batched_tokens > 0:
+            LOG.info("Running memory profiling.")
+            num_blocks = get_num_cache_blocks(
+                self.model,
+                [engine_config.max_input_len] * engine_config.max_num_sequences,
+                hf_config.num_hidden_layers,
+                num_kv_heads,
+                head_size,
+            )
+        else:
+            num_blocks = 500
+
+        num_cache_slots = num_blocks * CacheManager.block_size
+
+        if num_cache_slots <= engine_config.max_num_batched_tokens:
+            raise RuntimeError(
+                f"max_num_batched_tokens = {engine_config.max_num_batched_tokens} but"
+                f" only {num_blocks} cache blocks can be allocated. The number of"
+                f" available cache slots is {num_cache_slots}, not enough for"
+                f" {engine_config.max_num_batched_tokens} tokens. Try reducing"
+                " --max_input_len or --max_num_sequences."
+            )
+
+        LOG.info(f"Using {num_blocks} cache blocks.")
+
+        cache_blocks = init_cache_blocks(
+            head_size,
+            hf_config.num_hidden_layers,
+            hf_config.num_attention_heads,
+            CacheManager.block_size,
+            num_blocks,
+        )
+
+        self.cache_manager = CacheManager(
+            cache_blocks,
+            num_blocks,
+            hf_config.sliding_window,
+        )
+
+    def __getattr__(self, name):
+        return getattr(self.worker, name)
+
+    def execute_method(self, method, *args, **kwargs):
+        executor = getattr(self, method)
+        return executor(*args, **kwargs)
+
+
 def run_workers(
     workers,
     method: str,
@@ -328,9 +441,8 @@ def run_workers(
     return output
 
 
-def init_workers_ray(placement_group: "PlacementGroup"):
+def init_workers_ray(placement_group: "PlacementGroup", parallel_config):
     import copy
-    from vllm.worker.worker import Worker  # pylint: disable=import-outside-toplevel
     from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
     from ray.air.util.torch_dist import init_torch_dist_process_group
 
@@ -345,28 +457,14 @@ def init_workers_ray(placement_group: "PlacementGroup"):
                 placement_group=placement_group,
                 placement_group_capture_child_tasks=True),
             **ray_remote_kwargs,
-        )(RayWorker).remote(False)
+        )(RayWorker).remote()
 
         workers.append(worker)
 
     # Initialize torch distributed process group for the workers.
-    init_torch_dist_process_group(self.workers, backend="nccl")
-    model_config = copy.deepcopy(self.model_config)
-    parallel_config = copy.deepcopy(self.parallel_config)
-    scheduler_config = copy.deepcopy(self.scheduler_config)
-    run_workers("init_worker",
-                      get_all_outputs=True,
-                      worker_init_fn=lambda: Worker(
-                          model_config,
-                          parallel_config,
-                          scheduler_config,
-                          None,
-                          None,
-                      ))
-    run_workers(
-        "init_model",
-        get_all_outputs=True,
-    )
+    init_torch_dist_process_group(workers, backend="nccl")
+    parallel_config = copy.deepcopy(parallel_config)
+    run_workers("init_worker") # TODO
 
 
 def init_torch_model(
@@ -388,7 +486,7 @@ def init_torch_model(
         from vllm.engine.ray_utils import initialize_cluster
         parallel_config = ParallelConfig(1, num_shards, True)
         _, placement_group = initialize_cluster(parallel_config)
-        init_workers_ray(placement_group)
+        init_workers_ray(placement_group, parallel_config)
 
     num_kv_heads = hf_config.num_key_value_heads // num_shards
     head_size = hf_config.hidden_size // hf_config.num_attention_heads
