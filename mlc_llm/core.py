@@ -834,8 +834,11 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
         # The num_input attribute is needed to capture transformed weights passed as input
         # into a cuda graph.
         # NOTE: CUDA graph for batching is not enabled and is left as a TODO item.
-        if not args.enable_batching:
-            mod_deploy["decode"] = mod_deploy["decode"].with_attr({"num_input": 3})
+
+        for func_name in ["prefill", "decode"]:
+            if func_name in mod_deploy:
+                assert "num_input" in mod_deploy[func_name].attrs
+
         ex = relax.build(mod_deploy, args.target, system_lib=args.system_lib)
 
     utils.debug_dump_shader(ex, f"{args.model}_{args.quantization.name}_{target_kind}", args)
