@@ -5,8 +5,9 @@ import json
 import os
 import pathlib
 import pickle
+import struct
 from dataclasses import asdict, dataclass, field, fields
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union, List
 
 import mlc_llm
 import tvm
@@ -840,6 +841,40 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
     utils.debug_dump_shader(ex, f"{args.model}_{args.quantization.name}_{target_kind}", args)
     ex.export_library(args.lib_path, **args.export_kwargs)
     print(f"Finish exporting to {args.lib_path}")
+
+
+def parse_safetensors_header(safetensors_filepath: Union[str, pathlib.Path]) -> Any:
+    """Parse the safetensors header of a file
+
+    Doesn't require the safetensors library.
+    """
+    safetensors_filepath = pathlib.Path(safetensors_filepath)
+    with safetensors_filepath.open("rb") as f:
+        # A uint64 header
+        json_len = struct.unpack("<Q", f.read(8))[0]
+        # Followed by that many bytes as a JSON packet
+        json_bytes = f.read(json_len)
+        return json.loads(json_bytes)
+
+
+def extract_lora_ranks(
+    func_params: List[relax.Var], safetensors_filepath: Union[str, pathlib.Path]
+) -> Dict[relax.Var, int]:
+    """Extract the LoRA ranks used for each parameter in the function"""
+
+    header = parse_safetensors_header(safetensors_filepath)
+    header = {name.replace("base_model.model.", ""): info for name, info in header.items()}
+
+    lora_ranks = {}
+    for param in func_params:
+        param_name = param.name_hint
+        lora_name = param_name.replace(".weight", ".lora_A.weight")
+        if lora_name in header:
+            lora_A_shape = header[lora_name]["shape"]
+            # TODO: Handle transposed LoRAs.
+            lora_ranks[param] = lora_A_shape[0]
+
+    return lora_ranks
 
 
 def generate_mod_transform(model_generators, args, config):
