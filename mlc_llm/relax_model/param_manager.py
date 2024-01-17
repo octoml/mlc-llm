@@ -290,6 +290,11 @@ class ParamManager:
             "Must call either set_param_loading_func or run_pre_quantize "
             "before init_torch_pname_to_bin_name"
         )
+        assert hasattr(self, "pidx2pname"), (
+            "Must call set_param_loading_func before init_torch_pname_to_bin_name.  "
+            "This is usually called as part of `MY_MODEL.get_model(args,config)`, "
+            "when `args.build_model_only` is false."
+        )
 
         if self.pidx2pname:
             mapping = load_torch_pname2binname_map(
