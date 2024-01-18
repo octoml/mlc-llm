@@ -456,9 +456,10 @@ def init_tvm_model(
 
     if engine_config.max_num_batched_tokens > 0:
         LOG.info("Running memory profiling.")
+        seq_lens = [engine_config.max_input_len] * engine_config.max_num_sequences
+        used_memory_bytes = model.profile_memory_usage(seq_lens)
         num_blocks = get_num_cache_blocks(
-            model,
-            [engine_config.max_input_len] * engine_config.max_num_sequences,
+            used_memory_bytes,
             model_artifact_config.num_hidden_layers,
             num_kv_heads,
             head_size,
@@ -486,15 +487,13 @@ def init_tvm_model(
     else:
         init_cache_func = tvm.get_global_func("tvm.contrib.vllm.allocate_kv_cache")
 
-    cache_blocks = init_cache_func(
+    model.cache_blocks = init_cache_func(
         head_size,
         model_artifact_config.num_hidden_layers,
         num_kv_heads,
         CacheManager.block_size,
         num_blocks,
     )
-
-    model.cache_blocks = cache_blocks
 
     cache_manager = CacheManager(
         num_blocks,

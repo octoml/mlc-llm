@@ -19,14 +19,12 @@ def get_gpu_memory(gpu: int = 0) -> int:
 
 
 def get_num_cache_blocks(
-    model,
-    seq_lens,
+    used_memory_bytes,
     num_layers,
     num_kv_heads,
     head_size,
     gpu_memory_utilization=0.9,  # the default used by vllm
 ):
-    used_memory_bytes = model.profile_memory_usage(seq_lens)
     cache_block_size = CacheManager.get_cache_block_size(
         num_layers, num_kv_heads, head_size
     )
