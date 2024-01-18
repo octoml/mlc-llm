@@ -1,3 +1,4 @@
+import time
 from typing import List, Union, Tuple, Sequence
 from collections import defaultdict
 
@@ -6,17 +7,17 @@ import torch
 
 from transformers import AutoConfig
 
-import ray
-from ray.air.util.torch_dist import TorchDistributedWorker
-
 from vllm.model_executor.layers.sampler import get_logits
 from vllm.model_executor.models.llama import LlamaForCausalLM
 from vllm.sequence import SequenceData
 from vllm.model_executor import InputMetadata
 from vllm.sampling_params import SamplingParams
-from vllm.model_executor.parallel_utils.parallel_state import (
-    initialize_model_parallel,
-)
+
+import multiprocessing
+import rpyc
+from rpyc.utils.classic import obtain
+from rpyc.utils.server import ThreadedServer
+from concurrent.futures import ThreadPoolExecutor
 
 from .base import ModelArtifactConfig
 from .paged_cache_manager import KVCache, CacheManager
@@ -51,6 +52,102 @@ def convert_sampling_params(mlc_params: MLCSamplingParams) -> SamplingParams:
         top_p=mlc_params.top_p,
         top_k=mlc_params.top_k,
     )
+
+
+def init_cache_blocks(head_size, num_layers, num_heads, block_size, num_gpu_blocks):
+    element_size = 2
+    x = 16 // element_size
+
+    key_block_shape = (num_heads, head_size // x, block_size, x)
+    value_block_shape = (num_heads, head_size, block_size)
+
+    gpu_cache = []
+    for _ in range(num_layers):
+        key_blocks = torch.empty(
+            size=(num_gpu_blocks, *key_block_shape),
+            dtype=torch.float16,
+            device="cuda",
+        )
+        value_blocks = torch.empty(
+            size=(num_gpu_blocks, *value_block_shape),
+            dtype=torch.float16,
+            device="cuda",
+        )
+        gpu_cache.append((key_blocks, value_blocks))
+    return gpu_cache
+
+
+class ModelRpcServer(rpyc.Service):
+    def exposed_init_model(self, tp_rank: int):
+        pass
+
+    def profile_memory_usage(self, seq_lens):
+        return 0
+
+    def exposed_generate(
+        self, requests: Sequence[Union[PrefillRequest, DecodeRequest]], cache: KVCache
+    ) -> List[TextGenerationResult]:
+        return []
+
+
+def start_model_process(port):
+    def _init_service(port):
+        t = ThreadedServer(
+            ModelRpcServer(),
+            port=port,
+            protocol_config={"allow_pickle": True, "sync_request_timeout": 600},
+        )
+        t.start()
+
+    proc = multiprocessing.Process(target=_init_service, args=(port,))
+    proc.start()
+    time.sleep(1)
+
+    repeat_count = 0
+    while repeat_count < 20:
+        try:
+            con = rpyc.connect(
+                "localhost",
+                port,
+                config={"allow_pickle": True, "sync_request_timeout": 600},
+            )
+            break
+        except ConnectionRefusedError:
+            time.sleep(1)
+        repeat_count += 1
+    if repeat_count == 20:
+        raise RuntimeError("init rpc env error!")
+
+    assert proc.is_alive()
+    return con.root, proc
+
+
+class ModelRpcClient:
+    def __init__(self, num_shards):
+        # TODO: Init torch.distributed
+
+        with ThreadPoolExecutor(num_shards) as executor:
+            ports = [3000 + i for i in range(num_shards)]
+            rets = executor.map(start_model_process, ports)
+
+            self.model_servers = [x[0] for x in rets]
+            self.procs = [x[1] for x in rets]
+
+            def init_model(i):
+                return self.model_servers[i].init_model(i)
+
+            _ = [obtain(x) for x in executor.map(init_model, range(num_shards))]
+
+            def _func(
+                requests: Sequence[Union[PrefillRequest, DecodeRequest]], cache: KVCache
+            ) -> List[TextGenerationResult]:
+                def generate(i):
+                    return self.model_servers[i].generate(requests, cache)
+
+                res = [obtain(x) for x in executor.map(generate, range(num_shards)]
+                return obtain(res[0].value)
+
+            self.generate = _func
 
 
 class Model:
@@ -150,13 +247,17 @@ class Model:
                 num_sequences.append(request.num_sequence)
                 prompt_lens.append(len(request.token_ids))
                 seq_group_sequence_ids[request.request_id].append(sequence_ids[-1])
-                seq_group_sampling_params[request.request_id] = convert_sampling_params(request.sampling_params)
+                seq_group_sampling_params[request.request_id] = convert_sampling_params(
+                    request.sampling_params
+                )
             else:
                 sequence_ids.append(request.sequence_id)
                 prompt_lens.append(request.prompt_token_counts)
                 req_id = request.sequence_id.request_id
                 seq_group_sequence_ids[req_id].append(request.sequence_id)
-                seq_group_sampling_params[req_id] = convert_sampling_params(request.sampling_params)
+                seq_group_sampling_params[req_id] = convert_sampling_params(
+                    request.sampling_params
+                )
 
             all_token_ids.append(request.token_ids)
             sampling_params.append(request.sampling_params)
@@ -277,97 +378,49 @@ class Model:
         return outputs
 
 
-def init_cache_blocks(head_size, num_layers, num_heads, block_size, num_gpu_blocks):
-    element_size = 2
-    x = 16 // element_size
+def init_torch_model(
+    model_path, engine_config: MLCServeEngineConfig
+) -> Tuple[TextGenerator, CacheManager, ModelArtifactConfig]:
+    hf_config = AutoConfig.from_pretrained(model_path)
 
-    key_block_shape = (num_heads, head_size // x, block_size, x)
-    value_block_shape = (num_heads, head_size, block_size)
+    # TODO
+    num_shards = 1
 
-    gpu_cache = []
-    for _ in range(num_layers):
-        key_blocks = torch.empty(
-            size=(num_gpu_blocks, *key_block_shape),
-            dtype=torch.float16,
-            device="cuda",
-        )
-        value_blocks = torch.empty(
-            size=(num_gpu_blocks, *value_block_shape),
-            dtype=torch.float16,
-            device="cuda",
-        )
-        gpu_cache.append((key_blocks, value_blocks))
-    return gpu_cache
+    num_kv_heads = hf_config.num_key_value_heads // num_shards
+    head_size = hf_config.hidden_size // hf_config.num_attention_heads
 
+    if not hasattr(hf_config, "sliding_window"):
+        hf_config.sliding_window = None
 
-def _init_distributed_environment(
-    parallel_config: ParallelConfig,
-    rank: int,
-    distributed_init_method: Optional[str] = None,
-) -> None:
-    """Initialize the distributed environment."""
-    if torch.distributed.is_initialized():
-        torch_world_size = torch.distributed.get_world_size()
-        if torch_world_size != parallel_config.world_size:
-            raise RuntimeError(
-                "torch.distributed is already initialized but the torch world "
-                "size does not match parallel_config.world_size "
-                f"({torch_world_size} vs. {parallel_config.world_size}).")
-    elif not distributed_init_method:
-        raise ValueError(
-            "distributed_init_method must be set if torch.distributed "
-            "is not already initialized")
+    hf_config.num_shards = num_shards
+
+    artifact_config = ModelArtifactConfig(
+        model_artifact_path=model_path,
+        num_shards=1,
+        quantization=None,
+        max_context_length=hf_config.max_position_embeddings,  # TODO,
+        vocab_size=hf_config.vocab_size,
+        sliding_window=hf_config.sliding_window,
+        num_key_value_heads=num_kv_heads,
+        num_attention_heads=hf_config.num_attention_heads,
+        num_hidden_layers=hf_config.num_hidden_layers,
+        hidden_size=hf_config.hidden_size,
+    )
+
+    if num_shareds > 1:
+        model = ModelRpcClient()
     else:
-        torch.distributed.init_process_group(
-            backend="nccl",
-            world_size=parallel_config.world_size,
-            rank=rank,
-            init_method=distributed_init_method,
-        )
-
-    # A small all_reduce for warmup.
-    torch.distributed.all_reduce(torch.zeros(1).cuda())
-    initialize_model_parallel(parallel_config.tensor_parallel_size,
-                              parallel_config.pipeline_parallel_size)
-
-
-class RayWorker(TorchDistributedWorker):
-    def __init__(self) -> None:
-        self.model = None
-        self.cache_manager = None
-
-    def init_worker(self, hf_config, model_path, engine_config):
-        # os.environ.pop("NCCL_ASYNC_ERROR_HANDLING", None)
-        # # Env vars will be set by Ray.
-        # self.rank = self.rank if self.rank is not None else int(
-        #     os.getenv("RANK", "-1"))
-        # local_rank = int(os.getenv("LOCAL_RANK", "0"))
-        # self.device = torch.device(f"cuda:{local_rank}")
-        # if self.rank < 0:
-        #     raise ValueError("Invalid or unspecified rank.")
-        # torch.cuda.set_device(self.device)
-
-        # # Initialize the distributed environment.
-        # _init_distributed_environment(self.parallel_config, self.rank,
-        #                               self.distributed_init_method)
-
-        # # Initialize the model.
-        # set_random_seed(self.model_config.seed)
-
         with torch.device("cuda"):
             torch.set_default_dtype(torch.float16)
             pt_model = LlamaForCausalLM(hf_config)
             pt_model.load_weights(model_path, None, "auto", None)
 
-        self.model = Model(pt_model, hf_config)
-
-        head_size = hf_config.hidden_size // hf_config.num_attention_heads
-        num_kv_heads = hf_config.num_key_value_heads // num_shards
+        model = Model(pt_model, hf_config)
 
         if engine_config.max_num_batched_tokens > 0:
             LOG.info("Running memory profiling.")
             num_blocks = get_num_cache_blocks(
-                self.model,
+                model,
                 [engine_config.max_input_len] * engine_config.max_num_sequences,
                 hf_config.num_hidden_layers,
                 num_kv_heads,
@@ -397,164 +450,12 @@ class RayWorker(TorchDistributedWorker):
             num_blocks,
         )
 
-        self.cache_manager = CacheManager(
+        cache_manager = CacheManager(
             cache_blocks,
             num_blocks,
             hf_config.sliding_window,
         )
 
-    def __getattr__(self, name):
-        return getattr(self.worker, name)
-
-    def execute_method(self, method, *args, **kwargs):
-        executor = getattr(self, method)
-        return executor(*args, **kwargs)
-
-
-def run_workers(
-    workers,
-    method: str,
-    *args,
-    get_all_outputs: bool = False,
-    **kwargs,
-):
-    """Runs the given method on all workers."""
-    from functools import partial
-
-    all_outputs = []
-    for worker in workers:
-        executor = partial(worker.execute_method.remote, method)
-
-        output = executor(*args, **kwargs)
-        all_outputs.append(output)
-
-    all_outputs = ray.get(all_outputs)
-
-    if get_all_outputs:
-        return all_outputs
-
-    # Make sure all workers have the same results.
-    output = all_outputs[0]
-    for other_output in all_outputs[1:]:
-        assert output == other_output
-
-    return output
-
-
-def init_workers_ray(placement_group: "PlacementGroup", parallel_config):
-    import copy
-    from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
-    from ray.air.util.torch_dist import init_torch_dist_process_group
-
-    workers: List[Worker] = []
-    for bundle in placement_group.bundle_specs:
-        if not bundle.get("GPU", 0):
-            continue
-        worker = ray.remote(
-            num_cpus=0,
-            num_gpus=1,
-            scheduling_strategy=PlacementGroupSchedulingStrategy(
-                placement_group=placement_group,
-                placement_group_capture_child_tasks=True),
-            **ray_remote_kwargs,
-        )(RayWorker).remote()
-
-        workers.append(worker)
-
-    # Initialize torch distributed process group for the workers.
-    init_torch_dist_process_group(workers, backend="nccl")
-    parallel_config = copy.deepcopy(parallel_config)
-    run_workers("init_worker") # TODO
-
-
-def init_torch_model(
-    model_path, engine_config: MLCServeEngineConfig
-) -> Tuple[TextGenerator, CacheManager, ModelArtifactConfig]:
-    torch.distributed.init_process_group(
-        backend="nccl", world_size=1, rank=0, init_method="tcp://localhost:59157"
-    )
-    initialize_model_parallel(1, 1)
-
-    print("model_path", model_path)
-    hf_config = AutoConfig.from_pretrained(model_path)
-
-    # TODO
-    num_shards = 1
-
-    if num_shards > 1:
-        from vllm.config import ParallelConfig
-        from vllm.engine.ray_utils import initialize_cluster
-        parallel_config = ParallelConfig(1, num_shards, True)
-        _, placement_group = initialize_cluster(parallel_config)
-        init_workers_ray(placement_group, parallel_config)
-
-    num_kv_heads = hf_config.num_key_value_heads // num_shards
-    head_size = hf_config.hidden_size // hf_config.num_attention_heads
-
-    if not hasattr(hf_config, "sliding_window"):
-        hf_config.sliding_window = None
-
-    hf_config.num_shards = num_shards
-
-    artifact_config = ModelArtifactConfig(
-        model_artifact_path=model_path,
-        num_shards=1,
-        quantization=None,
-        max_context_length=hf_config.max_position_embeddings,  # TODO,
-        vocab_size=hf_config.vocab_size,
-        sliding_window=hf_config.sliding_window,
-        num_key_value_heads=num_kv_heads,
-        num_attention_heads=hf_config.num_attention_heads,
-        num_hidden_layers=hf_config.num_hidden_layers,
-        hidden_size=hf_config.hidden_size,
-    )
-
-    with torch.device("cuda"):
-        torch.set_default_dtype(torch.float16)
-        pt_model = LlamaForCausalLM(hf_config)
-        pt_model.load_weights(model_path, None, "auto", None)
-
-    model = Model(pt_model, hf_config)
-
-    if engine_config.max_num_batched_tokens > 0:
-        LOG.info("Running memory profiling.")
-        num_blocks = get_num_cache_blocks(
-            model,
-            [engine_config.max_input_len] * engine_config.max_num_sequences,
-            hf_config.num_hidden_layers,
-            num_kv_heads,
-            head_size,
-        )
-    else:
-        num_blocks = 500
-
-    num_cache_slots = num_blocks * CacheManager.block_size
-
-    if num_cache_slots <= engine_config.max_num_batched_tokens:
-        raise RuntimeError(
-            f"max_num_batched_tokens = {engine_config.max_num_batched_tokens} but"
-            f" only {num_blocks} cache blocks can be allocated. The number of"
-            f" available cache slots is {num_cache_slots}, not enough for"
-            f" {engine_config.max_num_batched_tokens} tokens. Try reducing"
-            " --max_input_len or --max_num_sequences."
-        )
-
-    LOG.info(f"Using {num_blocks} cache blocks.")
-
-    cache_blocks = init_cache_blocks(
-        head_size,
-        hf_config.num_hidden_layers,
-        hf_config.num_attention_heads,
-        CacheManager.block_size,
-        num_blocks,
-    )
-
-    cache_manager = CacheManager(
-        cache_blocks,
-        num_blocks,
-        hf_config.sliding_window,
-    )
-
-    LOG.info("Allocated KV cache blocks.")
+        LOG.info("Allocated KV cache blocks.")
 
     return model, cache_manager, artifact_config

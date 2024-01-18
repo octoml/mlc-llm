@@ -62,7 +62,7 @@ class KVCacheManager(Protocol):
         The returned value should be passed to Executor.generate_text.
         """
 
-    def allocate(self, request_id: RequestId, num_tokens: int, num_sequnces: int):
+    def allocate(self, request_id: RequestId, num_tokens: int, num_sequences: int):
         """
         Allocate cache space for request, raise error if there is no space.
         """
