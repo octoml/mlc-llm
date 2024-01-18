@@ -104,10 +104,8 @@ class DecodeBlockTable:
 class KVCache:
     def __init__(
         self,
-        cache_blocks,
         block_size,
     ):
-        self.cache_blocks = cache_blocks
         self.block_size = block_size
 
         # SequenceId -> list[int]
@@ -135,13 +133,12 @@ class CacheManager:
 
     def __init__(
         self,
-        cache_blocks,  # This can be any type
         num_blocks: int,
         sliding_window: Optional[int] = None,
     ):
         self.num_blocks = num_blocks
         self.free_blocks = list(range(num_blocks))
-        self.kv_cache = KVCache(cache_blocks, self.block_size)
+        self.kv_cache = KVCache(self.block_size)
         self.token_counts = dict[SequenceId, int]()
 
         if sliding_window:
