@@ -32,7 +32,9 @@ class ModelArtifactConfig:
         )
 
 class AssetNotFound(Exception):
-    pass
+    def __init__(self, asset_path):
+        self.asset_path = asset_path
+        super().__init__(f"{self.asset_path} should exist. Did you build with `--enable-batching`?")
 
 def get_model_artifact_config(model_artifact_path):
     json_object = {"model_artifact_path": model_artifact_path}
@@ -42,7 +44,7 @@ def get_model_artifact_config(model_artifact_path):
     ]:
         config_file_path = os.path.join(model_artifact_path, config_file_name)
         if not os.path.exists(config_file_path):
-            raise AssetNotFound(f"{config_file_path} should exist. Did you build with `--enable-batching`?")
+            raise AssetNotFound(config_file_path)
 
         with open(config_file_path, mode="rt", encoding="utf-8") as f:
             json_object.update(json.load(f))
