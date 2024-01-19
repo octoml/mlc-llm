@@ -456,7 +456,7 @@ def init_tvm_model(
 
     if engine_config.max_num_batched_tokens > 0:
         LOG.info("Running memory profiling.")
-        seq_lens = [engine_config.max_input_len] * engine_config.max_num_sequences
+        seq_lens = [1] * engine_config.max_num_batched_tokens,
         used_memory_bytes = model.profile_memory_usage(seq_lens)
         num_blocks = get_num_cache_blocks(
             used_memory_bytes,
@@ -475,7 +475,7 @@ def init_tvm_model(
             f" only {num_blocks} cache blocks can be allocated. The number of"
             f" available cache slots is {num_cache_slots}, not enough for"
             f" {engine_config.max_num_batched_tokens} tokens. Try reducing"
-            " --max_input_len or --max_num_sequences."
+            " --max_num_batched_tokens."
         )
 
     LOG.info(f"Using {num_blocks} cache blocks.")
