@@ -10,7 +10,7 @@ from tvm import relax
 from tvm.runtime import disco as di
 
 from .base import ModelArtifactConfig
-from .paged_cache_manager import KVCache, CacheManager
+from .paged_cache_manager import KVCacheInfo, CacheManager
 from .model_common import (
     sample,
     prepare_inputs,
@@ -152,6 +152,8 @@ class Model:
                 "tvm.contrib.vllm.copy_blocks"
             )
 
+        self.cache_blocks = None
+
     def get_used_memory(self):
         if self.disco_session:
             params = self.params.debug_get_from_remote(0)
@@ -204,7 +206,7 @@ class Model:
     def generate(
         self,
         requests: Sequence[Union[PrefillRequest, DecodeRequest]],
-        cache: KVCache,
+        cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
         if len(requests) == 0:
             return []
@@ -266,7 +268,7 @@ class Model:
                     input_ids,
                     positions,
                     seq_lens,
-                    cache.cache_blocks,
+                    self.cache_blocks,
                     slot_mapping,
                     indices_within_window,
                     self.params,
@@ -276,7 +278,7 @@ class Model:
                     input_ids,
                     positions,
                     seq_lens,
-                    cache.cache_blocks,
+                    self.cache_blocks,
                     slot_mapping,
                     self.params,
                 )
@@ -297,7 +299,7 @@ class Model:
                 input_ids,
                 positions,
                 seq_lens,
-                cache.cache_blocks,
+                self.cache_blocks,
                 slot_mapping,
                 block_tables,
                 self.params,
@@ -324,7 +326,7 @@ class Model:
                     "int64",
                 )
 
-            self.copy_cache_blocks_func(cache.cache_blocks, block_mapping)
+            self.copy_cache_blocks_func(self.cache_blocks, block_mapping)
             cache.pending_copy_from_to = []
 
         try:
@@ -474,7 +476,7 @@ def init_tvm_model(
     else:
         init_cache_func = tvm.get_global_func("tvm.contrib.vllm.allocate_kv_cache")
 
-    cache_blocks = init_cache_func(
+    model.cache_blocks = init_cache_func(
         head_size,
         model_artifact_config.num_hidden_layers,
         num_kv_heads,
@@ -483,7 +485,6 @@ def init_tvm_model(
     )
 
     cache_manager = CacheManager(
-        cache_blocks,
         num_blocks,
         model_artifact_config.sliding_window,
     )
