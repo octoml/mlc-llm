@@ -81,9 +81,9 @@ def _test(args: argparse.Namespace):
     else:
         prompts = [
             "Hello, my name is",
-            # "The capital of France is",
-            # "The president of the United States is a powerful man. But he can also be",
-            # "The future of AI is full of promise. But we need to carefully",
+            "The capital of France is",
+            "The president of the United States is a powerful man. But he can also be",
+            "The future of AI is full of promise. But we need to carefully",
         ]
 
     for i, prompt in enumerate(prompts):
@@ -138,9 +138,6 @@ def _test(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    import torch
-    torch.multiprocessing.set_start_method('spawn')
-
     parser = get_default_mlc_serve_argparser("test engine")
     parser.add_argument("--long-prompt", action="store_true")
     parser.add_argument("--use-random-sampling", action="store_true")

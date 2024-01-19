@@ -82,6 +82,62 @@ def init_cache_blocks(head_size, num_layers, num_heads, block_size, num_gpu_bloc
     return gpu_cache
 
 
+def profile_memory_usage(pt_model, seq_lens, num_hidden_layers):
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+
+    sampling_params = SamplingParams(top_p=0.99)
+
+    seq_groups: List[Tuple[List[int], SamplingParams]] = []
+    seq_data = {}
+    input_tokens: List[int] = []
+    input_positions: List[int] = []
+    slot_mapping: List[int] = []
+
+    for i, seq_len in enumerate(seq_lens):
+        seq_groups.append(([i], sampling_params))
+        prompt_tokens = [0] * seq_len
+        seq_data[i] = SequenceData(prompt_tokens)
+
+        input_tokens.extend(prompt_tokens)
+        input_positions.extend(range(seq_len))
+        slot_mapping.extend([0] * seq_len)
+
+    input_ids = torch.cuda.LongTensor(input_tokens)
+    positions = torch.cuda.LongTensor(input_positions)
+    slot_mapping_tensor = torch.cuda.IntTensor(slot_mapping)
+
+    input_metadata = InputMetadata(
+        seq_groups=seq_groups,
+        seq_data=seq_data,
+        prompt_lens=seq_lens,
+        slot_mapping=slot_mapping_tensor,
+        context_lens=torch.cuda.IntTensor([]),
+        max_context_len=0,
+        block_tables=torch.cuda.IntTensor([]),
+    )
+
+    kv_caches = [(None, None)] * num_hidden_layers
+
+    with torch.no_grad():
+        pt_model.forward(
+            input_ids,
+            positions,
+            kv_caches,
+            input_metadata,
+            cache_events=None,
+        )
+
+    torch.cuda.synchronize()
+
+    peak_memory = torch.cuda.max_memory_allocated()
+    print("peak memory", peak_memory / 1e9)
+
+    torch.cuda.empty_cache()
+
+    return peak_memory
+
+
 class ModelRpcServer(rpyc.Service):
     def exposed_init_model(
         self, tp_rank, num_shards, model_path, hf_config, engine_config
@@ -109,34 +165,26 @@ class ModelRpcServer(rpyc.Service):
         # Related issue:
         # https://discuss.pytorch.org/t/cuda-allocation-lifetime-for-inputs-to-distributed-all-reduce/191573
         os.environ["TORCH_NCCL_AVOID_RECORD_STREAMS"] = "1"
-        print("exposed init_model", tp_rank)
 
-        print("set device", tp_rank)
         torch.cuda.set_device(tp_rank)
-        print("done", tp_rank)
 
         os.environ["MASTER_ADDR"] = str("127.0.0.1")
-        os.environ["MASTER_PORT"] = str(4000)
+        os.environ["MASTER_PORT"] = str(4000)  # TODO port
 
-        print("init_process_group", tp_rank, flush=True)
         torch.distributed.init_process_group(
             backend="nccl",
             world_size=num_shards,
             rank=tp_rank,
-            # init_method=f"tcp://127.0.0.1:{nccl_port}",
         )
-        initialize_model_parallel(num_shards, 1)
+        initialize_model_parallel(num_shards)
 
         # A small all_reduce for warmup.
-        print("warm up", tp_rank)
         torch.distributed.all_reduce(torch.zeros(1).cuda())
 
         with torch.device("cuda"):
-            print("loading model")
             torch.set_default_dtype(torch.float16)
-            pt_model = LlamaForCausalLM(hf_config)
-            print("loading weights")
-            pt_model.load_weights(model_path, None, "auto", None)
+            self.pt_model = LlamaForCausalLM(hf_config)
+            self.pt_model.load_weights(model_path, None, "auto", None)
 
         num_kv_heads = hf_config.num_key_value_heads // num_shards
         head_size = hf_config.hidden_size // hf_config.num_attention_heads
@@ -146,7 +194,7 @@ class ModelRpcServer(rpyc.Service):
             seq_lens = (
                 [engine_config.max_input_len] * engine_config.max_num_sequences
             )
-            used_memory_bytes = self.profile_memory_usage(seq_lens)
+            used_memory_bytes = profile_memory_usage(self.pt_model, seq_lens, self.num_hidden_layers)
 
             num_blocks = get_num_cache_blocks(
                 used_memory_bytes,
@@ -157,70 +205,17 @@ class ModelRpcServer(rpyc.Service):
         else:
             num_blocks = 500
 
+        LOG.info(f"Using {num_blocks} cache blocks.")
+
         self.cache_blocks = init_cache_blocks(
             head_size,
             hf_config.num_hidden_layers,
-            hf_config.num_attention_heads,
+            num_kv_heads,
             CacheManager.block_size,
             num_blocks,
         )
 
         return num_blocks
-
-    def profile_memory_usage(self, seq_lens):
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-
-        sampling_params = SamplingParams(top_p=0.99)
-
-        seq_groups: List[Tuple[List[int], SamplingParams]] = []
-        seq_data = {}
-        input_tokens: List[int] = []
-        input_positions: List[int] = []
-        slot_mapping: List[int] = []
-
-        for i, seq_len in enumerate(seq_lens):
-            seq_groups.append(([i], sampling_params))
-            prompt_tokens = [0] * seq_len
-            seq_data[i] = SequenceData(prompt_tokens)
-
-            input_tokens.extend(prompt_tokens)
-            input_positions.extend(range(seq_len))
-            slot_mapping.extend([0] * seq_len)
-
-        input_ids = torch.cuda.LongTensor(input_tokens)
-        positions = torch.cuda.LongTensor(input_positions)
-        slot_mapping_tensor = torch.cuda.IntTensor(slot_mapping)
-
-        input_metadata = InputMetadata(
-            seq_groups=seq_groups,
-            seq_data=seq_data,
-            prompt_lens=seq_lens,
-            slot_mapping=slot_mapping_tensor,
-            context_lens=torch.cuda.IntTensor([]),
-            max_context_len=0,
-            block_tables=torch.cuda.IntTensor([]),
-        )
-
-        kv_caches = [(None, None)] * self.num_hidden_layers
-
-        with torch.no_grad():
-            self.pt_model.forward(
-                input_ids,
-                positions,
-                kv_caches,
-                input_metadata,
-                cache_events=None,
-            )
-
-        torch.cuda.synchronize()
-
-        peak_memory = torch.cuda.max_memory_allocated()
-        print("peak memory", peak_memory / 1e9)
-
-        torch.cuda.empty_cache()
-
-        return peak_memory
 
     def exposed_generate(
         self, requests: Sequence[Union[PrefillRequest, DecodeRequest]], cache: KVCache
@@ -376,7 +371,6 @@ def _init_service(port):
 def start_model_process(port):
     proc = multiprocessing.Process(target=_init_service, args=(port,))
     proc.start()
-    # proc = multiprocessing.spawn(_init_service, (port,), nprocs
 
     time.sleep(1)
 
@@ -403,7 +397,7 @@ def start_model_process(port):
 class ModelRpcClient:
     def __init__(self, num_shards, model_path, hf_config, engine_config):
         with ThreadPoolExecutor(num_shards) as executor:
-            ports = [3010 + i for i in range(num_shards)]  # TODO
+            ports = [3000 + i for i in range(num_shards)]  # TODO port
             rets = executor.map(start_model_process, ports)
 
             self.model_servers = [x[0] for x in rets]
@@ -416,16 +410,17 @@ class ModelRpcClient:
 
             self.num_blocks = rets[0]
 
-            def _func(
-                requests: Sequence[Union[PrefillRequest, DecodeRequest]], cache: KVCache
-            ) -> List[TextGenerationResult]:
-                def generate(i):
-                    return self.model_servers[i].generate(requests, cache)
+        def _func(
+            requests: Sequence[Union[PrefillRequest, DecodeRequest]], cache: KVCache
+        ) -> List[TextGenerationResult]:
+            def generate(i):
+                return self.model_servers[i].generate(requests, cache)
 
+            with ThreadPoolExecutor(num_shards) as executor:
                 res = [obtain(x) for x in executor.map(generate, range(num_shards))]
-                return obtain(res[0].value)
+                return obtain(res[0])
 
-            self.generate = _func
+        self.generate = _func
 
     def get_num_cache_blocks(self):
         return self.num_blocks
@@ -691,6 +686,7 @@ def init_torch_model(
     )
 
     if num_shards > 1:
+        torch.multiprocessing.set_start_method('spawn')
         model = ModelRpcClient(num_shards, model_path, hf_config, engine_config)
         num_blocks = model.get_num_cache_blocks()
     else:
