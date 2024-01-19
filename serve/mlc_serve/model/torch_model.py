@@ -10,6 +10,7 @@ from transformers import AutoConfig
 
 from vllm.model_executor.layers.sampler import get_logits
 from vllm.model_executor.models.llama import LlamaForCausalLM
+from vllm.model_executor.models.qwen import QWenLMHeadModel
 from vllm.sequence import SequenceData
 from vllm.model_executor import InputMetadata
 from vllm.sampling_params import SamplingParams
@@ -157,6 +158,8 @@ def profile_and_init_cache(
     else:
         num_blocks = 500
 
+    LOG.info(f"Using {num_blocks} cache blocks.")
+
     cache_blocks = init_cache_blocks(
         head_size,
         hf_config.num_hidden_layers,
@@ -172,6 +175,7 @@ def load_model(hf_config, model_path):
     with torch.device("cuda"):
         torch.set_default_dtype(torch.float16)
         model = LlamaForCausalLM(hf_config)
+        # model = QWenLMHeadModel(hf_config) # requires tiktoken package
         model.load_weights(model_path, None, "auto", None)
         return model
 
@@ -269,6 +273,14 @@ def generate(
     )
 
     with torch.no_grad():
+        # hidden_states = pt_model.transformer(
+        #     input_ids,
+        #     positions,
+        #     cache_blocks,
+        #     input_metadata,
+        #     # No need for this until parallel sampling is supported.
+        #     cache_events=None,
+        # )
         hidden_states = pt_model.model(
             input_ids,
             positions,
@@ -363,8 +375,6 @@ class ModelRpcServer(rpyc.Service):
             engine_config,
             num_shards,
         )
-
-        LOG.info(f"Using {num_blocks} cache blocks.")
 
         return num_blocks
 
@@ -477,15 +487,18 @@ class Model:
 def init_torch_model(
     model_path, engine_config: MLCServeEngineConfig
 ) -> Tuple[TextGenerator, CacheManager, ModelArtifactConfig]:
-    hf_config = AutoConfig.from_pretrained(model_path)
+    hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 
     # TODO
     num_shards = 2
 
-    num_kv_heads = hf_config.num_key_value_heads // num_shards
+    if not hasattr(hf_config, "num_key_value_heads") and hasattr(hf_config, "num_attention_heads"):
+        hf_config.num_key_value_heads = hf_config.num_attention_heads
 
     if not hasattr(hf_config, "sliding_window"):
         hf_config.sliding_window = None
+
+    num_kv_heads = hf_config.num_key_value_heads // num_shards
 
     artifact_config = ModelArtifactConfig(
         model_artifact_path=model_path,
