@@ -247,10 +247,6 @@ class Model:
             is_prefill,
         )
 
-        print("input_ids", input_ids)
-        print("positions", positions)
-        print("block_tables", block_tables)
-
         input_shape = input_ids.shape
 
         if self.disco_session:
@@ -334,13 +330,8 @@ class Model:
             cache.pending_copy_from_to = []
 
         try:
-            # if is_prefill:
-            #     import numpy as np
-            #     print("save logits")
-            #     np.save("logits_tvm.npy", logits.numpy())
-
             next_tokens = sample(logits, sampling_params, self.vocab_size)
-            print("next tokens", next_tokens)
+
             assert next_tokens is not None
             outputs = []
             for i, (sequence_id, new_token) in enumerate(

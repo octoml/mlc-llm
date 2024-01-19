@@ -70,7 +70,7 @@ def _test(args: argparse.Namespace):
         sampling_params_choices = [sampling_params_random]
     elif args.use_random_sampling:
         # This tests different sampling types in the same batch
-        sampling_params_choices = [sampling_params_random]
+        sampling_params_choices = [sampling_params_random, sampling_params_greedy]
     else:
         sampling_params_choices = [sampling_params_greedy]
 
