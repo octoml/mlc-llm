@@ -24,6 +24,7 @@ def get_default_mlc_serve_argparser(description="", allow_override=False):
     parser.add_argument("--artifact-path", type=str, default="dist")
     parser.add_argument("--use-sync-engine", action="store_true")
     parser.add_argument("--max-num-batched-tokens", type=int, default=4096)
+    parser.add_argument("--num-sequences-to-sample", type=int, default=1)
     parser.add_argument("--min-decode-steps", type=int, default=32)
     parser.add_argument("--max-decode-steps", type=int, default=56)
     parser.add_argument("--debug-logging", action="store_true")

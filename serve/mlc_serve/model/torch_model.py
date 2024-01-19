@@ -146,9 +146,8 @@ def profile_and_init_cache(
 
     if engine_config.max_num_batched_tokens > 0:
         LOG.info("Running memory profiling.")
-        seq_lens = [engine_config.max_input_len] * engine_config.max_num_sequences
+        seq_lens = [1] * engine_config.max_num_batched_tokens
         used_memory_bytes = profile_memory_usage(pt_model, seq_lens, num_hidden_layers)
-
         num_blocks = get_num_cache_blocks(
             used_memory_bytes,
             hf_config.num_hidden_layers,

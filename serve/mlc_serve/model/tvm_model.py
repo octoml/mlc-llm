@@ -456,7 +456,7 @@ def init_tvm_model(
 
     if engine_config.max_num_batched_tokens > 0:
         LOG.info("Running memory profiling.")
-        seq_lens = [1] * engine_config.max_num_batched_tokens,
+        seq_lens = [1] * engine_config.max_num_batched_tokens
         used_memory_bytes = model.profile_memory_usage(seq_lens)
         num_blocks = get_num_cache_blocks(
             used_memory_bytes,
