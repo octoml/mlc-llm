@@ -10,7 +10,7 @@ from tvm import relax
 from tvm.runtime import disco as di
 
 from .base import ModelArtifactConfig
-from .paged_cache_manager import KVCache, CacheManager
+from .paged_cache_manager import KVCacheInfo, CacheManager
 from .model_common import (
     sample,
     prepare_inputs,
@@ -206,7 +206,7 @@ class Model:
     def generate(
         self,
         requests: Sequence[Union[PrefillRequest, DecodeRequest]],
-        cache: KVCache,
+        cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
         if len(requests) == 0:
             return []
