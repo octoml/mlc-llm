@@ -26,7 +26,7 @@ from rpyc.utils.server import ThreadedServer
 from concurrent.futures import ThreadPoolExecutor
 
 from .base import ModelArtifactConfig
-from .paged_cache_manager import KVCache, CacheManager
+from .paged_cache_manager import KVCacheInfo, CacheManager
 from .model_common import (
     sample,
     prepare_inputs,
@@ -181,7 +181,7 @@ def load_model(hf_config, model_path):
 
 def generate(
     requests: Sequence[Union[PrefillRequest, DecodeRequest]],
-    cache: KVCache,
+    cache_info: KVCacheInfo,
     pt_model,
     cache_blocks,
     sliding_window,
@@ -240,8 +240,8 @@ def generate(
         sequence_ids,
         all_token_ids,
         prompt_lens,
-        cache.slot_mappings,
-        cache.decode_block_tables,
+        cache_info.slot_mappings,
+        cache_info.decode_block_tables,
         sliding_window,
         is_prefill,
         torch.long,
@@ -378,7 +378,7 @@ class ModelRpcServer(rpyc.Service):
         return num_blocks
 
     def exposed_generate(
-        self, requests: Sequence[Union[PrefillRequest, DecodeRequest]], cache: KVCache
+        self, requests: Sequence[Union[PrefillRequest, DecodeRequest]], cache: KVCacheInfo
     ) -> List[TextGenerationResult]:
         requests = obtain(requests)
         cache = obtain(cache)
@@ -471,7 +471,7 @@ class Model:
     def generate(
         self,
         requests: Sequence[Union[PrefillRequest, DecodeRequest]],
-        cache: KVCache,
+        cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
         return generate(
             requests,
