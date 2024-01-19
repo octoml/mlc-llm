@@ -13,6 +13,9 @@ from vllm.model_executor.models.llama import LlamaForCausalLM
 from vllm.sequence import SequenceData
 from vllm.model_executor import InputMetadata
 from vllm.sampling_params import SamplingParams
+from vllm.model_executor.parallel_utils.parallel_state import (
+    initialize_model_parallel,
+)
 
 import torch.multiprocessing as multiprocessing
 
@@ -83,6 +86,22 @@ class ModelRpcServer(rpyc.Service):
     def exposed_init_model(
         self, tp_rank, num_shards, model_path, hf_config, engine_config
     ):
+        hf_config = obtain(hf_config)
+        engine_config = obtain(engine_config)
+        model_path = obtain(model_path)
+
+        self.vocab_size = hf_config.vocab_size
+        self.sliding_window = hf_config.sliding_window
+        self.num_shards = hf_config.num_shards
+        self.num_hidden_layers = hf_config.num_hidden_layers
+
+        if self.sliding_window:
+            self.block_sliding_window = self.sliding_window // CacheManager.block_size
+        else:
+            self.block_sliding_window = None
+
+        self.cache_blocks = None
+
         # torch.distributed.all_reduce does not free the input tensor until
         # the synchronization point. This causes the memory usage to grow
         # as the number of all_reduce calls increases. This env var disables
@@ -90,21 +109,33 @@ class ModelRpcServer(rpyc.Service):
         # Related issue:
         # https://discuss.pytorch.org/t/cuda-allocation-lifetime-for-inputs-to-distributed-all-reduce/191573
         os.environ["TORCH_NCCL_AVOID_RECORD_STREAMS"] = "1"
+        print("exposed init_model", tp_rank)
 
+        print("set device", tp_rank)
         torch.cuda.set_device(tp_rank)
+        print("done", tp_rank)
+
+        os.environ["MASTER_ADDR"] = str("127.0.0.1")
+        os.environ["MASTER_PORT"] = str(4000)
+
+        print("init_process_group", tp_rank, flush=True)
         torch.distributed.init_process_group(
             backend="nccl",
             world_size=num_shards,
             rank=tp_rank,
-            # init_method=f"tcp://127.0.0.1:{self.nccl_port}",
+            # init_method=f"tcp://127.0.0.1:{nccl_port}",
         )
+        initialize_model_parallel(num_shards, 1)
 
         # A small all_reduce for warmup.
+        print("warm up", tp_rank)
         torch.distributed.all_reduce(torch.zeros(1).cuda())
 
         with torch.device("cuda"):
+            print("loading model")
             torch.set_default_dtype(torch.float16)
             pt_model = LlamaForCausalLM(hf_config)
+            print("loading weights")
             pt_model.load_weights(model_path, None, "auto", None)
 
         num_kv_heads = hf_config.num_key_value_heads // num_shards
@@ -113,7 +144,7 @@ class ModelRpcServer(rpyc.Service):
         if engine_config.max_num_batched_tokens > 0:
             LOG.info("Running memory profiling.")
             seq_lens = (
-                [engine_config.max_input_len] * engine_config.max_num_sequences,
+                [engine_config.max_input_len] * engine_config.max_num_sequences
             )
             used_memory_bytes = self.profile_memory_usage(seq_lens)
 
@@ -343,9 +374,10 @@ def _init_service(port):
 
 
 def start_model_process(port):
-    multiprocessing.set_start_method('spawn', force=True)
     proc = multiprocessing.Process(target=_init_service, args=(port,))
     proc.start()
+    # proc = multiprocessing.spawn(_init_service, (port,), nprocs
+
     time.sleep(1)
 
     repeat_count = 0
@@ -364,15 +396,15 @@ def start_model_process(port):
         raise RuntimeError("init rpc env error!")
 
     assert proc.is_alive()
+    print("start process")
     return con.root, proc
 
 
 class ModelRpcClient:
     def __init__(self, num_shards, model_path, hf_config, engine_config):
         with ThreadPoolExecutor(num_shards) as executor:
-            ports = [3000 + i for i in range(num_shards)]
+            ports = [3010 + i for i in range(num_shards)]  # TODO
             rets = executor.map(start_model_process, ports)
-            print("started processes")
 
             self.model_servers = [x[0] for x in rets]
             self.procs = [x[1] for x in rets]
@@ -662,6 +694,11 @@ def init_torch_model(
         model = ModelRpcClient(num_shards, model_path, hf_config, engine_config)
         num_blocks = model.get_num_cache_blocks()
     else:
+        torch.distributed.init_process_group(
+            backend="nccl", world_size=1, rank=0, init_method="tcp://localhost:59157"
+        )
+        initialize_model_parallel(1, 1)
+
         with torch.device("cuda"):
             torch.set_default_dtype(torch.float16)
             pt_model = LlamaForCausalLM(hf_config)
@@ -671,9 +708,10 @@ def init_torch_model(
 
         if engine_config.max_num_batched_tokens > 0:
             LOG.info("Running memory profiling.")
+            seq_lens = [engine_config.max_input_len] * engine_config.max_num_sequences
+            used_memory_bytes = model.profile_memory_usage(seq_lens)
             num_blocks = get_num_cache_blocks(
-                model,
-                [engine_config.max_input_len] * engine_config.max_num_sequences,
+                used_memory_bytes,
                 hf_config.num_hidden_layers,
                 num_kv_heads,
                 head_size,

@@ -138,6 +138,9 @@ def _test(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
+    import torch
+    torch.multiprocessing.set_start_method('spawn')
+
     parser = get_default_mlc_serve_argparser("test engine")
     parser.add_argument("--long-prompt", action="store_true")
     parser.add_argument("--use-random-sampling", action="store_true")
