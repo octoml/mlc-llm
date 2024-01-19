@@ -22,6 +22,10 @@ def git_describe_version(original_version):
 
 __version__ = git_describe_version(None)
 
+def find_mlc_serve():
+    packages = find_packages(where="serve")
+    return [package for package in packages if package.startswith("mlc_serve")]
+
 setup(
     name="mlc_llm",
     version=__version__,
@@ -39,8 +43,8 @@ setup(
     ],
     keywords="machine learning",
     zip_safe=False,
-    packages=find_packages(),
-    package_dir={"mlc_llm": "mlc_llm"},
+    packages=find_packages() + find_mlc_serve(),
+    package_dir={"mlc_llm": "mlc_llm", "mlc_serve": "serve/mlc_serve"},
     install_requires=["numpy", "torch", "transformers", "scipy", "timm"],
     entry_points={"console_scripts": ["mlc_llm_build = mlc_llm.build:main"]},
     distclass=Distribution,
