@@ -10,6 +10,7 @@ from transformers import AutoConfig
 from vllm.model_executor.layers.sampler import get_logits
 from vllm.model_executor.models.llama import LlamaForCausalLM
 from vllm.model_executor.models.qwen import QWenLMHeadModel
+from vllm.model_executor.models.phi import PhiForCausalLM
 from vllm.model_executor import InputMetadata, SamplingMetadata
 from vllm.sampling_params import SamplingParams
 from vllm.model_executor.parallel_utils.parallel_state import (
@@ -165,10 +166,20 @@ def profile_and_init_cache(
 
 
 def load_model(hf_config, model_path):
+    model_map = {
+        "LlamaForCausalLM": LlamaForCausalLM,
+        "PhiForCausalLM": PhiForCausalLM,
+        "QWenLMHeadModel": QWenLMHeadModel,  # requires tiktoken package
+    }
+
+    arch = hf_config.architectures[0]
+
+    if arch not in model_map:
+        raise RuntimeError(f"Unsupported model: {arch}")
+
     with torch.device("cuda"):
         torch.set_default_dtype(torch.float16)
-        model = LlamaForCausalLM(hf_config)
-        # model = QWenLMHeadModel(hf_config) # requires tiktoken package
+        model = model_map[arch](hf_config)
         model.load_weights(model_path, None, "auto", None)
         return model
 
