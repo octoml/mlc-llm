@@ -25,6 +25,10 @@ def _test(args: argparse.Namespace):
         model_type = "torch"
         num_shards = args.num_shards
 
+        if num_shards > 1:
+            import torch
+            torch.multiprocessing.set_start_method("spawn")
+
     engine_config = get_engine_config(
         {
             "use_staging_engine": args.use_staging_engine,

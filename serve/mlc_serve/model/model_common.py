@@ -238,24 +238,24 @@ def prepare_inputs(
 
             max_context_len = max(max_context_len, seq_lens[-1])
 
-    def to_torch(arr, torch_dtype):
-        return torch.tensor(arr, dtype=torch_dtype, device="cuda")
-
-    def _pad_to_max(x: List[int], max_len: int, pad: int) -> List[int]:
-        assert len(x) <= max_len
-        return x + [pad] * (max_len - len(x))
-
     def _do_pad(
         x: List[List[int]],
         max_len: int,
-        pad: int,
+        pad_val: int,
     ) -> List[List[int]]:
-        return [_pad_to_max(x_i, max_len, pad) for x_i in x]
+        def _pad_to_max(x: List[int], max_len: int, pad_val: int) -> List[int]:
+            assert len(x) <= max_len
+            return x + [pad_val] * (max_len - len(x))
+
+        return [_pad_to_max(x_i, max_len, pad_val) for x_i in x]
 
     if for_vllm and is_prefill:
         input_ids = _do_pad(input_ids, max_prompt_len, 0)
         positions = _do_pad(positions, max_prompt_len, 0)
         slot_mapping = _do_pad(slot_mapping, max_prompt_len, -1)
+
+    def to_torch(arr, torch_dtype):
+        return torch.tensor(arr, dtype=torch_dtype, device="cuda")
 
     input_ids = to_torch(input_ids, torch_int_dtype)
     positions = to_torch(positions, torch_int_dtype)

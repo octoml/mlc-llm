@@ -455,6 +455,7 @@ class ModelRpcClient:
         cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
         def _generate(i):
+            # This calls ModelRpcServer.exposed_generate(...) via RPC.
             return self.model_servers[i].generate(requests, cache)
 
         with ThreadPoolExecutor(self.num_shards) as executor:
@@ -470,10 +471,9 @@ class Model:
         engine_config: MLCServeEngineConfig,
     ):
         if engine_config.num_shards and engine_config.num_shards > 1:
-            torch.multiprocessing.set_start_method("spawn")
             self.model_rpc = ModelRpcClient(model_path, hf_config, engine_config)
             self.num_blocks = self.model_rpc.num_blocks
-            self.cache_blocks = None
+            self.cache_blocks = None  # Owned by each remote shard
         else:
             torch.distributed.init_process_group(
                 backend="nccl",
