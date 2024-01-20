@@ -123,14 +123,18 @@ def profile_memory_usage(pt_model, seq_lens, num_hidden_layers):
 
 
 def profile_and_init_cache(
-    pt_model, num_hidden_layers, hf_config, engine_config, num_shards
+    pt_model,
+    hf_config,
+    num_shards,
+    max_num_batched_tokens,
 ):
     num_kv_heads = hf_config.num_key_value_heads // num_shards
+    num_hidden_layers = hf_config.num_hidden_layers
     head_size = hf_config.hidden_size // hf_config.num_attention_heads
 
-    if engine_config.max_num_batched_tokens > 0:
+    if max_num_batched_tokens > 0:
         LOG.info("Running memory profiling.")
-        seq_lens = [1] * engine_config.max_num_batched_tokens
+        seq_lens = [1] * max_num_batched_tokens
         used_memory_bytes = profile_memory_usage(pt_model, seq_lens, num_hidden_layers)
         num_blocks = get_num_cache_blocks(
             used_memory_bytes,
@@ -150,6 +154,8 @@ def profile_and_init_cache(
         CacheManager.block_size,
         num_blocks,
     )
+
+    LOG.info("Allocated KV cache blocks.")
 
     return cache_blocks, num_blocks
 
@@ -359,10 +365,9 @@ class ModelRpcServer(rpyc.Service):
 
         self.cache_blocks, num_blocks = profile_and_init_cache(
             self.pt_model,
-            hf_config.num_hidden_layers,
             hf_config,
-            engine_config,
             num_shards,
+            engine_config.max_num_batched_tokens,
         )
 
         return num_blocks
@@ -421,13 +426,16 @@ def start_model_process(port):
 class ModelRpcClient:
     def __init__(
         self,
-        num_shards: int,
         model_path: Path,
         hf_config: AutoConfig,
         engine_config: MLCServeEngineConfig,
     ):
-        with ThreadPoolExecutor(num_shards) as executor:
-            ports = [3010 + i for i in range(num_shards)]  # TODO port
+        assert engine_config.num_shards is not None
+
+        self.num_shards = engine_config.num_shards
+
+        with ThreadPoolExecutor(self.num_shards) as executor:
+            ports = [3010 + i for i in range(self.num_shards)]  # TODO port
             rets = executor.map(start_model_process, ports)
 
             self.model_servers = [x[0] for x in rets]
@@ -435,60 +443,80 @@ class ModelRpcClient:
 
             def init_model(i):
                 return self.model_servers[i].init_model(
-                    i, num_shards, model_path, hf_config, engine_config
+                    i, self.num_shards, model_path, hf_config, engine_config
                 )
 
-            rets = executor.map(init_model, range(num_shards))
+            rets = executor.map(init_model, range(self.num_shards))
             self.num_blocks = obtain(list(rets)[0])
-
-        def _func(
-            requests: Sequence[Union[PrefillRequest, DecodeRequest]], cache: KVCacheInfo
-        ) -> List[TextGenerationResult]:
-            def generate(i):
-                return self.model_servers[i].generate(requests, cache)
-
-            with ThreadPoolExecutor(num_shards) as executor:
-                res = [obtain(x) for x in executor.map(generate, range(num_shards))]
-                return obtain(res[0])
-
-        self.generate = _func
-
-
-class Model:
-    def __init__(
-        self,
-        pt_model,
-        config: AutoConfig,
-    ):
-        self.pt_model = pt_model
-        self.vocab_size = config.vocab_size
-        self.sliding_window = config.sliding_window
-        self.cache_blocks = None
 
     def generate(
         self,
         requests: Sequence[Union[PrefillRequest, DecodeRequest]],
         cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
-        return generate(
-            requests,
-            cache,
-            self.pt_model,
-            self.cache_blocks,
-            self.sliding_window,
-            self.vocab_size,
-        )
+        def _generate(i):
+            return self.model_servers[i].generate(requests, cache)
+
+        with ThreadPoolExecutor(self.num_shards) as executor:
+            res = [obtain(x) for x in executor.map(_generate, range(self.num_shards))]
+            return obtain(res[0])
+
+
+class Model:
+    def __init__(
+        self,
+        model_path: Path,
+        hf_config: AutoConfig,
+        engine_config: MLCServeEngineConfig,
+    ):
+        if engine_config.num_shards and engine_config.num_shards > 1:
+            torch.multiprocessing.set_start_method("spawn")
+            self.model_rpc = ModelRpcClient(model_path, hf_config, engine_config)
+            self.num_blocks = self.model_rpc.num_blocks
+            self.cache_blocks = None
+        else:
+            torch.distributed.init_process_group(
+                backend="nccl",
+                world_size=1,
+                rank=0,
+                init_method="tcp://localhost:59157",  # TODO port
+            )
+            initialize_model_parallel(1, 1)
+
+            self.pt_model = load_model(hf_config, model_path)
+            self.cache_blocks, self.num_blocks = profile_and_init_cache(
+                self.pt_model,
+                hf_config,
+                1,
+                engine_config.max_num_batched_tokens,
+            )
+            self.model_rpc = None
+
+        self.vocab_size = hf_config.vocab_size
+        self.sliding_window = hf_config.sliding_window
+
+    def generate(
+        self,
+        requests: Sequence[Union[PrefillRequest, DecodeRequest]],
+        cache: KVCacheInfo,
+    ) -> List[TextGenerationResult]:
+        if self.model_rpc is None:
+            return generate(
+                requests,
+                cache,
+                self.pt_model,
+                self.cache_blocks,
+                self.sliding_window,
+                self.vocab_size,
+            )
+
+        return self.model_rpc.generate(requests, cache)
 
 
 def init_torch_model(
     model_path: Path, engine_config: MLCServeEngineConfig
 ) -> Tuple[TextGenerator, CacheManager, ModelArtifactConfig]:
     hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-
-    if engine_config.num_shards is None:
-        raise RuntimeError("num_shards needs to be specifed for PyTorch models.")
-
-    num_shards = engine_config.num_shards
 
     if not hasattr(hf_config, "num_key_value_heads") and hasattr(
         hf_config, "num_attention_heads"
@@ -498,7 +526,10 @@ def init_torch_model(
     if not hasattr(hf_config, "sliding_window"):
         hf_config.sliding_window = None
 
-    num_kv_heads = hf_config.num_key_value_heads // num_shards
+    if engine_config.num_shards is None:
+        raise RuntimeError("num_shards needs to be specifed for PyTorch models.")
+
+    num_shards = engine_config.num_shards
 
     artifact_config = ModelArtifactConfig(
         model_artifact_path=str(model_path),
@@ -507,36 +538,16 @@ def init_torch_model(
         max_context_length=hf_config.max_position_embeddings,  # TODO,
         vocab_size=hf_config.vocab_size,
         sliding_window=hf_config.sliding_window,
-        num_key_value_heads=num_kv_heads,
+        num_key_value_heads=hf_config.num_key_value_heads // num_shards,
         num_attention_heads=hf_config.num_attention_heads,
         num_hidden_layers=hf_config.num_hidden_layers,
         hidden_size=hf_config.hidden_size,
     )
 
-    if num_shards > 1:
-        torch.multiprocessing.set_start_method("spawn")
-        model = ModelRpcClient(num_shards, model_path, hf_config, engine_config)
-        num_blocks = model.num_blocks
-    else:
-        torch.distributed.init_process_group(
-            backend="nccl",
-            world_size=1,
-            rank=0,
-            init_method="tcp://localhost:59157",  # TODO port
-        )
-        initialize_model_parallel(1, 1)
-
-        pt_model = load_model(hf_config, model_path)
-        model = Model(pt_model, hf_config)
-
-        model.cache_blocks, num_blocks = profile_and_init_cache(  # type: ignore
-            pt_model, hf_config.num_hidden_layers, hf_config, engine_config, num_shards
-        )
-
-    LOG.info("Allocated KV cache blocks.")
+    model = Model(model_path, hf_config, engine_config)
 
     cache_manager = CacheManager(
-        num_blocks,
+        model.num_blocks,
         hf_config.sliding_window,
     )
 
