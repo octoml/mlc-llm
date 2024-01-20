@@ -169,10 +169,6 @@ def sample(
     return res
 
 
-def _pad_to_alignment(x: List[int], multiple_of: int) -> List[int]:
-    return x + [0] * ((-len(x)) % multiple_of)
-
-
 def prepare_inputs(
     sequence_ids,
     all_token_ids,
@@ -181,25 +177,37 @@ def prepare_inputs(
     all_decode_block_tables,
     sliding_window,
     is_prefill,
-    torch_ids_type=torch.int,
-    align=None,
+    for_vllm=False,
 ):
+    if for_vllm:
+        torch_int_dtype = torch.long
+    else:
+        torch_int_dtype = torch.int
+
     block_tables = []
     seq_lens = []
     input_ids = []
     slot_mapping = []
     positions = []
-    max_num_blocks_per_seq = 0
     indices_within_window = []
     start_idx = 0
+    max_prompt_len = -1
+    max_context_len = -1
 
     for i, (sequence_id, token_ids) in enumerate(zip(sequence_ids, all_token_ids)):
         if is_prefill:
-            input_ids += token_ids
             prompt_len = len(token_ids)
             seq_lens.append(prompt_len)
-            positions += range(prompt_len)
-            slot_mapping += all_slot_mappings[sequence_id]
+            max_prompt_len = max(max_prompt_len, prompt_len)
+
+            if for_vllm:
+                input_ids.append(token_ids)
+                positions.append(list(range(prompt_len)))
+                slot_mapping.append(all_slot_mappings[sequence_id])
+            else:
+                input_ids += token_ids
+                positions += range(prompt_len)
+                slot_mapping += all_slot_mappings[sequence_id]
 
             if sliding_window:
                 indices_within_window += range(
@@ -209,30 +217,50 @@ def prepare_inputs(
                 start_idx += prompt_len
 
         else:
-            input_ids.append(token_ids[-1])
             seq_len = prompt_lens[i] + len(token_ids)
-            positions.append(seq_len - 1)
+
+            if for_vllm:
+                input_ids.append([token_ids[-1]])
+                positions.append([seq_len - 1])
+                slot_mapping.append([all_slot_mappings[sequence_id][-1]])
+            else:
+                input_ids.append(token_ids[-1])
+                positions.append(seq_len - 1)
+                slot_mapping.append(all_slot_mappings[sequence_id][-1])
+
             block_table = all_decode_block_tables[sequence_id]
-            max_num_blocks_per_seq = max(max_num_blocks_per_seq, len(block_table))
             block_tables.append(block_table.get_blocks())
-            slot_mapping.append(all_slot_mappings[sequence_id][-1])
 
             if sliding_window:
                 seq_lens.append(min(seq_len, sliding_window))
             else:
                 seq_lens.append(seq_len)
 
+            max_context_len = max(max_context_len, seq_lens[-1])
+
     def to_torch(arr, torch_dtype):
         return torch.tensor(arr, dtype=torch_dtype, device="cuda")
 
-    if align:
-        input_ids = _pad_to_alignment(input_ids, multiple_of=align)
-        positions = _pad_to_alignment(positions, multiple_of=align)
+    def _pad_to_max(x: List[int], max_len: int, pad: int) -> List[int]:
+        assert len(x) <= max_len
+        return x + [pad] * (max_len - len(x))
 
-    input_ids = to_torch(input_ids, torch_ids_type)
-    positions = to_torch(positions, torch_ids_type)
+    def _do_pad(
+        x: List[List[int]],
+        max_len: int,
+        pad: int,
+    ) -> List[List[int]]:
+        return [_pad_to_max(x_i, max_len, pad) for x_i in x]
+
+    if for_vllm and is_prefill:
+        input_ids = _do_pad(input_ids, max_prompt_len, 0)
+        positions = _do_pad(positions, max_prompt_len, 0)
+        slot_mapping = _do_pad(slot_mapping, max_prompt_len, -1)
+
+    input_ids = to_torch(input_ids, torch_int_dtype)
+    positions = to_torch(positions, torch_int_dtype)
     seq_lens = to_torch(seq_lens, torch.int)
-    slot_mapping = to_torch(slot_mapping, torch.int)
+    slot_mapping = to_torch(slot_mapping, torch_int_dtype)
 
     if is_prefill and sliding_window:
         indices_within_window = to_torch(indices_within_window, torch.int)
@@ -240,14 +268,11 @@ def prepare_inputs(
         indices_within_window = None
 
     if not is_prefill:
+        max_block_table_len = (
+            max_context_len + CacheManager.block_size - 1
+        ) // CacheManager.block_size
 
-        def _pad_to_max(x: List[int], max_len: int) -> List[int]:
-            return x + [0] * (max_len - len(x))
-
-        padded_block_tables = [
-            _pad_to_max(block_table, max_num_blocks_per_seq)
-            for block_table in block_tables
-        ]
+        padded_block_tables = _do_pad(block_tables, max_block_table_len, 0)
         block_tables = to_torch(padded_block_tables, torch.int)
     else:
         block_tables = None

@@ -1,7 +1,6 @@
 import time
 import os
 from typing import List, Union, Tuple, Sequence
-from collections import defaultdict
 
 import structlog
 import torch
@@ -11,8 +10,7 @@ from transformers import AutoConfig
 from vllm.model_executor.layers.sampler import get_logits
 from vllm.model_executor.models.llama import LlamaForCausalLM
 from vllm.model_executor.models.qwen import QWenLMHeadModel
-from vllm.sequence import SequenceData
-from vllm.model_executor import InputMetadata
+from vllm.model_executor import InputMetadata, SamplingMetadata
 from vllm.sampling_params import SamplingParams
 from vllm.model_executor.parallel_utils.parallel_state import (
     initialize_model_parallel,
@@ -87,35 +85,32 @@ def profile_memory_usage(pt_model, seq_lens, num_hidden_layers):
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
 
-    sampling_params = SamplingParams(top_p=0.99)
-
-    seq_groups: List[Tuple[List[int], SamplingParams]] = []
-    seq_data = {}
-    input_tokens: List[int] = []
-    input_positions: List[int] = []
-    slot_mapping: List[int] = []
+    input_tokens: List[List[int]] = []
+    input_positions: List[List[int]] = []
+    slot_mapping: List[List[int]] = []
 
     for i, seq_len in enumerate(seq_lens):
-        seq_groups.append(([i], sampling_params))
         prompt_tokens = [0] * seq_len
-        seq_data[i] = SequenceData(prompt_tokens)
 
-        input_tokens.extend(prompt_tokens)
-        input_positions.extend(range(seq_len))
-        slot_mapping.extend([0] * seq_len)
+        input_tokens.append(prompt_tokens)
+        input_positions.append(list(range(seq_len)))
+        slot_mapping.append([0] * seq_len)
 
     input_ids = torch.cuda.LongTensor(input_tokens)
     positions = torch.cuda.LongTensor(input_positions)
-    slot_mapping_tensor = torch.cuda.IntTensor(slot_mapping)
+    slot_mapping_tensor = torch.cuda.LongTensor(slot_mapping)
+    prompt_lens_tensor = torch.cuda.LongTensor(seq_lens)
 
     input_metadata = InputMetadata(
-        seq_groups=seq_groups,
-        seq_data=seq_data,
-        prompt_lens=seq_lens,
+        is_prompt=True,
         slot_mapping=slot_mapping_tensor,
-        context_lens=torch.cuda.IntTensor([]),
+        prompt_lens=prompt_lens_tensor,
+        max_seq_len=None,
+        start_loc=None,
         max_context_len=0,
+        context_lens=torch.cuda.IntTensor([]),
         block_tables=torch.cuda.IntTensor([]),
+        use_cuda_graph=False,
     )
 
     kv_caches = [(None, None)] * num_hidden_layers
@@ -126,7 +121,6 @@ def profile_memory_usage(pt_model, seq_lens, num_hidden_layers):
             positions,
             kv_caches,
             input_metadata,
-            cache_events=None,
         )
 
     torch.cuda.synchronize()
@@ -197,37 +191,28 @@ def generate(
     sequence_ids = []
     prompt_lens = []
     num_sequences = []
-    seq_data = {}
-    seq_group_sequence_ids = defaultdict(list)
-    seq_group_sampling_params = {}
 
     for request in requests:
         if isinstance(request, PrefillRequest):
             sequence_ids.append(get_prompt_sequence_id(request.request_id))
             num_sequences.append(request.num_sequence)
             prompt_lens.append(len(request.token_ids))
-            seq_group_sequence_ids[request.request_id].append(sequence_ids[-1])
-            seq_group_sampling_params[request.request_id] = convert_sampling_params(
-                request.sampling_params
-            )
         else:
             sequence_ids.append(request.sequence_id)
             prompt_lens.append(request.prompt_token_counts)
-            req_id = request.sequence_id.request_id
-            seq_group_sequence_ids[req_id].append(request.sequence_id)
-            seq_group_sampling_params[req_id] = convert_sampling_params(
-                request.sampling_params
-            )
 
         all_token_ids.append(request.token_ids)
         sampling_params.append(request.sampling_params)
 
-        seq_data[sequence_ids[-1]] = SequenceData(request.token_ids)
+    selected_token_indices: List[int] = []
 
-    seq_groups: List[Tuple[List[SequenceId], SamplingParams]] = []
+    if is_prefill:
+        max_prompt_len = max(prompt_lens)
+        seq_start = 0
 
-    for req_id, seq_ids in seq_group_sequence_ids.items():
-        seq_groups.append((seq_ids, seq_group_sampling_params[req_id]))
+        for prompt_len in prompt_lens:
+            selected_token_indices.append(seq_start + prompt_len - 1)
+            seq_start += max_prompt_len
 
     (
         input_ids,
@@ -244,8 +229,7 @@ def generate(
         cache_info.decode_block_tables,
         sliding_window,
         is_prefill,
-        torch.long,
-        align=8,
+        for_vllm=True,
     )
 
     input_shape = input_ids.shape
@@ -261,43 +245,44 @@ def generate(
         max_context_len = torch.max(seq_lens)
         prompt_lens = []
 
+    prompt_lens = torch.cuda.LongTensor(prompt_lens)
+
     input_metadata = InputMetadata(
-        seq_groups=seq_groups,
-        seq_data=seq_data,
-        prompt_lens=prompt_lens,
+        is_prompt=is_prefill,
         slot_mapping=slot_mapping,
-        context_lens=context_lens,
+        prompt_lens=prompt_lens,
+        max_seq_len=None,
+        start_loc=None,
         max_context_len=max_context_len,
+        context_lens=context_lens,
         block_tables=block_tables,
+        use_cuda_graph=False,
+    )
+
+    sampling_metadata = SamplingMetadata(
+        seq_groups=None,
+        seq_data=None,
+        prompt_lens=prompt_lens,
+        selected_token_indices=torch.tensor(
+            selected_token_indices, dtype=torch.long, device="cuda"
+        ),
+        categorized_sample_indices=None,
     )
 
     with torch.no_grad():
-        # hidden_states = pt_model.transformer(
-        #     input_ids,
-        #     positions,
-        #     cache_blocks,
-        #     input_metadata,
-        #     # No need for this until parallel sampling is supported.
-        #     cache_events=None,
-        # )
         hidden_states = pt_model.model(
             input_ids,
             positions,
             cache_blocks,
             input_metadata,
-            # No need for this until parallel sampling is supported.
-            cache_events=None,
         )
 
-        if hidden_states.shape[0] != len(
-            input_metadata.prompt_lens
-        ) and hidden_states.shape[0] != len(input_metadata.context_lens):
-            logits = get_logits(
-                pt_model.lm_head.weight,
-                hidden_states,
-                input_metadata,
-                vocab_size,
-            )
+        logits = get_logits(
+            pt_model.lm_head.weight,
+            hidden_states,
+            sampling_metadata,
+            vocab_size,
+        )
 
         next_tokens = sample(logits, sampling_params, vocab_size)
 
@@ -378,7 +363,9 @@ class ModelRpcServer(rpyc.Service):
         return num_blocks
 
     def exposed_generate(
-        self, requests: Sequence[Union[PrefillRequest, DecodeRequest]], cache: KVCacheInfo
+        self,
+        requests: Sequence[Union[PrefillRequest, DecodeRequest]],
+        cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
         requests = obtain(requests)
         cache = obtain(cache)
@@ -429,7 +416,7 @@ def start_model_process(port):
 class ModelRpcClient:
     def __init__(self, num_shards, model_path, hf_config, engine_config):
         with ThreadPoolExecutor(num_shards) as executor:
-            ports = [3000 + i for i in range(num_shards)]  # TODO port
+            ports = [3010 + i for i in range(num_shards)]  # TODO port
             rets = executor.map(start_model_process, ports)
 
             self.model_servers = [x[0] for x in rets]
@@ -445,7 +432,7 @@ class ModelRpcClient:
             self.num_blocks = rets[0]
 
         def _func(
-            requests: Sequence[Union[PrefillRequest, DecodeRequest]], cache: KVCache
+            requests: Sequence[Union[PrefillRequest, DecodeRequest]], cache: KVCacheInfo
         ) -> List[TextGenerationResult]:
             def generate(i):
                 return self.model_servers[i].generate(requests, cache)
@@ -489,9 +476,11 @@ def init_torch_model(
     hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 
     # TODO
-    num_shards = 2
+    num_shards = 1
 
-    if not hasattr(hf_config, "num_key_value_heads") and hasattr(hf_config, "num_attention_heads"):
+    if not hasattr(hf_config, "num_key_value_heads") and hasattr(
+        hf_config, "num_attention_heads"
+    ):
         hf_config.num_key_value_heads = hf_config.num_attention_heads
 
     if not hasattr(hf_config, "sliding_window"):
@@ -521,7 +510,7 @@ def init_torch_model(
             backend="nccl",
             world_size=1,
             rank=0,
-            init_method="tcp://localhost:59157",  # port
+            init_method="tcp://localhost:59157",  # TODO port
         )
         initialize_model_parallel(1, 1)
 
