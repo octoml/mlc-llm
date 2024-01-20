@@ -1,6 +1,7 @@
 import time
 import os
 from typing import List, Union, Tuple, Sequence
+from pathlib import Path
 
 import structlog
 import torch
@@ -12,7 +13,6 @@ from vllm.model_executor.models.llama import LlamaForCausalLM
 from vllm.model_executor.models.qwen import QWenLMHeadModel
 from vllm.model_executor.models.phi import PhiForCausalLM
 from vllm.model_executor import InputMetadata, SamplingMetadata
-from vllm.sampling_params import SamplingParams
 from vllm.model_executor.parallel_utils.parallel_state import (
     initialize_model_parallel,
 )
@@ -37,7 +37,6 @@ from ..engine import (
     PROMPT_SEQEUNCE_INDEX,
     get_prompt_sequence_id,
     MLCServeEngineConfig,
-    SamplingParams as MLCSamplingParams,
 )
 from ..engine.model_module import (
     DecodeRequest,
@@ -47,16 +46,6 @@ from ..engine.model_module import (
 )
 
 LOG = structlog.stdlib.get_logger(__name__)
-
-
-def convert_sampling_params(mlc_params: MLCSamplingParams) -> SamplingParams:
-    return SamplingParams(
-        presence_penalty=mlc_params.presence_penalty,
-        frequency_penalty=mlc_params.frequency_penalty,
-        temperature=mlc_params.temperature,
-        top_p=mlc_params.top_p,
-        top_k=mlc_params.top_k,
-    )
 
 
 def init_cache_blocks(head_size, num_layers, num_heads, block_size, num_gpu_blocks):
@@ -90,7 +79,7 @@ def profile_memory_usage(pt_model, seq_lens, num_hidden_layers):
     input_positions: List[List[int]] = []
     slot_mapping: List[List[int]] = []
 
-    for i, seq_len in enumerate(seq_lens):
+    for seq_len in seq_lens:
         prompt_tokens = [0] * seq_len
 
         input_tokens.append(prompt_tokens)
@@ -329,8 +318,13 @@ def generate(
 
 class ModelRpcServer(rpyc.Service):
     def exposed_init_model(
-        self, tp_rank, num_shards, model_path, hf_config, engine_config
-    ):
+        self,
+        tp_rank: int,
+        num_shards: int,
+        model_path: Path,
+        hf_config: AutoConfig,
+        engine_config: MLCServeEngineConfig,
+    ) -> int:
         hf_config = obtain(hf_config)
         engine_config = obtain(engine_config)
         model_path = obtain(model_path)
@@ -425,7 +419,13 @@ def start_model_process(port):
 
 
 class ModelRpcClient:
-    def __init__(self, num_shards, model_path, hf_config, engine_config):
+    def __init__(
+        self,
+        num_shards: int,
+        model_path: Path,
+        hf_config: AutoConfig,
+        engine_config: MLCServeEngineConfig,
+    ):
         with ThreadPoolExecutor(num_shards) as executor:
             ports = [3010 + i for i in range(num_shards)]  # TODO port
             rets = executor.map(start_model_process, ports)
@@ -438,9 +438,8 @@ class ModelRpcClient:
                     i, num_shards, model_path, hf_config, engine_config
                 )
 
-            rets = [obtain(x) for x in executor.map(init_model, range(num_shards))]
-
-            self.num_blocks = rets[0]
+            rets = executor.map(init_model, range(num_shards))
+            self.num_blocks = obtain(list(rets)[0])
 
         def _func(
             requests: Sequence[Union[PrefillRequest, DecodeRequest]], cache: KVCacheInfo
@@ -459,7 +458,7 @@ class Model:
     def __init__(
         self,
         pt_model,
-        config,
+        config: AutoConfig,
     ):
         self.pt_model = pt_model
         self.vocab_size = config.vocab_size
@@ -482,12 +481,14 @@ class Model:
 
 
 def init_torch_model(
-    model_path, engine_config: MLCServeEngineConfig
+    model_path: Path, engine_config: MLCServeEngineConfig
 ) -> Tuple[TextGenerator, CacheManager, ModelArtifactConfig]:
     hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 
-    # TODO
-    num_shards = 1
+    if engine_config.num_shards is None:
+        raise RuntimeError("num_shards needs to be specifed for PyTorch models.")
+
+    num_shards = engine_config.num_shards
 
     if not hasattr(hf_config, "num_key_value_heads") and hasattr(
         hf_config, "num_attention_heads"
@@ -500,8 +501,8 @@ def init_torch_model(
     num_kv_heads = hf_config.num_key_value_heads // num_shards
 
     artifact_config = ModelArtifactConfig(
-        model_artifact_path=model_path,
-        num_shards=1,
+        model_artifact_path=str(model_path),
+        num_shards=num_shards,
         quantization=None,
         max_context_length=hf_config.max_position_embeddings,  # TODO,
         vocab_size=hf_config.vocab_size,
@@ -528,7 +529,7 @@ def init_torch_model(
         pt_model = load_model(hf_config, model_path)
         model = Model(pt_model, hf_config)
 
-        model.cache_blocks, num_blocks = profile_and_init_cache(
+        model.cache_blocks, num_blocks = profile_and_init_cache(  # type: ignore
             pt_model, hf_config.num_hidden_layers, hf_config, engine_config, num_shards
         )
 

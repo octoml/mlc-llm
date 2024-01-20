@@ -19,9 +19,11 @@ from mlc_serve.utils import get_default_mlc_serve_argparser, postproc_mlc_serve_
 
 def _test(args: argparse.Namespace):
     model_type = "tvm"
+    num_shards = None
 
     if not os.path.exists(args.model_artifact_path.joinpath("build_config.json")):
         model_type = "torch"
+        num_shards = args.num_shards
 
     engine_config = get_engine_config(
         {
@@ -30,6 +32,7 @@ def _test(args: argparse.Namespace):
             "min_decode_steps": args.min_decode_steps,
             "max_decode_steps": args.max_decode_steps,
             "model_type": model_type,
+            "num_shards": num_shards,
         }
     )
 

@@ -29,6 +29,7 @@ def get_default_mlc_serve_argparser(description="", allow_override=False):
     parser.add_argument("--max-decode-steps", type=int, default=56)
     parser.add_argument("--debug-logging", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--num-shards", type=int, default=1) # Needed for PT models
     return parser
 
 

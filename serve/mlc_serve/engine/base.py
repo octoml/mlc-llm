@@ -24,6 +24,7 @@ class MLCServeEngineConfig:
     max_decode_steps: int = 48
     init_timeout: int = 120
     model_type: str = "tvm"  # "tvm", "torch"
+    num_shards: Optional[int] = None  # Need to be specified for if model_type is "torch"
 
     @classmethod
     def _from_json(config_cls, json_obj: Dict[Any, Any]):
