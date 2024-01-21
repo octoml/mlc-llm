@@ -1,6 +1,7 @@
 import time
 import os
-from typing import List, Union, Tuple, Sequence
+import socket
+from typing import List, Union, Sequence, Tuple
 from pathlib import Path
 
 import structlog
@@ -330,6 +331,7 @@ class ModelRpcServer(rpyc.Service):
         model_path: Path,
         hf_config: AutoConfig,
         engine_config: MLCServeEngineConfig,
+        master_port: int,
     ) -> int:
         hf_config = obtain(hf_config)
         engine_config = obtain(engine_config)
@@ -349,7 +351,7 @@ class ModelRpcServer(rpyc.Service):
         torch.cuda.set_device(tp_rank)
 
         os.environ["MASTER_ADDR"] = str("127.0.0.1")
-        os.environ["MASTER_PORT"] = str(4000)  # TODO port
+        os.environ["MASTER_PORT"] = str(master_port)
 
         torch.distributed.init_process_group(
             backend="nccl",
@@ -429,21 +431,29 @@ class ModelRpcClient:
         model_path: Path,
         hf_config: AutoConfig,
         engine_config: MLCServeEngineConfig,
+        ports: List[int],
     ):
         assert engine_config.num_shards is not None
 
         self.num_shards = engine_config.num_shards
 
+        rpc_ports = ports[: self.num_shards]
+        master_port = ports[-1]
+
         with ThreadPoolExecutor(self.num_shards) as executor:
-            ports = [3010 + i for i in range(self.num_shards)]  # TODO port
-            rets = executor.map(start_model_process, ports)
+            rets = executor.map(start_model_process, rpc_ports)
 
             self.model_servers = [x[0] for x in rets]
             self.procs = [x[1] for x in rets]
 
             def init_model(i):
                 return self.model_servers[i].init_model(
-                    i, self.num_shards, model_path, hf_config, engine_config
+                    i,
+                    self.num_shards,
+                    model_path,
+                    hf_config,
+                    engine_config,
+                    master_port,
                 )
 
             rets = executor.map(init_model, range(self.num_shards))
@@ -463,6 +473,23 @@ class ModelRpcClient:
             return obtain(res[0])
 
 
+# Taken from sgl-project/sglang
+def alloc_usable_network_port(num):
+    port_list = []
+    for port in range(10000, 65536):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("", port))
+                port_list.append(port)
+            except socket.error:
+                pass
+
+            if len(port_list) == num:
+                break
+
+    return port_list
+
+
 class Model:
     def __init__(
         self,
@@ -471,15 +498,20 @@ class Model:
         engine_config: MLCServeEngineConfig,
     ):
         if engine_config.num_shards and engine_config.num_shards > 1:
-            self.model_rpc = ModelRpcClient(model_path, hf_config, engine_config)
+            num_needed_ports = engine_config.num_shards + 1
+            ports = alloc_usable_network_port(num_needed_ports)
+            assert len(ports) == num_needed_ports, "Not enough ports available."
+            self.model_rpc = ModelRpcClient(model_path, hf_config, engine_config, ports)
             self.num_blocks = self.model_rpc.num_blocks
             self.cache_blocks = None  # Owned by each remote shard
         else:
+            ports = alloc_usable_network_port(1)
+            assert len(ports) == 1
             torch.distributed.init_process_group(
                 backend="nccl",
                 world_size=1,
                 rank=0,
-                init_method="tcp://localhost:59157",  # TODO port
+                init_method=f"tcp://localhost:{ports[0]}",
             )
             initialize_model_parallel(1, 1)
 
