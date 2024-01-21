@@ -8,17 +8,16 @@ from .engine import AsyncEngineConnector, get_engine_config
 from .engine.staging_engine import StagingInferenceEngine
 from .engine.sync_engine import SynchronousInferenceEngine
 from .model.paged_cache_model import HfTokenizerModule, PagedCacheModelModule
-from .logging_utils import configure_logging
 from .utils import get_default_mlc_serve_argparser, postproc_mlc_serve_args
 
 
 def parse_args():
-    args = get_default_mlc_serve_argparser("MLC serve")
-    args.add_argument("--host", type=str, default="127.0.0.1")
-    args.add_argument("--port", type=int, default=8000)
-    parsed = args.parse_args()
-    postproc_mlc_serve_args(parsed)
-    return parsed
+    parser = get_default_mlc_serve_argparser(description="Launch mlc-serve")
+    parser.add_argument("--host", type=str, default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    args = parser.parse_args()
+    postproc_mlc_serve_args(args)
+    return args
 
 
 def create_engine(
@@ -32,9 +31,6 @@ def create_engine(
     |            `ndarray-cache.json` is especially important for Disco.
     |- model/ : stores info from hf model cards such as max context length and tokenizer
     """
-    if not os.path.exists(args.model_artifact_path):
-        raise Exception(f"Invalid local id: {args.local_id}")
-
     model_type = "tvm"
     num_shards = None
 
@@ -80,9 +76,6 @@ def create_engine(
 
 def run_server():
     args = parse_args()
-
-    log_level = "DEBUG" if args.debug_logging else "INFO"
-    configure_logging(enable_json_logs=True, log_level=log_level)
 
     with tempfile.TemporaryDirectory() as temp_dir:
         os.environ["PROMETHEUS_MULTIPROC_DIR"] = temp_dir
