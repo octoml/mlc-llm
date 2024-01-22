@@ -291,10 +291,10 @@ def generate(
             vocab_size,
         )
 
-        next_tokens = sample(logits, sampling_params, vocab_size)
-
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
+
+        next_tokens = sample(logits, sampling_params, vocab_size)
 
     outputs = []
 

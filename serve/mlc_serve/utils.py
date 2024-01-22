@@ -55,6 +55,8 @@ def create_mlc_engine(args: argparse.Namespace):
         model_type = "torch"
         num_shards = args.num_shards
 
+        assert num_shards is not None, "--num-shards needs to be provided for PT models."
+
         if num_shards > 1:
             import torch
             torch.multiprocessing.set_start_method("spawn")
