@@ -439,25 +439,28 @@ class ModelRpcClient:
 
         rpc_ports = ports[: self.num_shards]
         master_port = ports[-1]
+        self.executor = ThreadPoolExecutor(self.num_shards)
 
-        with ThreadPoolExecutor(self.num_shards) as executor:
-            rets = executor.map(start_model_process, rpc_ports)
+        rets = self.executor.map(start_model_process, rpc_ports)
 
-            self.model_servers = [x[0] for x in rets]
-            self.procs = [x[1] for x in rets]
+        self.model_servers = [x[0] for x in rets]
+        self.procs = [x[1] for x in rets]
 
-            def init_model(i):
-                return self.model_servers[i].init_model(
-                    i,
-                    self.num_shards,
-                    model_path,
-                    hf_config,
-                    engine_config,
-                    master_port,
-                )
+        def init_model(i):
+            return self.model_servers[i].init_model(
+                i,
+                self.num_shards,
+                model_path,
+                hf_config,
+                engine_config,
+                master_port,
+            )
 
-            rets = executor.map(init_model, range(self.num_shards))
-            self.num_blocks = obtain(list(rets)[0])
+        rets = self.executor.map(init_model, range(self.num_shards))
+        self.num_blocks = obtain(list(rets)[0])
+
+    def __del__(self):
+        self.executor.shutdown()
 
     def generate(
         self,
@@ -468,9 +471,8 @@ class ModelRpcClient:
             # This calls ModelRpcServer.exposed_generate(...) via RPC.
             return self.model_servers[i].generate(requests, cache)
 
-        with ThreadPoolExecutor(self.num_shards) as executor:
-            res = [obtain(x) for x in executor.map(_generate, range(self.num_shards))]
-            return obtain(res[0])
+        res = [obtain(x) for x in self.executor.map(_generate, range(self.num_shards))]
+        return obtain(res[0])
 
 
 # Taken from sgl-project/sglang
