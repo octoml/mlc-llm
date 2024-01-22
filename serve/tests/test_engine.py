@@ -14,54 +14,11 @@ from mlc_serve.engine import (
 from mlc_serve.engine.staging_engine import StagingInferenceEngine
 from mlc_serve.engine.sync_engine import SynchronousInferenceEngine
 from mlc_serve.model.paged_cache_model import HfTokenizerModule, PagedCacheModelModule
-from mlc_serve.utils import get_default_mlc_serve_argparser, postproc_mlc_serve_args
+from mlc_serve.utils import get_default_mlc_serve_argparser, postproc_mlc_serve_args, create_mlc_engine
 
 
 def _test(args: argparse.Namespace):
-    model_type = "tvm"
-    num_shards = None
-
-    if not os.path.exists(args.model_artifact_path.joinpath("build_config.json")):
-        model_type = "torch"
-        num_shards = args.num_shards
-
-        if num_shards > 1:
-            import torch
-            torch.multiprocessing.set_start_method("spawn")
-
-    engine_config = get_engine_config(
-        {
-            "use_staging_engine": args.use_staging_engine,
-            "max_num_batched_tokens": args.max_num_batched_tokens,
-            "min_decode_steps": args.min_decode_steps,
-            "max_decode_steps": args.max_decode_steps,
-            "model_type": model_type,
-            "num_shards": num_shards,
-        }
-    )
-
-    if args.use_staging_engine:
-        if model_type == "tvm":
-            tokenizer_path = args.model_artifact_path.joinpath("model")
-        else:
-            tokenizer_path = args.model_artifact_path
-
-        engine = StagingInferenceEngine(
-            tokenizer_module=HfTokenizerModule(tokenizer_path),
-            model_module_loader=PagedCacheModelModule,
-            model_module_loader_kwargs={
-                "model_artifact_path": args.model_artifact_path,
-                "engine_config": engine_config,
-            },
-        )
-        engine.start()
-    else:
-        engine = SynchronousInferenceEngine(
-            PagedCacheModelModule(
-                model_artifact_path=args.model_artifact_path,
-                engine_config=engine_config,
-            )
-        )
+    engine = create_mlc_engine(args)
 
     sampling_params_greedy = SamplingParams(
         temperature=0.0,

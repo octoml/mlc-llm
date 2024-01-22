@@ -48,19 +48,37 @@ def postproc_mlc_serve_args(args):
 
 
 def create_mlc_engine(args: argparse.Namespace):
+    model_type = "tvm"
+    num_shards = None
+
+    if not os.path.exists(args.model_artifact_path.joinpath("build_config.json")):
+        model_type = "torch"
+        num_shards = args.num_shards
+
+        if num_shards > 1:
+            import torch
+            torch.multiprocessing.set_start_method("spawn")
+
     engine_config = get_engine_config(
         {
             "use_staging_engine": args.use_staging_engine,
             "max_num_batched_tokens": args.max_num_batched_tokens,
             "min_decode_steps": args.min_decode_steps,
             "max_decode_steps": args.max_decode_steps,
+            "model_type": model_type,
+            "num_shards": num_shards,
         }
     )
 
     # TODO(@team): There is a type mismatch in the definition. Let's fix this when have time.
     if args.use_staging_engine:
-        engine = StagingInferenceEngine(  # type: ignore
-            tokenizer_module=HfTokenizerModule(args.model_artifact_path),
+        if model_type == "tvm":
+            tokenizer_path = args.model_artifact_path.joinpath("model")
+        else:
+            tokenizer_path = args.model_artifact_path
+
+        engine = StagingInferenceEngine(
+            tokenizer_module=HfTokenizerModule(tokenizer_path),
             model_module_loader=PagedCacheModelModule,  # type: ignore
             model_module_loader_kwargs={
                 "model_artifact_path": args.model_artifact_path,
@@ -69,10 +87,10 @@ def create_mlc_engine(args: argparse.Namespace):
         )
         engine.start()
     else:
-        engine = SynchronousInferenceEngine(  # type: ignore
-            PagedCacheModelModule(  # type: ignore
+        engine = SynchronousInferenceEngine(
+            PagedCacheModelModule(
                 model_artifact_path=args.model_artifact_path,
                 engine_config=engine_config,
-            )
+            )  # type: ignore
         )
     return engine
