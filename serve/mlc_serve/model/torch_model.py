@@ -221,6 +221,8 @@ def generate(
             selected_token_indices.append(seq_start + prompt_len - 1)
             seq_start += max_prompt_len
 
+    torch.cuda.nvtx.range_push(f"Prepare input")
+
     (
         input_ids,
         positions,
@@ -238,6 +240,8 @@ def generate(
         is_prefill,
         for_vllm=True,
     )
+
+    torch.cuda.nvtx.range_pop()
 
     input_shape = input_ids.shape
 
@@ -379,8 +383,10 @@ class ModelRpcServer(rpyc.Service):
         requests: Sequence[Union[PrefillRequest, DecodeRequest]],
         cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
+        torch.cuda.nvtx.range_push(f"Obtain input")
         requests = obtain(requests)
         cache = obtain(cache)
+        torch.cuda.nvtx.range_pop()
         return generate(
             requests,
             cache,
@@ -472,7 +478,7 @@ class ModelRpcClient:
             return self.model_servers[i].generate(requests, cache)
 
         res = [obtain(x) for x in self.executor.map(_generate, range(self.num_shards))]
-        return obtain(res[0])
+        return res[0]
 
 
 # Taken from sgl-project/sglang
