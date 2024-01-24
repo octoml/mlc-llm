@@ -1188,7 +1188,6 @@ def emit_paged_kv_cache_op(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
     num_heads = config.num_key_value_heads
     head_dim = config.hidden_size // config.num_attention_heads
 
-    # fmt: off
     @T.prim_func
     def kv_cache_transpose_append(
         var_pages: T.handle,
@@ -1207,7 +1206,11 @@ def emit_paged_kv_cache_op(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
         page_size = T.SizeVar("page_size", "int64")
         num_pages = T.int64()
 
-        pages = T.match_buffer(var_pages, (num_pages, num_layers, 2, num_heads, page_size, head_dim), config.dtype)
+        pages = T.match_buffer(
+            var_pages,
+            (num_pages, num_layers, 2, num_heads, page_size, head_dim),
+            config.dtype,
+        )
         k_data = T.match_buffer(var_k_data, (ntoken, num_heads, head_dim), config.dtype)
         v_data = T.match_buffer(var_v_data, (ntoken, num_heads, head_dim), config.dtype)
         last_page_offset = T.match_buffer(var_last_page_offset, (nseq,), "int32")
@@ -1219,10 +1222,23 @@ def emit_paged_kv_cache_op(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
         for global_pos, h, f in T.grid(ntoken, num_heads, head_dim):
             with T.block("k_transpose_append"):
                 vgpos, vh, vf = T.axis.remap("SSS", [global_pos, h, f])
-                seq_idx: T.int64 = T.Cast("int64", pos2seqidx[vgpos])
-                seqlen: T.int64 = T.Cast("int64", (page_table_indptr[seq_idx + 1] - page_table_indptr[seq_idx] - 1) * page_size + last_page_offset[seq_idx])
+
+                seq_idx = T.meta_var(pos2seqidx[vgpos].astype("int64"))
+                seqlen = T.meta_var(
+                    (
+                        (page_table_indptr[seq_idx + 1] - page_table_indptr[seq_idx] - 1)
+                        * page_size
+                        + last_page_offset[seq_idx]
+                    ).astype("int64")
+                )
+
                 pages[
-                    page_table_values[page_table_indptr[seq_idx] + T.floordiv(seqlen - (append_length_indptr[seq_idx + 1] - vgpos), page_size)],
+                    page_table_values[
+                        page_table_indptr[seq_idx]
+                        + T.floordiv(
+                            seqlen - (append_length_indptr[seq_idx + 1] - vgpos), page_size
+                        )
+                    ],
                     layer_id,
                     0,
                     vh,
@@ -1231,17 +1247,29 @@ def emit_paged_kv_cache_op(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
                 ] = k_data[vgpos, vh, vf]
             with T.block("v_transpose_append"):
                 vgpos, vh, vf = T.axis.remap("SSS", [global_pos, h, f])
-                seq_idx: T.int64 = T.Cast("int64", pos2seqidx[vgpos])
-                seqlen: T.int64 = T.Cast("int64", (page_table_indptr[seq_idx + 1] - page_table_indptr[seq_idx] - 1) * page_size + last_page_offset[seq_idx])
+
+                seq_idx = T.meta_var(pos2seqidx[vgpos].astype("int64"))
+                seqlen = T.meta_var(
+                    (
+                        (page_table_indptr[seq_idx + 1] - page_table_indptr[seq_idx] - 1)
+                        * page_size
+                        + last_page_offset[seq_idx]
+                    ).astype("int64")
+                )
+
                 pages[
-                    page_table_values[page_table_indptr[seq_idx] + T.floordiv(seqlen - (append_length_indptr[seq_idx + 1] - vgpos), page_size)],
+                    page_table_values[
+                        page_table_indptr[seq_idx]
+                        + T.floordiv(
+                            seqlen - (append_length_indptr[seq_idx + 1] - vgpos), page_size
+                        )
+                    ],
                     layer_id,
                     1,
                     vh,
                     T.floormod(seqlen - (append_length_indptr[seq_idx + 1] - vgpos), page_size),
                     vf,
                 ] = v_data[vgpos, vh, vf]
-    # fmt: on
 
     bb.add_func(kv_cache_transpose_append, "kv_cache_transpose_append")
     bb.add_func(relax.extern("paged_kv_cache.attention_kernel_prefill"), "attention_prefill")
