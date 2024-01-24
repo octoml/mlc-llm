@@ -504,7 +504,7 @@ def init_tvm_model(
         except tvm.error.InternalError:
             raise RuntimeError(
                 f"Memory profiling failed with max_num_batched_tokens = "
-                 "{engine_config.max_num_batched_tokens}."
+                "{engine_config.max_num_batched_tokens}."
             )
     else:
         num_blocks = 500

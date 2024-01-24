@@ -14,6 +14,7 @@ from .base import (
 )
 from ..model.base import ModelArtifactConfig
 from .sampling_params import SamplingParams
+from .constrained_sampling import JSONLogitsProcessor
 
 
 @dataclass
@@ -24,6 +25,7 @@ class PrefillRequest:
     # Number of sequences to generate
     num_sequence: int
     sampling_params: SamplingParams
+    logit_processor: JSONLogitsProcessor
 
     # Extension for multi-modal model
     # class ImagePayload:
@@ -39,6 +41,7 @@ class DecodeRequest:
     # Decoded tokens for this sequence
     token_ids: List[int]
     sampling_params: SamplingParams
+    logit_processor: JSONLogitsProcessor
 
 
 @dataclass

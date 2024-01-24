@@ -6,7 +6,7 @@ based on https://github.com/vllm-project/vllm/blob/ac5cf86aa6aebbf9e42df51f7e377
 from dataclasses import dataclass
 from enum import IntEnum
 from functools import cached_property
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 _SAMPLING_EPS = 1e-5
 LOGPROB_TOP_K_MAX = 5
@@ -73,6 +73,7 @@ class SamplingParams:
     # Currently, it is unclear what is the best way to fetch this info and
     # check in `_verify_args` without this field. Follow-up when we have a better idea.
     vocab_size = 32000
+    json_schema: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
         if self.logit_bias:

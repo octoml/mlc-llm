@@ -329,7 +329,7 @@ class GenerationLoopWorker(EngineBase):
 
     def _get_requests_to_process(self):
         requests, is_prompt_batch, token_counts = get_requests_to_process(
-            self.current_batch.values(), self.cache_manager
+            self.current_batch.values(), self.cache_manager, self.tokenizer
         )
 
         if is_prompt_batch:

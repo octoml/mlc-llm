@@ -32,6 +32,7 @@ from .model_module import (
 )
 from ..model.base import ModelArtifactConfig
 from ..openai_logprob_protocol import LogprobsContent, TopLogprobs
+from .constrained_sampling import JSONLogitsProcessor
 
 LOG = structlog.stdlib.get_logger(__name__)
 
@@ -240,7 +241,9 @@ def prepare_output(
 
 
 def get_requests_to_process(
-    current_states: list[RequestState], cache_manager: KVCacheManager
+    current_states: list[RequestState],
+    cache_manager: KVCacheManager,
+    tokenizer: TokenizerP,
 ) -> Tuple[list[RequestType], bool, int]:
     requests: list[RequestType] = []
     # TODO: consider having hybrid batch if the underlying attention kernel supports
@@ -308,6 +311,9 @@ def get_requests_to_process(
                         token_ids=token_ids,
                         num_sequence=state.num_sequences,
                         sampling_params=state.sampling_params,
+                        logit_processor=JSONLogitsProcessor(
+                            state.sampling_params.json_schema, tokenizer._tokenizer
+                        ),
                     )
                 )
 
@@ -329,6 +335,9 @@ def get_requests_to_process(
                             prompt_token_counts=prompt_counts,
                             token_ids=gen_seq.generated_token_ids,
                             sampling_params=state.sampling_params,
+                            logit_processor=JSONLogitsProcessor(
+                                state.sampling_params.json_schema, tokenizer._tokenizer
+                            ),
                         )
                     )
                     cache_manager.extend(
