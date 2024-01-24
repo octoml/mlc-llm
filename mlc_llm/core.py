@@ -1207,6 +1207,13 @@ def build_model_from_args(args: argparse.Namespace):
             args, config
         )
 
+        mod.show(
+            name="Initial",
+            show_all_struct_info=False,
+            black_format=True,
+        )
+        tvm.tir.analysis.verify_well_formed(mod)
+
         if args.model_category == "mistral":
             args.sliding_window = model_config.sliding_window
             # This line is introduced by the merge with upstream
@@ -1310,6 +1317,8 @@ def build_model_from_args(args: argparse.Namespace):
             show_all_struct_info=False,
             black_format=True,
         )
+
+        tvm.tir.analysis.verify_well_formed(mod)
 
         utils.debug_dump_script(mod, "mod_deploy.py", args)
 

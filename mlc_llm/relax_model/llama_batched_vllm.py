@@ -867,7 +867,7 @@ def get_model(args, hf_config):
 
     mod.update_global_info("vdevice", [cpu_dev])
 
-    if args.build_model_only:
-        return mod, param_manager, None, config
+    # if args.build_model_only:
+    #     return mod, param_manager, None, config
 
     return setup_params(mod, param_manager, dtype, config, args)
