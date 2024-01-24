@@ -380,8 +380,7 @@ class BuildArgs:
         default=0,
         metadata={
             "help": (
-                "The number of attention sinks to keep in cache."
-                "Only supported on mistral yet."
+                "The number of attention sinks to keep in cache." "Only supported on mistral yet."
             ),
         },
     )
@@ -462,11 +461,15 @@ def _parse_args(parsed) -> argparse.Namespace:
     utils.argparse_postproc_common(parsed)
 
     if parsed.use_vllm_attention:
-        print("WARNING: --use-vllm-attention is deprecated. Use --paged-kv-cache-type vllm instead.")
+        print(
+            "WARNING: --use-vllm-attention is deprecated. Use --paged-kv-cache-type vllm instead."
+        )
         parsed.paged_kv_cache_type = "vllm"
 
     if parsed.paged_kv_cache_type in ["vllm", "flash-decoding"]:
-        assert parsed.enable_batching, "--enable_batching is required for using vLLM or Flash-Decoding."
+        assert (
+            parsed.enable_batching
+        ), "--enable_batching is required for using vLLM or Flash-Decoding."
         assert parsed.target_kind == "cuda", "vLLM and Flash-Decoding are only supported for CUDA."
 
         if parsed.paged_kv_cache_type == "vllm":
@@ -491,7 +494,9 @@ def _parse_args(parsed) -> argparse.Namespace:
     artifact_tag = parsed.artifact_tag if parsed.artifact_tag else "-".join(model_name)
     parsed.artifact_path = os.path.join(parsed.artifact_path, artifact_tag)
 
-    parsed.lib_name = f"{parsed.model}-{parsed.quantization.name}-{parsed.target_kind}.{parsed.lib_format}"
+    parsed.lib_name = (
+        f"{parsed.model}-{parsed.quantization.name}-{parsed.target_kind}.{parsed.lib_format}"
+    )
     parsed.lib_path = os.path.join(parsed.artifact_path, parsed.lib_name)
 
     return parsed
@@ -582,43 +587,12 @@ def get_cuda_sm_version():
     return sm
 
 
-def mod_transform_before_build(
-    mod: tvm.IRModule,
+def optimize_mod_pipeline(
     args: argparse.Namespace,
     config: Dict,
-) -> tvm.IRModule:
+) -> tvm.ir.transform.Pass:
     """First-stage: Legalize ops and trace"""
-    if args.model.startswith("minigpt"):
-        model_names = ["embed"]
-    else:
-        model_names = [
-            "prefill",
-            "decode",
-        ]
-
-        if args.paged_kv_cache_type in ["vllm", "flash-decoding"]:
-            # This is equivalent to prefill but without KV cache. It is used for
-            # determining the number of paged cache blocks that can be allocated.
-            model_names.append("evaluate")
-            model_names.append("evaluate_multi_query")
-
-            if args.paged_kv_cache_type == "flash-decoding":
-                model_names.append("decode_multi_query")
-        else:
-            model_names += [
-                "create_kv_cache",
-                "softmax_with_temperature",
-                "get_metadata",
-            ]
-
-        if args.sep_embed:
-            model_names = ["embed", "prefill_with_embed"] + model_names[1:]
-            if args.enable_batching:
-                model_names[2] = "decode_with_embed"
-        if args.model.lower().startswith("rwkv-"):
-            model_names += ["reset_kv_cache"]
-
-    mod = relax.transform.BundleModelParams()(mod)
+    seq = []
 
     use_ft_quant = args.quantization.name in [
         "q4f16_ft",
@@ -626,7 +600,7 @@ def mod_transform_before_build(
         "q4f16_ft_group",
         "q8f16_ft_group",
     ]
-    mod = mlc_llm.transform.FuseDecodeTranspose(skip_gemm=not use_ft_quant)(mod)
+    seq.append(mlc_llm.transform.FuseDecodeTranspose(skip_gemm=not use_ft_quant))
 
     if (
         hasattr(config, "num_attention_heads")
@@ -643,13 +617,15 @@ def mod_transform_before_build(
         if max_seq_len:
             num_key_value_heads = config.get_num_key_value_heads()
             # pylint: disable=no-value-for-parameter
-            mod = fuse_split_rotary_embedding(
-                config.num_attention_heads // args.num_shards,
-                num_key_value_heads // args.num_shards,
-                config.hidden_size // args.num_shards,
-                config.position_embedding_base,
-                batched=args.enable_batching,
-            )(mod)
+            seq.append(
+                fuse_split_rotary_embedding(
+                    config.num_attention_heads // args.num_shards,
+                    num_key_value_heads // args.num_shards,
+                    config.hidden_size // args.num_shards,
+                    config.position_embedding_base,
+                    batched=args.enable_batching,
+                )
+            )
 
     if args.target_kind == "cuda":
         patterns = []
@@ -659,8 +635,8 @@ def mod_transform_before_build(
         if has_cutlass and not args.no_cutlass_attn:
             # pylint: disable=no-value-for-parameter
             if args.use_flash_attn_mqa:
-                mod = rewrite_attention(use_flash_mqa=True)(mod)
-            mod = rewrite_attention(use_flash_mqa=False)(mod)
+                seq.append(rewrite_attention(use_flash_mqa=True))
+            seq.append(rewrite_attention(use_flash_mqa=False))
             patterns += get_patterns_with_prefix("cutlass.attention")
 
         if has_cutlass and not args.no_cutlass_norm:
@@ -691,42 +667,43 @@ def mod_transform_before_build(
             if hasattr(config, "rms_norm_eps"):
                 options["cutlass"]["rms_eps"] = config.rms_norm_eps
 
-            mod = tvm.transform.Sequential(
+            seq.extend(
                 [
                     relax.transform.FuseOpsByPattern(
                         patterns, bind_constants=False, annotate_codegen=True
                     ),
                     annotate_workspace,
                     relax.transform.AllocateWorkspace(),
-                    relax.transform.RunCodegen(options, entry_functions=model_names),
+                    relax.transform.RunCodegen(options),
                 ]
-            )(mod)
+            )
 
-    mod = mlc_llm.transform.FuseTransposeMatmul()(mod)
-    mod = relax.pipeline.get_pipeline()(mod)  # pylint: disable=no-value-for-parameter
-    mod = mlc_llm.transform.FuseDecodeMatmulEwise()(mod)
-    mod = mlc_llm.transform.FuseDecodeTake()(mod)
-    mod = relax.transform.DeadCodeElimination(model_names)(mod)
-    mod = mlc_llm.transform.CleanUpTIRAttrs()(mod)
-    mod_deploy = mod
+    seq.extend(
+        [
+            mlc_llm.transform.FuseTransposeMatmul(),
+            relax.pipeline.get_pipeline(),
+            mlc_llm.transform.FuseDecodeMatmulEwise(),
+            mlc_llm.transform.FuseDecodeTake(),
+            relax.transform.DeadCodeElimination(),
+            mlc_llm.transform.CleanUpTIRAttrs(),
+        ]
+    )
 
-    utils.debug_dump_script(mod_deploy, "mod_deploy.py", args)
+    return tvm.ir.transform.Sequential(seq, name="mlc_llm.core.optimize_mod_pipeline")
 
-    return mod_deploy
 
-def dump_build_config(
-    args: argparse.Namespace
-):
+def dump_build_config(args: argparse.Namespace):
     build_config_path = os.path.join(args.artifact_path, "build_config.json")
     config: Dict[str, Any] = {
         "num_shards": args.num_shards,
         "quantization": args.quantization.name,
         "paged_kv_cache_type": args.paged_kv_cache_type,
         "library_name": args.lib_name,
-        "build_options": str(args)
+        "build_options": str(args),
     }
     with open(build_config_path, "w", encoding="utf-8") as outfile:
         json.dump(config, outfile, indent=4)
+
 
 def dump_mlc_chat_config(
     args: argparse.Namespace,
@@ -843,7 +820,12 @@ def build_model_from_args(args: argparse.Namespace):
             "and it is highly recommended to use q4f16_1 instead"
         )
 
-    use_ft_quant = args.quantization.name in ["q4f16_ft", "q8f16_ft", "q4f16_ft_group", "q8f16_ft_group"]
+    use_ft_quant = args.quantization.name in [
+        "q4f16_ft",
+        "q8f16_ft",
+        "q4f16_ft_group",
+        "q8f16_ft_group",
+    ]
 
     if args.num_shards > 1:
         if (not args.build_model_only) and (not args.convert_weights_only):
@@ -916,7 +898,9 @@ def build_model_from_args(args: argparse.Namespace):
             # Run pre-quantization if provided.
             args.model_path = param_manager.run_pre_quantize(args.model_path)
             param_manager.init_torch_pname_to_bin_name(args.use_safetensors)
-            parameter_transforms.append(param_manager.create_parameter_transformation(optimize_parameter_order=False)) # disable to prevent errors
+            parameter_transforms.append(
+                param_manager.create_parameter_transformation(optimize_parameter_order=False)
+            )  # disable to prevent errors
 
             # Run pre-sharding if required
             if args.num_shards > 1 and args.use_presharded_weights:
@@ -964,7 +948,9 @@ def build_model_from_args(args: argparse.Namespace):
 
                 params = preprocessed
 
-            utils.save_params(params, args.artifact_path, args.num_shards if args.use_presharded_weights else 1)
+            utils.save_params(
+                params, args.artifact_path, args.num_shards if args.use_presharded_weights else 1
+            )
 
             if not args.enable_batching:
                 if args.model_category == "rwkv" or args.model_category == "rwkv_world":
@@ -1010,7 +996,9 @@ def build_model_from_args(args: argparse.Namespace):
                 elif "max_position_embeddings" in config:
                     max_context_length = config["max_position_embeddings"]
                 else:
-                    raise Exception("The model config should contain information about maximum context length.")
+                    raise Exception(
+                        "The model config should contain information about maximum context length."
+                    )
 
             # Overwrite some configs
             config["max_context_length"] = max_context_length
@@ -1029,7 +1017,7 @@ def build_model_from_args(args: argparse.Namespace):
         if args.convert_weights_only:
             exit(0)
 
-        mod = mod_transform_before_build(mod, args, model_config)
+        mod = optimize_mod_pipeline(args, model_config)(mod)
         if args.num_shards > 1:
             # We require a "create_sharding_info" function for all
             # multi-GPU models, even if they are using pre-sharded
