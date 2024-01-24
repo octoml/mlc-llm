@@ -248,6 +248,7 @@ class Model:
         )
 
         input_shape = input_ids.shape
+        cs_input_ids = input_ids
 
         if self.disco_session:
             input_ids = copy_to_worker_0(self.disco_session, input_ids)
@@ -330,8 +331,14 @@ class Model:
             cache.pending_copy_from_to = []
 
         try:
-            next_tokens = sample(logits, sampling_params, self.vocab_size)
+            cs_input_ids = cs_input_ids.asnumpy().tolist()
+            cs_logits = torch.from_dlpack(logits.to_dlpack())
+            new_logits = requests[0].logit_processor(0, cs_input_ids, cs_logits)
+            new_logits = tvm.nd.from_dlpack(torch.utils.dlpack.to_dlpack(new_logits))
+
+            next_tokens = sample(new_logits, sampling_params, self.vocab_size)
             assert next_tokens is not None
+            LOG.info(f"next tokens:{next_tokens}")
             outputs = []
             for i, (sequence_id, new_token) in enumerate(
                 zip(sequence_ids, next_tokens)

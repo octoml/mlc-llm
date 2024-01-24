@@ -7,6 +7,7 @@ from typing import Optional, Protocol, Union, List, Sequence
 from .base import ChatMessage, RequestId, MLCServeEngineConfig, RequestState, SequenceId
 from ..model.base import ModelArtifactConfig
 from .sampling_params import SamplingParams
+from .constrained_sampling import JSONLogitsProcessor
 
 
 @dataclass
@@ -16,6 +17,7 @@ class PrefillRequest:
     # Number of sequences to generate
     num_sequence: int
     sampling_params: SamplingParams
+    logit_processor: JSONLogitsProcessor
 
     # Extension for multi-modal model
     # class ImagePayload:
@@ -31,6 +33,7 @@ class DecodeRequest:
     # All tokens for this request, including prompt
     token_ids: List[int]
     sampling_params: SamplingParams
+    logit_processor: JSONLogitsProcessor
 
 
 @dataclass

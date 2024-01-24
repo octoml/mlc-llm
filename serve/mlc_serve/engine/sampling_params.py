@@ -7,7 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from enum import IntEnum
 from functools import cached_property
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 
 _SAMPLING_EPS = 1e-5
@@ -58,6 +58,7 @@ class SamplingParams:
     appeared_tokens_freq: Dict[int, int] = None
     logit_bias_index: list[int] = None
     logit_bias_value: list[float] = None
+    json_schema: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
         self.appeared_tokens_freq = {}

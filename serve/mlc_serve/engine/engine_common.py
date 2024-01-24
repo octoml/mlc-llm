@@ -27,6 +27,7 @@ from .model_module import (
     Tokenizer as TokenizerP,
 )
 from ..model.base import ModelArtifactConfig
+from .constrained_sampling import JSONLogitsProcessor
 
 LOG = structlog.stdlib.get_logger(__name__)
 
@@ -176,7 +177,7 @@ def update_sequence(
 
 
 def get_requests_to_process(
-    current_states: list[RequestState], cache_manager: KVCacheManager
+    current_states: list[RequestState], cache_manager: KVCacheManager, tokenizer: TokenizerP
 ) -> Tuple[list[Union[PrefillRequest, DecodeRequest]], bool, int]:
     requests: list[Union[PrefillRequest, DecodeRequest]] = []
     # TODO: consider having hybrid batch if the underlying attention kernel supports
@@ -199,6 +200,7 @@ def get_requests_to_process(
                         + state.generation_sequences[0].generated_token_ids,
                         num_sequence=state.num_sequences,
                         sampling_params=state.sampling_params,
+                        logit_processor=JSONLogitsProcessor(state.sampling_params.json_schema, tokenizer._tokenizer),
                     )
                 )
 
@@ -220,6 +222,7 @@ def get_requests_to_process(
                             prompt_token_counts=prompt_counts,
                             token_ids=gen_seq.generated_token_ids,
                             sampling_params=state.sampling_params,
+                            logit_processor=JSONLogitsProcessor(state.sampling_params.json_schema, tokenizer._tokenizer),
                         )
                     )
                     cache_manager.extend(
