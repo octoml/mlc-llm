@@ -65,7 +65,7 @@ def create_request(
         debug_options=DebugOptions(ignore_eos=ignore_eos),
     )
 
-class Country(BaseModel):
+class France(BaseModel):
     capital: str
 
 def test_smoke(
@@ -75,7 +75,7 @@ def test_smoke(
     num_requests=2,
     ignore_eos=False,
 ):
-    prompt = "what is the capital of france?"
+    prompt = "what is the capital of France?"
     engine = create_engine(
         model_artifact_path,
         use_staging_engine,
@@ -89,10 +89,10 @@ def test_smoke(
             temp=0,
             freq_pen=0,
             pre_pen=0,
-            max_tokens=512,
+            max_tokens=30,
             stop=None,
             ignore_eos=ignore_eos,
-            json_schema=Country.model_json_schema(),
+            json_schema=France.model_json_schema(),
         )
         for n in range(1, num_requests)
     ]
@@ -107,7 +107,7 @@ def test_smoke(
             seq = res.sequences[0]
 
             if seq.is_finished:
-                print("finished")
+                print(f"finish reason: {seq.finish_reason}")
                 # assert (
                 #     seq.num_generated_tokens
                 #     == requests[int(res.request_id)].stopping_criteria.max_tokens
