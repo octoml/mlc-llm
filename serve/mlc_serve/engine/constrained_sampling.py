@@ -39,7 +39,7 @@ class RegexLogitsProcessor:
             self.fsm_state[seq_id] = self.fsm.next_state(
                 self.fsm_state[seq_id], last_token
             )
-        
+
         allowed_tokens = self.fsm.allowed_token_ids(self.fsm_state[seq_id])
 
         mask = torch.full((scores.shape[-1],), -math.inf, device=scores.device)
@@ -91,3 +91,4 @@ class JSONLogitsProcessor(RegexLogitsProcessor):
             schema = json.dumps(schema)
         regex_string = build_regex_from_object(schema)
         super().__init__(regex_string, tokenizer)
+
