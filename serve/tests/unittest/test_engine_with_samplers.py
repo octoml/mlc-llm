@@ -1,3 +1,4 @@
+import json
 from mlc_serve.engine import (
     Request,
     ChatMessage,
@@ -13,6 +14,8 @@ from mlc_serve.model.base import get_model_artifact_config
 from mlc_serve.model.paged_cache_model import HfTokenizerModule, PagedCacheModelModule
 from mlc_serve.utils import get_default_mlc_serve_argparser, postproc_mlc_serve_args
 import random
+from pydantic import BaseModel
+from typing import List
 
 
 def create_engine(
@@ -56,10 +59,11 @@ def create_request(
     pre_pen,
     max_tokens,
     stop,
-    ignore_eos,
+    ignore_eos=False,
     top_logprobs=0,
     logprobs=False,
     logit_bias=None,
+    json_schema=None,
 ):
     return Request(
         request_id=str(idx),
@@ -71,6 +75,7 @@ def create_request(
             logit_bias=logit_bias,
             logprobs=logprobs,
             top_logprobs=top_logprobs,
+            json_schema=json_schema,
         ),
         stopping_criteria=StoppingCriteria(max_tokens=max_tokens, stop_sequences=stop),
         debug_options=DebugOptions(ignore_eos=ignore_eos),
@@ -334,6 +339,96 @@ def _test_logprobs_mixed_requests(
                 generated[int(res.request_id)] += seq.delta
 
 
+# These three models are used in _test_json_mode
+class France(BaseModel):
+    capital: str
+
+
+class Snow(BaseModel):
+    color: str
+
+
+class SnowList(BaseModel):
+    snow: List[Snow]
+
+
+def _test_json_mode(
+    engine,
+):
+    requests = [
+        # test France schema
+        create_request(
+            idx=str(0),
+            prompt="what is the capital of France?",
+            temp=0,
+            freq_pen=0,
+            pre_pen=0,
+            max_tokens=30,
+            stop=None,
+            ignore_eos=False,
+            json_schema=France.model_json_schema(),
+        ),
+        # test with no JSON schema
+        create_request(
+            idx=str(1),
+            prompt="Hello",
+            temp=0,
+            freq_pen=0,
+            pre_pen=0,
+            max_tokens=30,
+            stop=None,
+            ignore_eos=False,
+        ),
+        # test Snow schema
+        create_request(
+            idx=str(2),
+            prompt="what is the color of the snow?",
+            temp=0,
+            freq_pen=0,
+            pre_pen=0,
+            max_tokens=30,
+            stop=None,
+            ignore_eos=False,
+            json_schema=Snow.model_json_schema(),
+        ),
+        # test SnowList schema (nested structure)
+        create_request(
+            idx=str(3),
+            prompt="Quick Facts About Snow | National Snow and Ice Data Center When light reflects off it, snow appears white. The many sides of a snowflake scatter light, diffusing the color spectrum in many directions. Snow can look dark when dust, or pollution, cover it. Fresh-water algae that loves snow can turn it into other colors like orange, blue, or watermelon pink. List the colors of snow.",
+            temp=0,
+            freq_pen=0,
+            pre_pen=0,
+            max_tokens=256,
+            stop=None,
+            ignore_eos=False,
+            json_schema=SnowList.model_json_schema(),
+        ),
+    ]
+    num_requests = len(requests)
+    engine.add(requests)
+
+    generated = ["" for _ in range(num_requests)]
+
+    while engine.has_pending_requests():
+        results = engine.step()
+        for res in results.outputs:
+            assert len(res.sequences) == 1
+            seq = res.sequences[0]
+
+            if not seq.is_finished:
+                generated[int(res.request_id)] += seq.delta
+
+    for i, out_text in enumerate(generated):
+        if i == 0:
+            France.model_validate(json.loads(out_text))
+        elif i == 1:
+            assert isinstance(out_text, str)
+        elif i == 2:
+            Snow.model_validate(json.loads(out_text))
+        else:
+            SnowList.model_validate(json.loads(out_text))
+
+
 if __name__ == "__main__":
     parser = get_default_mlc_serve_argparser("test engine with samplers")
     args = parser.parse_args()
@@ -350,6 +445,7 @@ if __name__ == "__main__":
     # _test_stop(staging_engine)
     _test_logprobs(staging_engine)
     _test_logprobs_mixed_requests(staging_engine)
+    _test_json_mode(staging_engine)
     # These tests are broken since we are now imposing no length limit
     # if max_tokens = None. The tests do not finish in a reasonable time.
     # _test_max_context_length(staging_engine)
@@ -364,6 +460,7 @@ if __name__ == "__main__":
     _test_stop(sync_engine)
     _test_logprobs(sync_engine)
     _test_logprobs_mixed_requests(sync_engine)
+    _test_json_mode(sync_engine)
     # These tests are broken since we are now imposing no length limit
     # if max_tokens = None. The tests do not finish in a reasonable time.
     # _test_max_context_length(sync_engine)
