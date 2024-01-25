@@ -337,7 +337,7 @@ class Model:
                 if request.sampling_params.logits_processor is not None:
                     cs_input_ids = request.token_ids if isinstance(request, DecodeRequest) else []
                     cs_logits[i] = request.sampling_params.logits_processor(sequence_id, cs_input_ids, cs_logits[i])
-                
+ 
             new_logits = tvm.nd.from_dlpack(torch.utils.dlpack.to_dlpack(cs_logits))
 
             next_tokens = sample(new_logits, sampling_params, self.vocab_size)

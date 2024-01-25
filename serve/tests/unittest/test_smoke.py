@@ -160,7 +160,6 @@ def test_smoke(
             print(f"{i}th text output: {out_text}")
         else:
             print(f"{i}th JSON output: {json.loads(out_text)}")
-    
 
 
 if __name__ == "__main__":
