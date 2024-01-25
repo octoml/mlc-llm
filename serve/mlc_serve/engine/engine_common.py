@@ -189,6 +189,9 @@ def get_requests_to_process(
     if is_prompt_batch:
         for state in current_states:
             if not state.is_prefilled:
+                # `JSONLogitsProcessor` needs to be created only once.
+                if state.sampling_params.json_schema is not None:
+                    state.sampling_params.logits_processor = JSONLogitsProcessor(state.sampling_params.json_schema, tokenizer._tokenizer)
                 requests.append(
                     # generated_token_ids is added for the case where the request is
                     # recovering from cache eviction.
@@ -199,8 +202,7 @@ def get_requests_to_process(
                         token_ids=state.prompt_token_ids
                         + state.generation_sequences[0].generated_token_ids,
                         num_sequence=state.num_sequences,
-                        sampling_params=state.sampling_params,
-                        logit_processor=JSONLogitsProcessor(state.sampling_params.json_schema, tokenizer._tokenizer),
+                        sampling_params=state.sampling_params
                     )
                 )
 
@@ -222,7 +224,6 @@ def get_requests_to_process(
                             prompt_token_counts=prompt_counts,
                             token_ids=gen_seq.generated_token_ids,
                             sampling_params=state.sampling_params,
-                            logit_processor=JSONLogitsProcessor(state.sampling_params.json_schema, tokenizer._tokenizer),
                         )
                     )
                     cache_manager.extend(

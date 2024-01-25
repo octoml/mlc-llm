@@ -331,10 +331,14 @@ class Model:
             cache.pending_copy_from_to = []
 
         try:
-            cs_input_ids = cs_input_ids.asnumpy().tolist()
             cs_logits = torch.from_dlpack(logits.to_dlpack())
-            new_logits = requests[0].logit_processor(0, cs_input_ids, cs_logits)
-            new_logits = tvm.nd.from_dlpack(torch.utils.dlpack.to_dlpack(new_logits))
+
+            for i, (sequence_id, request) in enumerate(zip(sequence_ids,requests)):
+                if request.sampling_params.logits_processor is not None:
+                    cs_input_ids = request.token_ids if isinstance(request, DecodeRequest) else []
+                    cs_logits[i] = request.sampling_params.logits_processor(sequence_id, cs_input_ids, cs_logits[i])
+                
+            new_logits = tvm.nd.from_dlpack(torch.utils.dlpack.to_dlpack(cs_logits))
 
             next_tokens = sample(new_logits, sampling_params, self.vocab_size)
             assert next_tokens is not None

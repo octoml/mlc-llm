@@ -17,7 +17,6 @@ class PrefillRequest:
     # Number of sequences to generate
     num_sequence: int
     sampling_params: SamplingParams
-    logit_processor: JSONLogitsProcessor
 
     # Extension for multi-modal model
     # class ImagePayload:
@@ -33,7 +32,6 @@ class DecodeRequest:
     # All tokens for this request, including prompt
     token_ids: List[int]
     sampling_params: SamplingParams
-    logit_processor: JSONLogitsProcessor
 
 
 @dataclass

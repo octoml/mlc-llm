@@ -7,7 +7,7 @@ import torch
 
 from outlines.fsm.fsm import RegexFSM
 from outlines.fsm.json_schema import build_regex_from_object
-
+from .base import SequenceId
 
 class RegexLogitsProcessor:
     def __init__(self, regex_string, tokenizer):
@@ -25,7 +25,7 @@ class RegexLogitsProcessor:
 
         fsm = RegexFSM(regex_string, tokenizer)
         self.fsm = fsm
-        self.fsm_state: DefaultDict[int, int] = defaultdict(int)
+        self.fsm_state: DefaultDict[SequenceId, int] = defaultdict(int)
 
     def __call__(
         self, seq_id: int, input_ids: List[int], scores: torch.Tensor
@@ -33,13 +33,13 @@ class RegexLogitsProcessor:
         """Use the FSM to bias the logits before sampling the next token."""
 
         if len(input_ids) == 0:  # Initialize the fsm states
-            self.fsm_state: DefaultDict[int, int] = defaultdict(int)
+            self.fsm_state: DefaultDict[SequenceId, int] = defaultdict(int)
         else:
             last_token = input_ids[-1]
             self.fsm_state[seq_id] = self.fsm.next_state(
                 self.fsm_state[seq_id], last_token
             )
-
+        
         allowed_tokens = self.fsm.allowed_token_ids(self.fsm_state[seq_id])
 
         mask = torch.full((scores.shape[-1],), -math.inf, device=scores.device)

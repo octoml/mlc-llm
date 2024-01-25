@@ -80,7 +80,6 @@ def sample(
         dtype=torch.bool,
     )
     mask_greedy = torch.logical_not(mask_random)
-
     logits_greedy = logits[mask_greedy]
 
     if logits_greedy.shape[0] > 0:
