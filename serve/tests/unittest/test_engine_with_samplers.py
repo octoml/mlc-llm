@@ -1,3 +1,4 @@
+import json
 from mlc_serve.engine import (
     Request,
     ChatMessage,
@@ -12,6 +13,8 @@ from mlc_serve.engine.sync_engine import SynchronousInferenceEngine
 from mlc_serve.model.base import get_model_artifact_config
 from mlc_serve.model.paged_cache_model import HfTokenizerModule, PagedCacheModelModule
 from mlc_serve.utils import get_default_mlc_serve_argparser, postproc_mlc_serve_args
+from pydantic import BaseModel
+from typing import List
 
 
 def create_engine(
@@ -48,7 +51,7 @@ def create_engine(
 
 
 def create_request(
-    idx, prompt, temp, freq_pen, pre_pen, max_tokens, stop, ignore_eos, logit_bias=None
+    idx, prompt, temp, freq_pen, pre_pen, max_tokens, stop, ignore_eos, logit_bias=None, json_schema=None
 ):
     return Request(
         request_id=str(idx),
@@ -58,6 +61,7 @@ def create_request(
             frequency_penalty=freq_pen,
             presence_penalty=pre_pen,
             logit_bias=logit_bias,
+            json_schema=json_schema
         ),
         stopping_criteria=StoppingCriteria(max_tokens=max_tokens, stop_sequences=stop),
         debug_options=DebugOptions(ignore_eos=ignore_eos),
@@ -337,6 +341,111 @@ def _test_penalty(
     if use_staging_engine:
         engine.stop()
 
+# These three models are used in _test_json_mode
+class France(BaseModel):
+    capital: str
+
+
+class Snow(BaseModel):
+    color: str
+
+
+class SnowList(BaseModel):
+    snow: List[Snow]
+
+
+def _test_json_mode(
+    model_artifact_path,
+    use_staging_engine,
+    max_num_batched_tokens=2048,
+    ignore_eos=False,
+):
+    engine = create_engine(
+        model_artifact_path,
+        use_staging_engine,
+        max_num_batched_tokens,
+    )
+
+    requests = [
+
+        # test France schema
+        create_request(
+            idx=str(0),
+            prompt="what is the capital of France?",
+            temp=0,
+            freq_pen=0,
+            pre_pen=0,
+            max_tokens=30,
+            stop=None,
+            ignore_eos=ignore_eos,
+            json_schema=France.model_json_schema()
+        ),
+
+        # test with no JSON schema
+        create_request(
+            idx=str(1),
+            prompt="Hello",
+            temp=0,
+            freq_pen=0,
+            pre_pen=0,
+            max_tokens=30,
+            stop=None,
+            ignore_eos=ignore_eos
+        ),
+
+        # test Snow schema
+        create_request(
+            idx=str(2),
+            prompt="what is the color of the snow?",
+            temp=0,
+            freq_pen=0,
+            pre_pen=0,
+            max_tokens=30,
+            stop=None,
+            ignore_eos=ignore_eos,
+            json_schema=Snow.model_json_schema()
+        ),
+
+        # test SnowList schema (nested structure)
+        create_request(
+            idx=str(3),
+            prompt="Quick Facts About Snow | National Snow and Ice Data Center When light reflects off it, snow appears white. The many sides of a snowflake scatter light, diffusing the color spectrum in many directions. Snow can look dark when dust, or pollution, cover it. Fresh-water algae that loves snow can turn it into other colors like orange, blue, or watermelon pink. List the colors of snow.",
+            temp=0,
+            freq_pen=0,
+            pre_pen=0,
+            max_tokens=256,
+            stop=None,
+            ignore_eos=ignore_eos,
+            json_schema=SnowList.model_json_schema()
+        )
+ 
+    ]
+    num_requests= len(requests)
+    engine.add(requests)
+
+    generated = ["" for _ in range(num_requests)]
+
+    while engine.has_pending_requests():
+        results = engine.step()
+        for res in results.outputs:
+            assert len(res.sequences) == 1
+            seq = res.sequences[0]
+
+            if not seq.is_finished:
+                generated[int(res.request_id)] += seq.delta
+    if use_staging_engine:
+        engine.stop()
+
+    for i, out_text in enumerate(generated):
+        if i == 0:
+            France.model_validate(json.loads(out_text))
+        elif i == 1:
+            assert isinstance(out_text, str)
+        elif i == 2:
+            Snow.model_validate(json.loads(out_text))
+        else:
+            SnowList.model_validate(json.loads(out_text))
+
 
 if __name__ == "__main__":
     parser = get_default_mlc_serve_argparser("test engine with samplers")
@@ -355,3 +464,5 @@ if __name__ == "__main__":
     # _test_max_context_length(model_artifact_path, use_staging_engine=False)
     _test_penalty(args.model_artifact_path, use_staging_engine=True)
     _test_penalty(args.model_artifact_path, use_staging_engine=False)
+    _test_json_mode(args.model_artifact_path, use_staging_engine=True)
+    _test_json_mode(args.model_artifact_path, use_staging_engine=False)
