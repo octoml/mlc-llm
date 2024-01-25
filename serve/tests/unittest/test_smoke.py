@@ -49,34 +49,19 @@ def create_engine(
 def create_request(
     idx, prompt, temp, freq_pen, pre_pen, max_tokens, stop, ignore_eos, logit_bias=None, json_schema=None
 ):
-    if int(idx)==1:
-        return Request(
-            request_id=str(idx),
-            messages=[ChatMessage(role="user", content=prompt)],
-            sampling_params=SamplingParams(
-                temperature=temp,
-                frequency_penalty=freq_pen,
-                presence_penalty=pre_pen,
-                logit_bias=logit_bias,
-                json_schema=json_schema
-            ),
-            stopping_criteria=StoppingCriteria(max_tokens=max_tokens, stop_sequences=stop),
-            debug_options=DebugOptions(ignore_eos=ignore_eos),
-        )
-    else:
-        return Request(
-            request_id=str(idx),
-            messages=None,
-            sampling_params=SamplingParams(
-                temperature=temp,
-                frequency_penalty=freq_pen,
-                presence_penalty=pre_pen,
-                logit_bias=logit_bias,
-                json_schema=json_schema
-            ),
-            stopping_criteria=StoppingCriteria(max_tokens=max_tokens, stop_sequences=stop),
-            debug_options=DebugOptions(ignore_eos=ignore_eos, prompt=prompt),
-        )
+    return Request(
+        request_id=str(idx),
+        messages=[ChatMessage(role="user", content=prompt)],
+        sampling_params=SamplingParams(
+            temperature=temp,
+            frequency_penalty=freq_pen,
+            presence_penalty=pre_pen,
+            logit_bias=logit_bias,
+            json_schema=json_schema
+        ),
+        stopping_criteria=StoppingCriteria(max_tokens=max_tokens, stop_sequences=stop),
+        debug_options=DebugOptions(ignore_eos=ignore_eos),
+    )
 
 class France(BaseModel):
     capital: str
@@ -113,7 +98,7 @@ def test_smoke(
             temp=0,
             freq_pen=0,
             pre_pen=0,
-            max_tokens=30,
+            max_tokens=100,
             stop=None,
             ignore_eos=ignore_eos
         ),
@@ -123,7 +108,7 @@ def test_smoke(
             temp=0,
             freq_pen=0,
             pre_pen=0,
-            max_tokens=30,
+            max_tokens=100,
             stop=None,
             ignore_eos=ignore_eos,
             json_schema=Snow.model_json_schema()
@@ -134,7 +119,7 @@ def test_smoke(
             temp=0,
             freq_pen=0,
             pre_pen=0,
-            max_tokens=30,
+            max_tokens=100,
             stop=None,
             ignore_eos=ignore_eos,
             json_schema=France.model_json_schema()
