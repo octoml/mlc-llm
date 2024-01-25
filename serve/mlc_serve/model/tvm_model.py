@@ -342,7 +342,6 @@ class Model:
 
             next_tokens = sample(new_logits, sampling_params, self.vocab_size)
             assert next_tokens is not None
-            LOG.info(f"next tokens:{next_tokens}")
             outputs = []
             for i, (sequence_id, new_token) in enumerate(
                 zip(sequence_ids, next_tokens)
