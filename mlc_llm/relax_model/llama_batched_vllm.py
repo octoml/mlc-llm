@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 from dataclasses import dataclass
 
@@ -48,6 +48,19 @@ def apply_rotary_pos_emb(q, k, positions, position_embedding_base):
 
 
 @dataclass
+class PrefillAttentionInput:
+    seq_start: Optional[relax.Expr]  # (num_seq + 1,)
+    indices_within_window: Optional[relax.Expr]  # (num_cached_total,)
+
+
+@dataclass
+class DecodeAttentionInput:
+    seq_lens: relax.Expr  # (num_seq,)
+    slot_mapping: Optional[relax.Expr]  # (num_query_token,)
+    block_tables: Optional[relax.Expr]  # (num_seq, max_num_blocks_per_seq)
+
+
+@dataclass
 class EvaluateMultiQueryInput:
     query_start: relax.Expr  # (num_query_token + 1,)
     max_query_len: relax.Expr  # (), must be on CPU
@@ -56,6 +69,13 @@ class EvaluateMultiQueryInput:
     # kernel becomes available.
     past_slot_mapping: relax.Expr  # (num_past_token,)
     permute_indices_after_concat: relax.Expr  # (num_past_token + num_query_token,)
+
+
+@dataclass
+class AttentionInput:
+    kv_cache: Tuple[relax.Expr, relax.Expr]
+    max_seqlen: Optional[relax.Expr]  # (), must be on CPU
+    aux_info: Union[PrefillAttentionInput, DecodeAttentionInput, EvaluateMultiQueryInput]
 
 
 class LlamaAttentionBatched(LlamaAttentionBase):
@@ -74,15 +94,7 @@ class LlamaAttentionBatched(LlamaAttentionBase):
         hidden_states: relax.Expr,  # (num_query_token, hidden_size)
         positions: relax.Expr,  # (num_query_token,), for batched RoPE
         seq_lens: relax.Expr,  # (num_seq,)
-        kv_cache: Optional[Tuple[relax.Expr, relax.Expr]],
-        slot_mapping: Optional[relax.Expr],  # (num_query_token,)
-        max_seqlen: Optional[relax.Expr],  # (), must be on CPU
-        seq_start: Optional[relax.Expr],  # (num_seq + 1,), for prefill
-        block_tables: Optional[relax.Expr],  # (num_seq, max_num_blocks_per_seq), for decode
-        indices_within_window: Optional[
-            relax.Expr
-        ],  # (num_cached_total,), for prefill with sliding-window attention,
-        eval_multi_input: Optional[EvaluateMultiQueryInput],
+        attn_input: AttentionInput,
     ):
         num_query_tokens, _ = hidden_states.struct_info.shape
 
@@ -250,13 +262,7 @@ class LlamaDecoderLayerBatched(LlamaDecoderLayer):
         hidden_states: relax.Expr,
         positions: relax.Expr,
         seq_lens: relax.Expr,
-        kv_cache: Optional[Tuple[relax.Expr, relax.Expr]],
-        slot_mapping: Optional[relax.Expr],
-        max_seqlen: Optional[relax.Expr],
-        seq_start: Optional[relax.Expr],
-        block_tables: Optional[relax.Expr],
-        indices_within_window: Optional[relax.Expr],
-        eval_multi_input: Optional[EvaluateMultiQueryInput],
+        attn_input: AttentionInput,
     ) -> Tuple[relax.Expr, Optional[Tuple[relax.Expr, relax.Expr]]]:
         residual = hidden_states
 
@@ -264,16 +270,10 @@ class LlamaDecoderLayerBatched(LlamaDecoderLayer):
 
         # Self Attention
         hidden_states, new_kv = self.self_attn(
-            hidden_states=hidden_states,
-            positions=positions,
-            seq_lens=seq_lens,
-            kv_cache=kv_cache,
-            slot_mapping=slot_mapping,
-            max_seqlen=max_seqlen,
-            seq_start=seq_start,
-            block_tables=block_tables,
-            indices_within_window=indices_within_window,
-            eval_multi_input=eval_multi_input,
+            hidden_states,
+            positions,
+            seq_lens,
+            attn_input,
         )
 
         hidden_states = self.post_self_attn(hidden_states, residual)
@@ -347,11 +347,13 @@ class LlamaModel(nn.Module):
         if query_lens:
             max_query_len = R.to_vdevice(R.max(query_lens), self.cpu_device)
             query_start = create_seq_start(query_lens)
-            eval_multi_input = EvaluateMultiQueryInput(
+            attn_aux_info = EvaluateMultiQueryInput(
                 query_start, max_query_len, past_slot_mapping, permute_indices_after_concat
             )
+        elif block_tables:
+            attn_aux_info = DecodeAttentionInput(seq_lens, slot_mapping, block_tables)
         else:
-            eval_multi_input = None
+            attn_aux_info = PrefillAttentionInput(seq_start, indices_within_window)
 
         for idx, decoder_layer in enumerate(self.layers):
             if kv_caches:
@@ -359,17 +361,13 @@ class LlamaModel(nn.Module):
             else:
                 cache = None
 
+            attn_input = AttentionInput(cache, max_seqlen, attn_aux_info)
+
             hidden_states, new_kv = decoder_layer(
                 hidden_states,
                 positions,
                 seq_lens,
-                cache,
-                slot_mapping,
-                max_seqlen,
-                seq_start,
-                block_tables,
-                indices_within_window,
-                eval_multi_input,
+                attn_input,
             )
             new_kvs += new_kv
 
