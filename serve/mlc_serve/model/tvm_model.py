@@ -460,6 +460,7 @@ class Model:
 
             self.copy_cache_blocks_func(self.cache_blocks, block_mapping)
             cache.pending_copy_from_to = []
+
         return sample_from_logits(
             logits,
             sequence_ids,
