@@ -248,7 +248,6 @@ class Model:
         )
 
         input_shape = input_ids.shape
-        cs_input_ids = input_ids
 
         if self.disco_session:
             input_ids = copy_to_worker_0(self.disco_session, input_ids)

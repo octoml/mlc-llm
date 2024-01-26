@@ -7,7 +7,6 @@ from typing import Optional, Protocol, Union, List, Sequence, Any
 from .base import ChatMessage, RequestId, MLCServeEngineConfig, RequestState, SequenceId
 from ..model.base import ModelArtifactConfig
 from .sampling_params import SamplingParams
-from .constrained_sampling import JSONLogitsProcessor
 
 
 @dataclass
