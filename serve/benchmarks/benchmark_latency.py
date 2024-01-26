@@ -34,8 +34,9 @@ def create_request(request_id):
             frequency_penalty=args.sampling_setting["frequency_penalty"],
             presence_penalty=args.sampling_setting["presence_penalty"],
             logit_bias=args.sampling_setting["logit_bias"],
-            logprobs = args.sampling_setting["logprobs"],
-            top_logprobs = args.sampling_setting["top_logprobs"],
+            logprobs=args.sampling_setting["logprobs"],
+            top_logprobs=args.sampling_setting["top_logprobs"],
+            json_schema=args.sampling_setting["json_schema"],
         ),
         stopping_criteria=StoppingCriteria(
             max_tokens=args.num_output_tokens, stop_sequences=None
