@@ -56,7 +56,6 @@ class PrefillAttentionInput:
 @dataclass
 class DecodeAttentionInput:
     seq_lens: relax.Expr  # (num_seq,)
-    slot_mapping: Optional[relax.Expr]  # (num_query_token,)
     block_tables: Optional[relax.Expr]  # (num_seq, max_num_blocks_per_seq)
 
 
@@ -74,6 +73,7 @@ class EvaluateMultiQueryInput:
 @dataclass
 class AttentionInput:
     kv_cache: Tuple[relax.Expr, relax.Expr]
+    slot_mapping: Optional[relax.Expr]  # (num_query_token,)
     max_seqlen: Optional[relax.Expr]  # (), must be on CPU
     aux_info: Union[PrefillAttentionInput, DecodeAttentionInput, EvaluateMultiQueryInput]
 
@@ -106,19 +106,20 @@ class LlamaAttentionBatched(LlamaAttentionBase):
 
         queries, keys = apply_rotary_pos_emb(queries, keys, positions, self.position_embedding_base)
 
-        if kv_cache:
+        if attn_input.kv_cache:
             # Paged KV cache update
-            k_cache, v_cache = kv_cache
+            k_cache, v_cache = attn_input.kv_cache
 
             if indices_within_window:
                 # Cache only the most recent keys and values within the window.
                 keys_to_cache = nn.emit(take(keys, indices_within_window, axis=0))
                 values_to_cache = nn.emit(take(values, indices_within_window, axis=0))
-                slot_mapping = nn.emit(take(slot_mapping, indices_within_window, axis=0))
+                slot_mapping = nn.emit(take(attn_input.slot_mapping, indices_within_window, axis=0))
             else:
                 # For decode or prefill without sliding window, cache all keys / values.
                 keys_to_cache = keys
                 values_to_cache = values
+                slot_mapping = attn_input.slot_mapping
 
             # kv caches are updated inplace, but make it look like a pure operation
             kv = nn.emit(
@@ -304,7 +305,6 @@ class LlamaModel(nn.Module):
 
         num_query_heads = config.num_attention_heads // config.num_shards
         num_key_value_heads = config.get_num_key_value_heads() // config.num_shards
-        num_queries_per_kv = num_query_heads // num_key_value_heads
 
         if not sep_embed:
             self.embed_tokens = Embedding(vocab_size_var, config.hidden_size, dtype=config.dtype)
@@ -351,7 +351,7 @@ class LlamaModel(nn.Module):
                 query_start, max_query_len, past_slot_mapping, permute_indices_after_concat
             )
         elif block_tables:
-            attn_aux_info = DecodeAttentionInput(seq_lens, slot_mapping, block_tables)
+            attn_aux_info = DecodeAttentionInput(seq_lens, block_tables)
         else:
             attn_aux_info = PrefillAttentionInput(seq_start, indices_within_window)
 
@@ -361,7 +361,7 @@ class LlamaModel(nn.Module):
             else:
                 cache = None
 
-            attn_input = AttentionInput(cache, max_seqlen, attn_aux_info)
+            attn_input = AttentionInput(cache, slot_mapping, max_seqlen, attn_aux_info)
 
             hidden_states, new_kv = decoder_layer(
                 hidden_states,
