@@ -170,7 +170,9 @@ class LlamaAttentionBatched(LlamaAttentionBase):
             # op and the provided permutation indices.
             keys = nn.emit(
                 take(
-                    concat([keys_past, keys]), attn_input.aux_info.permute_indices_after_concat, axis=0
+                    concat([keys_past, keys]),
+                    attn_input.aux_info.permute_indices_after_concat,
+                    axis=0,
                 )
             )
             values = nn.emit(
@@ -214,14 +216,18 @@ class LlamaAttentionBatched(LlamaAttentionBase):
 
             exp_sums = nn.emit(
                 relax.op.builtin.alloc_tensor(
-                    relax.ShapeExpr((num_query_tokens, self.num_query_heads, self.max_num_partitions)),
+                    relax.ShapeExpr(
+                        (num_query_tokens, self.num_query_heads, self.max_num_partitions)
+                    ),
                     dtype="float32",
                     runtime_device_index=0,
                 )
             )
             max_logits = nn.emit(
                 relax.op.builtin.alloc_tensor(
-                    relax.ShapeExpr((num_query_tokens, self.num_query_heads, self.max_num_partitions)),
+                    relax.ShapeExpr(
+                        (num_query_tokens, self.num_query_heads, self.max_num_partitions)
+                    ),
                     dtype="float32",
                     runtime_device_index=0,
                 )
@@ -229,7 +235,12 @@ class LlamaAttentionBatched(LlamaAttentionBase):
             tmp_out = nn.emit(
                 relax.op.builtin.alloc_tensor(
                     relax.ShapeExpr(
-                        (num_query_tokens, self.num_query_heads, self.max_num_partitions, self.head_dim)
+                        (
+                            num_query_tokens,
+                            self.num_query_heads,
+                            self.max_num_partitions,
+                            self.head_dim,
+                        )
                     ),
                     dtype=queries.struct_info.dtype,
                     runtime_device_index=0,
@@ -439,7 +450,11 @@ class LlamaForCausalLM(nn.Module):
             max_query_len = R.to_vdevice(R.max(query_lens), self.cpu_device)
             query_start = create_seq_start(query_lens)
             attn_aux_info = EvaluateMultiQueryInput(
-                seq_start, query_start, max_query_len, past_slot_mapping, permute_indices_after_concat
+                seq_start,
+                query_start,
+                max_query_len,
+                past_slot_mapping,
+                permute_indices_after_concat,
             )
         elif is_prompt:
             seq_start = create_seq_start(seq_lens)
