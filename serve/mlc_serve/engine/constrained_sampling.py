@@ -28,12 +28,12 @@ class RegexLogitsProcessor:
         self.fsm_state: DefaultDict[SequenceId, int] = defaultdict(int)
 
     def __call__(
-        self, seq_id: int, input_ids: List[int], scores: torch.Tensor
+        self, seq_id: SequenceId, input_ids: List[int], scores: torch.Tensor
     ) -> torch.Tensor:
         """Use the FSM to bias the logits before sampling the next token."""
 
         if len(input_ids) == 0:  # Initialize the fsm states
-            self.fsm_state: DefaultDict[SequenceId, int] = defaultdict(int)
+            self.fsm_state = defaultdict(int)
         else:
             last_token = input_ids[-1]
             self.fsm_state[seq_id] = self.fsm.next_state(
