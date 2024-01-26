@@ -59,7 +59,7 @@ class SamplingParams:
     logit_bias_index: list[int] = None
     logit_bias_value: list[float] = None
     json_schema: Optional[Dict[str, Any]] = None
-    logits_processor: Optional["JSONLogitsProcessor"] = None
+    logits_processor: Optional[Any] = None
 
     def __post_init__(self):
         self.appeared_tokens_freq = {}
