@@ -73,9 +73,10 @@ class EvaluateMultiQueryInput:
 
 @dataclass
 class AttentionInput:
-    kv_cache: Tuple[relax.Expr, relax.Expr]
+    # KV cache and slot_mapping are not needed during memory profiling, hench they are optional.
+    kv_cache: Optional[Tuple[relax.Expr, relax.Expr]]
     slot_mapping: Optional[relax.Expr]  # (num_query_token,)
-    max_seqlen: Optional[relax.Expr]  # (), must be on CPU
+    max_seqlen: relax.Expr  # (), must be on CPU
     aux_info: Union[PrefillAttentionInput, DecodeAttentionInput, EvaluateMultiQueryInput]
 
 
@@ -323,15 +324,10 @@ class LlamaModel(nn.Module):
         self,
         inputs: relax.Expr,
         positions: relax.Expr,
-        seq_lens: relax.Expr,
         kv_caches: Optional[relax.Expr],
         slot_mapping: Optional[relax.Expr],
-        seq_start: Optional[relax.Expr],
-        block_tables: Optional[relax.Expr],
-        indices_within_window: Optional[relax.Expr],
-        query_lens: Optional[relax.Expr],
-        past_slot_mapping: Optional[relax.Expr],
-        permute_indices_after_concat: Optional[relax.Expr],
+        max_seqlen: relax.Expr,
+        attn_aux_info: Union[PrefillAttentionInput, DecodeAttentionInput, EvaluateMultiQueryInput],
     ):
         if self.embed_tokens:
             inputs_embeds = self.embed_tokens(inputs)
@@ -340,23 +336,7 @@ class LlamaModel(nn.Module):
 
         hidden_states = inputs_embeds
 
-        # max_seqlen needs to be on CPU, so that vLLM and Flash Attention can directly get the
-        # integer length by max_seqlen->data[0]. Otherwise, we need to repeatedly do cudaMemcpy
-        # of a single int32.
-        max_seqlen = R.to_vdevice(R.max(seq_lens), self.cpu_device)
-
         new_kvs = ()
-
-        if query_lens:
-            max_query_len = R.to_vdevice(R.max(query_lens), self.cpu_device)
-            query_start = create_seq_start(query_lens)
-            attn_aux_info = EvaluateMultiQueryInput(
-                seq_start, query_start, max_query_len, past_slot_mapping, permute_indices_after_concat
-            )
-        elif block_tables:
-            attn_aux_info = DecodeAttentionInput(seq_lens, block_tables)
-        else:
-            attn_aux_info = PrefillAttentionInput(seq_start, indices_within_window)
 
         for idx, decoder_layer in enumerate(self.layers):
             if kv_caches:
@@ -452,27 +432,34 @@ class LlamaForCausalLM(nn.Module):
                     ccl.broadcast_from_worker0(permute_indices_after_concat)
                 )
 
-        # TODO: Update this condition for evaluate multi
         is_prompt = block_tables is None and query_lens is None
-        is_eval_multi = query_lens is not None
 
-        if is_prompt or is_eval_multi:  # prefill and evaluate
+        if query_lens is not None:
             seq_start = create_seq_start(seq_lens)
+            max_query_len = R.to_vdevice(R.max(query_lens), self.cpu_device)
+            query_start = create_seq_start(query_lens)
+            attn_aux_info = EvaluateMultiQueryInput(
+                seq_start, query_start, max_query_len, past_slot_mapping, permute_indices_after_concat
+            )
+        elif is_prompt:
+            seq_start = create_seq_start(seq_lens)
+            attn_aux_info = PrefillAttentionInput(seq_start, indices_within_window)
         else:
             seq_start = None
+            attn_aux_info = DecodeAttentionInput(seq_lens, block_tables)
+
+        # max_seqlen needs to be on CPU, so that vLLM and Flash Attention can directly get the
+        # integer length by max_seqlen->data[0]. Otherwise, we need to repeatedly do cudaMemcpy
+        # of a single int32.
+        max_seqlen = R.to_vdevice(R.max(seq_lens), self.cpu_device)
 
         hidden_states, new_kvs = self.model(
             input_ids,
             positions,
-            seq_lens,
             kv_caches,
             slot_mapping,
-            seq_start,
-            block_tables,
-            indices_within_window,
-            query_lens,
-            past_slot_mapping,
-            permute_indices_after_concat,
+            max_seqlen,
+            attn_aux_info,
         )
 
         if is_prompt:
