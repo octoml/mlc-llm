@@ -314,7 +314,6 @@ class LlamaModel(nn.Module):
     def __init__(
         self,
         config: LlamaConfig,
-        cpu_device: VDevice,
         vocab_size_var: tvm.tir.Var,
         sep_embed: bool = False,
     ):
@@ -328,8 +327,6 @@ class LlamaModel(nn.Module):
             [LlamaDecoderLayerBatched(config) for _ in range(config.num_hidden_layers)]
         )
         self.norm = LlamaRMSNorm(config.hidden_size, dtype=config.dtype, eps=config.rms_norm_eps)
-
-        self.cpu_device = cpu_device
 
     def forward(
         self,
@@ -376,7 +373,8 @@ class LlamaForCausalLM(nn.Module):
         sep_embed: bool = False,
     ):
         self.num_shards = config.num_shards
-        self.model = LlamaModel(config, cpu_device, vocab_size_var, sep_embed)
+        self.cpu_device = cpu_device
+        self.model = LlamaModel(config, vocab_size_var, sep_embed)
         self.lm_head = Linear(config.hidden_size, vocab_size_var, dtype=config.dtype, bias=False)
 
         ############ Rotary embedding constants ############
