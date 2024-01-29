@@ -109,7 +109,7 @@ class LlamaAttentionBatched(LlamaAttentionBase):
         positions: relax.Expr,  # (num_query_token,), for batched RoPE
         attn_input: AttentionInput,
     ):
-        num_query_tokens = positions.struct_info.shape
+        num_query_tokens = positions.struct_info.shape[0]
 
         queries, keys, values = self.project_qkv(
             hidden_states,
@@ -579,15 +579,9 @@ class LlamaForCausalLM(nn.Module):
 
 
 def get_inputs(
-        num_query_token, num_seq, config, kv_type, seqlen_q=None, max_num_blocks_per_seq=None, sep_embed=False, need_cache=True
+        num_query_token, num_seq, input_shape, config, kv_type=None, max_num_blocks_per_seq=None, sep_embed=False
 ):
     hidden_size = config.hidden_size
-
-    if kv_type == KVCacheType.VLLM:
-        input_shape = (num_query_token,)
-    else:
-        input_shape = (num_seq, seqlen_q)
-        num_query_token = num_seq * seqlen_q
 
     inputs = (
         nn.Placeholder(input_shape + (hidden_size,), dtype=config.dtype, name="inputs_embeds")
@@ -598,7 +592,7 @@ def get_inputs(
     seq_lens = nn.Placeholder((num_seq,), dtype="int32", name="seq_lens")
     positions = nn.Placeholder((num_query_token,), dtype="int32", name="positions")
 
-    if need_cache:
+    if kv_type:
         num_blocks = tvm.tir.Var("num_blocks", "int64")
 
         if kv_type == KVCacheType.VLLM:
@@ -675,7 +669,7 @@ def create_evaluate_func(
         param_manager.register_params(model, func_name, quant_scheme, get_param_quant_kind)
 
         inputs, positions, seq_lens, _, _, _ = get_inputs(
-            num_query_token, num_seq, config, sep_embed=sep_embed
+            num_query_token, num_seq, (num_query_token,), config, sep_embed=sep_embed
         )
 
         with bb.dataflow():
@@ -730,7 +724,7 @@ def create_encoding_func(
         param_manager.register_params(model, func_name, quant_scheme, get_param_quant_kind)
 
         input_ids, positions, seq_lens, past_key_values, slot_mapping, _ = get_inputs(
-            num_query_token, num_seq, config, sep_embed=sep_embed
+            num_query_token, num_seq, (num_query_token,), config, kv_type, sep_embed=sep_embed
         )
 
         with bb.dataflow():
@@ -799,15 +793,16 @@ def create_decoding_func(
     for (func_name, seqlen_q) in seqlen_q_info:
         max_num_blocks_per_seq = tvm.tir.SizeVar("max_num_blocks_per_seq", "int64")
 
-        # This if / else is probably not needed
         if seqlen_q == 1:
             num_query_token = num_seq
+            input_shape = (num_query_token,)
         else:
             num_query_token = num_seq * seqlen_q
+            input_shape = (num_seq, seqlen_q)
 
         with bb.function(func_name):
             inputs, positions, seq_lens, past_key_values, slot_mapping, block_tables = get_inputs(
-                num_query_token, num_seq, config, seqlen_q, max_num_blocks_per_seq
+                num_query_token, num_seq, input_shape, config, kv_type, max_num_blocks_per_seq
             )
 
             with bb.dataflow():
@@ -864,7 +859,7 @@ def create_evaluate_multi_query_func(
         param_manager.register_params(model, func_name, quant_scheme, get_param_quant_kind)
 
         input_ids, positions, seq_lens, past_key_values, slot_mapping, _ = get_inputs(
-            num_query_token, num_seq, config, sep_embed=False
+            num_query_token, num_seq, (num_query_token,), config, kv_type, sep_embed=False
         )
 
         query_lens = nn.Placeholder((num_seq,), dtype="int32", name="query_lens")

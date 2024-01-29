@@ -20,15 +20,8 @@ from mlc_llm import utils
 
 
 class KVCache:
-    def __init__(self, num_blocks, block_size, num_layers, num_heads, head_size, disco_session):
-        # TODO: use tvm.contrib.flash_attn.allocate_kv_cache
-        if disco_session:
-            init_cache_func = disco_session.get_global_func("tvm.contrib.vllm.allocate_kv_cache")
-        else:
-            init_cache_func = tvm.get_global_func("tvm.contrib.vllm.allocate_kv_cache")
-
+    def __init__(self, num_blocks, block_size, num_layers, num_heads, head_size, init_cache_func):
         self.cache = init_cache_func(head_size, num_layers, num_heads, block_size, num_blocks)
-
         self.block_tables = defaultdict(list)
         self.slot_mappings = defaultdict(list)
         self.block_size = block_size
@@ -38,12 +31,12 @@ class CacheManager:
     block_size: int = 16
 
     def __init__(
-        self, num_blocks, num_layers, num_heads, head_size, disco_session=None, sliding_window=None
+        self, num_blocks, num_layers, num_heads, head_size, init_cache_func, sliding_window=None
     ):
         self.num_blocks = num_blocks
         self.free_blocks = list(range(num_blocks))
         self.kv_cache = KVCache(
-            num_blocks, self.block_size, num_layers, num_heads, head_size, disco_session
+            num_blocks, self.block_size, num_layers, num_heads, head_size, init_cache_func
         )
 
         if sliding_window:
@@ -464,12 +457,25 @@ def run(args):
     head_size = config.hidden_size // config.num_attention_heads
     num_blocks = 500
 
+    # TODO: check KV type is flash decode
+    use_flash_decoding = True
+
+    if use_flash_decoding:
+        allocate_func_name = "tvm.contrib.flash_attn.allocate_kv_cache"
+    else:
+        allocate_func_name = "tvm.contrib.vllm.allocate_kv_cache"
+
+    if model.disco_session:
+        init_cache_func = model.disco_session.get_global_func(allocate_func_name)
+    else:
+        init_cache_func = tvm.get_global_func(allocate_func_name)
+
     cache_manager = CacheManager(
         num_blocks,
         config.num_hidden_layers,
         num_kv_heads,
         head_size,
-        model.disco_session,
+        init_cache_func,
         sliding_window=config.sliding_window,
     )
     cache = cache_manager.get()
@@ -580,7 +586,6 @@ def run(args):
 
     # verify_logits(logits, query_token_lens)
 
-    # TODO: check KV type is flash decode
     query_token_lens = [3, 3, 3, 3]
     func_name = "decode_multi_query"
 
