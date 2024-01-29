@@ -29,7 +29,14 @@ class KVCache:
 
 class CacheManager:
     def __init__(
-        self, num_blocks, block_size, num_layers, num_heads, head_size, init_cache_func, sliding_window=None
+        self,
+        num_blocks,
+        block_size,
+        num_layers,
+        num_heads,
+        head_size,
+        init_cache_func,
+        sliding_window=None,
     ):
         self.block_size = block_size
         self.num_blocks = num_blocks
@@ -199,7 +206,8 @@ def _prepare_inputs(
 
             for i in range(query_token_len):
                 positions.append(len(token_ids) - (query_token_len - i))
-                slot_mapping += all_slot_mappings[request_id][-query_token_len:]
+
+            slot_mapping += all_slot_mappings[request_id][-query_token_len:]
 
             block_table = all_block_tables[request_id]
             max_num_blocks_per_seq = max(max_num_blocks_per_seq, len(block_table))
@@ -312,7 +320,15 @@ def _prepare_eval_queries(
 
 class Model:
     def __init__(
-        self, artifact_path, model_name, quant, vocab_size, num_shards, dev, sliding_window
+        self,
+        artifact_path,
+        model_name,
+        quant,
+        vocab_size,
+        num_shards,
+        dev,
+        sliding_window,
+        block_size,
     ):
         self.mod, self.params, self.disco_session = get_tvm_model(
             artifact_path, model_name, quant, num_shards, dev
@@ -322,7 +338,8 @@ class Model:
         self.sliding_window = sliding_window
 
         if sliding_window:
-            self.block_sliding_window = sliding_window // CacheManager.block_size
+            # TODO
+            self.block_sliding_window = sliding_window // block_size
         else:
             self.block_sliding_window = None
 
@@ -440,21 +457,7 @@ def run(args):
     with open(os.path.join(model_path, "config.json"), encoding="utf-8") as i_f:
         config = LlamaConfig(**json.load(i_f))
 
-    model = Model(
-        artifact_path,
-        model_name,
-        quantization,
-        config.vocab_size,
-        args.num_shards,
-        dev,
-        config.sliding_window,
-    )
-
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=False)
-
-    num_kv_heads = config.get_num_key_value_heads() // args.num_shards
-    head_size = config.hidden_size // config.num_attention_heads
-
+    # TODO
     use_flash_decoding = True
 
     if use_flash_decoding:
@@ -465,6 +468,22 @@ def run(args):
         allocate_func_name = "tvm.contrib.vllm.allocate_kv_cache"
         block_size = 16
         num_blocks = 500
+
+    model = Model(
+        artifact_path,
+        model_name,
+        quantization,
+        config.vocab_size,
+        args.num_shards,
+        dev,
+        config.sliding_window,
+        block_size,
+    )
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=False)
+
+    num_kv_heads = config.get_num_key_value_heads() // args.num_shards
+    head_size = config.hidden_size // config.num_attention_heads
 
     if model.disco_session:
         init_cache_func = model.disco_session.get_global_func(allocate_func_name)
@@ -549,46 +568,48 @@ def run(args):
 
             logits_offset += query_token_len
 
-    # query_token_lens = [4, 3, 5, 2]
-    # func_name = "evaluate_multi_query"
+    query_token_lens = [4, 3, 5, 2]
+    func_name = "evaluate_multi_query"
 
-    # eval_query_requests = []
+    eval_query_requests = []
 
-    # for request_id, query_token_len in zip(request_ids, query_token_lens):
-    #     queries_to_eval = requests[request_id].token_ids[-query_token_len:]
-    #     num_past = len(requests[request_id].token_ids) - query_token_len
-    #     eval_query_requests.append(EvalQueryRequest(request_id, num_past, queries_to_eval))
+    for request_id, query_token_len in zip(request_ids, query_token_lens):
+        queries_to_eval = requests[request_id].token_ids[-query_token_len:]
+        num_past = len(requests[request_id].token_ids) - query_token_len
+        eval_query_requests.append(EvalQueryRequest(request_id, num_past, queries_to_eval))
 
-    # (
-    #     input_ids,
-    #     positions,
-    #     seq_lens,
-    #     slot_mapping,
-    #     query_lens,
-    #     past_slot_mapping,
-    #     permute_map,
-    # ) = _prepare_eval_queries(
-    #     eval_query_requests,
-    #     cache.slot_mappings,
-    #     None,
-    #     model.dev,
-    # )
+    (
+        input_ids,
+        positions,
+        seq_lens,
+        slot_mapping,
+        query_lens,
+        past_slot_mapping,
+        permute_map,
+    ) = _prepare_eval_queries(
+        eval_query_requests,
+        cache.slot_mappings,
+        None,
+        model.dev,
+    )
 
-    # logits = model.mod[func_name](
-    #     input_ids,
-    #     positions,
-    #     seq_lens,
-    #     cache.cache,
-    #     slot_mapping,
-    #     query_lens,
-    #     past_slot_mapping,
-    #     permute_map,
-    #     model.params,
-    # )[0].numpy()
+    logits = model.mod[func_name](
+        input_ids,
+        positions,
+        seq_lens,
+        cache.cache,
+        slot_mapping,
+        query_lens,
+        past_slot_mapping,
+        permute_map,
+        model.params,
+    )[0].numpy()
 
-    # verify_logits(logits, query_token_lens)
+    verify_logits(logits, query_token_lens)
 
-    # return
+    if not use_flash_decoding:
+        return
+
     query_token_lens = [3, 3, 3, 3]
     func_name = "decode_multi_query"
 

@@ -174,10 +174,10 @@ class LlamaAttentionBatched(LlamaAttentionBase):
 
             if self.kv_type == KVCacheType.VLLM:
                 num_kv_head = v_cache.struct_info.shape[1]
+                head_size = v_cache.struct_info.shape[2]
             else:
                 num_kv_head = v_cache.struct_info.shape[2]
-
-            head_size = v_cache.struct_info.shape[-1]
+                head_size = v_cache.struct_info.shape[-1]
 
             num_past_token = attn_input.aux_info.past_slot_mapping.struct_info.shape[0]
             kv_shape = (num_past_token, num_kv_head, head_size)
@@ -794,20 +794,20 @@ def create_decoding_func(
     func_name = "decode"
 
     num_seq = tvm.tir.SizeVar("num_seq", "int64")
-    seqlen_q = tvm.tir.SizeVar("seqlen_q", "int64")
 
-    seqlen_q_info = [("decode", 1)]
+    func_names = ["decode"]
 
     if kv_type == KVCacheType.FlashDecoding:
-        seqlen_q_info.append(("decode_multi_query", seqlen_q))
+        func_names.append("decode_multi_query")
 
-    for (func_name, seqlen_q) in seqlen_q_info:
+    for func_name in func_names:
         max_num_blocks_per_seq = tvm.tir.SizeVar("max_num_blocks_per_seq", "int64")
 
-        if seqlen_q == 1:
+        if func_name == "decode":
             num_query_token = num_seq
             input_shape = (num_query_token,)
         else:
+            seqlen_q = tvm.tir.SizeVar("seqlen_q", "int64")
             num_query_token = num_seq * seqlen_q
             input_shape = (num_seq, seqlen_q)
 
