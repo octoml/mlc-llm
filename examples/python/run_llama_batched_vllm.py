@@ -457,8 +457,7 @@ def run(args):
     head_size = config.hidden_size // config.num_attention_heads
     num_blocks = 500
 
-    # TODO: check KV type is flash decode
-    use_flash_decoding = True
+    use_flash_decoding = False
 
     if use_flash_decoding:
         allocate_func_name = "tvm.contrib.flash_attn.allocate_kv_cache"

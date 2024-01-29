@@ -140,7 +140,7 @@ class LlamaAttentionBatched(LlamaAttentionBase):
                 slot_mapping = attn_input.slot_mapping
 
             # kv caches are updated inplace, but make it look like a pure operation
-            if self.kv_type == KVCacheType.FlashDecoding:
+            if self.kv_type == KVCacheType.VLLM:
                 kv = nn.emit(
                     relax.op.call_pure_packed(
                         "tvm.contrib.vllm.reshape_and_cache",
@@ -177,7 +177,7 @@ class LlamaAttentionBatched(LlamaAttentionBase):
             kv_shape = (num_past_token, num_kv_head, head_size)
             kv_sinfo = relax.TensorStructInfo(kv_shape, k_cache.struct_info.dtype)
 
-            if self.kv_type == KVCacheType.FlashDecoding:
+            if self.kv_type == KVCacheType.VLLM:
                 kv_tensors = nn.emit(
                     relax.op.call_pure_packed(
                         "tvm.contrib.vllm.reconstruct_from_cache",
