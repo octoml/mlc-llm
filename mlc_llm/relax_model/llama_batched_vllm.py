@@ -101,7 +101,7 @@ class LlamaAttentionBatched(LlamaAttentionBase):
             partition_size = 512  # partition_size in vLLM attention
             self.max_num_partitions = (max_context_length + partition_size - 1) // partition_size
         else:
-            self.max_num_partitons = 128
+            self.max_num_partitions = 128
 
     def forward(
         self,
@@ -171,8 +171,14 @@ class LlamaAttentionBatched(LlamaAttentionBase):
 
         if isinstance(attn_input.aux_info, EvaluateMultiQueryInput):
             assert k_cache and v_cache
-            num_kv_head = v_cache.struct_info.shape[1]
-            head_size = v_cache.struct_info.shape[2]
+
+            if self.kv_type == KVCacheType.VLLM:
+                num_kv_head = v_cache.struct_info.shape[1]
+            else:
+                num_kv_head = v_cache.struct_info.shape[2]
+
+            head_size = v_cache.struct_info.shape[-1]
+
             num_past_token = attn_input.aux_info.past_slot_mapping.struct_info.shape[0]
             kv_shape = (num_past_token, num_kv_head, head_size)
             kv_sinfo = relax.TensorStructInfo(kv_shape, k_cache.struct_info.dtype)
@@ -302,7 +308,12 @@ class LlamaAttentionBatched(LlamaAttentionBase):
                     )
                 )
             else:
-                num_seq, seqlen_q = hidden_states.struct_info.shape
+                if len(hidden_states.struct_info.shape) == 3:
+                    num_seq, seqlen_q, _ = hidden_states.struct_info.shape
+                else:
+                    num_seq = hidden_states.struct_info.shape[0]
+                    seqlen_q = 1
+
                 queries = nn.emit(reshape(queries, (num_seq, seqlen_q, self.num_query_heads, self.head_dim)))
 
                 softmax_lse_accum = nn.emit(
@@ -966,7 +977,7 @@ def get_model(args, hf_config):
     # The CPU device to copy the result of relax.op.max(seq_lens) to CPU.
     cpu_dev = VDevice("llvm", 0, "global")
 
-    kv_type = KVCacheType.VLLM
+    kv_type = KVCacheType.FlashDecoding
 
     create_evaluate_func(bb, param_manager, config, cpu_dev, args.quantization, sep_embed)
     create_encoding_func(bb, param_manager, config, kv_type, cpu_dev, args.quantization, sep_embed)

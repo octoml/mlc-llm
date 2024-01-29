@@ -546,45 +546,46 @@ def run(args):
 
             logits_offset += query_token_len
 
-    # query_token_lens = [4, 3, 5, 2]
-    # func_name = "evaluate_multi_query"
+    query_token_lens = [4, 3, 5, 2]
+    func_name = "evaluate_multi_query"
 
-    # eval_query_requests = []
+    eval_query_requests = []
 
-    # for request_id, query_token_len in zip(request_ids, query_token_lens):
-    #     queries_to_eval = requests[request_id].token_ids[-query_token_len:]
-    #     num_past = len(requests[request_id].token_ids) - query_token_len
-    #     eval_query_requests.append(EvalQueryRequest(request_id, num_past, queries_to_eval))
+    for request_id, query_token_len in zip(request_ids, query_token_lens):
+        queries_to_eval = requests[request_id].token_ids[-query_token_len:]
+        num_past = len(requests[request_id].token_ids) - query_token_len
+        eval_query_requests.append(EvalQueryRequest(request_id, num_past, queries_to_eval))
 
-    # (
-    #     input_ids,
-    #     positions,
-    #     seq_lens,
-    #     slot_mapping,
-    #     query_lens,
-    #     past_slot_mapping,
-    #     permute_map,
-    # ) = _prepare_eval_queries(
-    #     eval_query_requests,
-    #     cache.slot_mappings,
-    #     None,
-    #     model.dev,
-    # )
+    (
+        input_ids,
+        positions,
+        seq_lens,
+        slot_mapping,
+        query_lens,
+        past_slot_mapping,
+        permute_map,
+    ) = _prepare_eval_queries(
+        eval_query_requests,
+        cache.slot_mappings,
+        None,
+        model.dev,
+    )
 
-    # logits = model.mod[func_name](
-    #     input_ids,
-    #     positions,
-    #     seq_lens,
-    #     cache.cache,
-    #     slot_mapping,
-    #     query_lens,
-    #     past_slot_mapping,
-    #     permute_map,
-    #     model.params,
-    # )[0].numpy()
+    logits = model.mod[func_name](
+        input_ids,
+        positions,
+        seq_lens,
+        cache.cache,
+        slot_mapping,
+        query_lens,
+        past_slot_mapping,
+        permute_map,
+        model.params,
+    )[0].numpy()
 
-    # verify_logits(logits, query_token_lens)
+    verify_logits(logits, query_token_lens)
 
+    return
     query_token_lens = [3, 3, 3, 3]
     func_name = "decode_multi_query"
 
