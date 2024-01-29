@@ -172,6 +172,7 @@ def _prepare_inputs(
     sliding_window,
     dev,
     is_prefill,
+    query_token_len=1,
 ):
     block_tables = []
     seq_lens = []
@@ -201,13 +202,15 @@ def _prepare_inputs(
                 start_idx += prompt_len
 
         else:
-            input_ids.append(token_ids[-1])
-            pos = len(token_ids) - 1
-            positions.append(pos)
+            input_ids += token_ids[:-query_token_len]
+
+            for i in range(query_token_len):
+                positions.append(len(token_ids) - (query_token_len - i))
+                slot_mapping += all_slot_mappings[request_id][-query_token_len:]
+
             block_table = all_block_tables[request_id]
             max_num_blocks_per_seq = max(max_num_blocks_per_seq, len(block_table))
             block_tables.append(block_table)
-            slot_mapping.append(all_slot_mappings[request_id][-1])
 
             if sliding_window:
                 seq_lens.append(min(len(token_ids), sliding_window))
@@ -516,58 +519,99 @@ def run(args):
     for p, g in zip(prompts, generated):
         print("Prompt = '{}', generated text = '{}'".format(p, g))
 
-    query_token_lens = [4, 3, 5, 2]
+    if model.disco_session:
+        return
 
-    eval_query_requests = []
+    for query_token_lens, func_name in [
+        ([4, 3, 5, 2], "evaluate_multi_query"),
+        ([3, 3, 3, 3], "decode_multi_query"),
+    ]:
+        if func_name == "evaluate_multi_query":
+            eval_query_requests = []
 
-    for request_id, query_token_len in zip(request_ids, query_token_lens):
-        queries_to_eval = requests[request_id].token_ids[-query_token_len:]
-        num_past = len(requests[request_id].token_ids) - query_token_len
-        eval_query_requests.append(EvalQueryRequest(request_id, num_past, queries_to_eval))
+            for request_id, query_token_len in zip(request_ids, query_token_lens):
+                queries_to_eval = requests[request_id].token_ids[-query_token_len:]
+                num_past = len(requests[request_id].token_ids) - query_token_len
+                eval_query_requests.append(EvalQueryRequest(request_id, num_past, queries_to_eval))
 
-    (
-        input_ids,
-        positions,
-        seq_lens,
-        slot_mapping,
-        query_lens,
-        past_slot_mapping,
-        permute_map,
-    ) = _prepare_eval_queries(
-        eval_query_requests,
-        cache.slot_mappings,
-        None,
-        model.dev,
-    )
-
-    logits = model.mod["evaluate_multi_query"](
-        input_ids,
-        positions,
-        seq_lens,
-        cache.cache,
-        slot_mapping,
-        query_lens,
-        past_slot_mapping,
-        permute_map,
-        model.params,
-    )[0].numpy()
-
-    assert logits.shape[0] == sum(query_token_lens)
-
-    logits_offset = 0
-
-    for request_id, query_token_len in zip(request_ids, query_token_lens):
-        for i in range(query_token_len - 1):
-            # requests[request_id].token_ids[-query_token_len:] are the "ground truth" tokens.
-            # Doing argmax over multi-timestep logits computed in parallel should yield the same
-            # tokens at the corresponding positions.
-            past_tokens = requests[request_id].token_ids[:-query_token_len]
-            assert (
-                np.argmax(logits[logits_offset + i])
-                == requests[request_id].token_ids[len(past_tokens) + i + 1]
+            (
+                input_ids,
+                positions,
+                seq_lens,
+                slot_mapping,
+                query_lens,
+                past_slot_mapping,
+                permute_map,
+            ) = _prepare_eval_queries(
+                eval_query_requests,
+                cache.slot_mappings,
+                None,
+                model.dev,
             )
 
-        logits_offset += query_token_len
+            logits = model.mod[func_name](
+                input_ids,
+                positions,
+                seq_lens,
+                cache.cache,
+                slot_mapping,
+                query_lens,
+                past_slot_mapping,
+                permute_map,
+                model.params,
+            )[0].numpy()
+        else:
+            decode_multi_query_requests = requests
+
+            query_len = query_token_lens[0]
+
+            (
+                input_ids,
+                positions,
+                seq_lens,
+                slot_mapping,
+                _,
+                block_tables,
+            ) = _prepare_inputs(
+                decode_multi_query_requests,
+                cache.slot_mappings,
+                cache.block_tables,
+                model.sliding_window,
+                model.dev,
+                False,
+                query_len,
+            )
+
+            input_ids = tvm.nd.array(np.reshape(input_ids.numpy(), [-1, query_len]), dev)
+
+            logits = model.mod[func_name](
+                input_ids,
+                positions,
+                seq_lens,
+                cache.cache,
+                slot_mapping,
+                block_tables,
+                model.params,
+            )[0].numpy()
+
+            logits = np.reshape(logits, (-1, logits.shape[-1]))
+
+        assert logits.shape[0] == sum(query_token_lens)
+
+        logits_offset = 0
+
+        for request_id, query_token_len in zip(request_ids, query_token_lens):
+            for i in range(query_token_len - 1):
+                # requests[request_id].token_ids[-query_token_len:] are the "ground truth" tokens.
+                # Doing argmax over multi-timestep logits computed in parallel should yield the same
+                # tokens at the corresponding positions.
+                past_tokens = requests[request_id].token_ids[:-query_token_len]
+                assert (
+                    np.argmax(logits[logits_offset + i])
+                    == requests[request_id].token_ids[len(past_tokens) + i + 1]
+                )
+
+            logits_offset += query_token_len
 
 
 if __name__ == "__main__":
