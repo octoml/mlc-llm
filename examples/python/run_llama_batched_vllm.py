@@ -28,11 +28,10 @@ class KVCache:
 
 
 class CacheManager:
-    block_size: int = 16
-
     def __init__(
-        self, num_blocks, num_layers, num_heads, head_size, init_cache_func, sliding_window=None
+        self, num_blocks, block_size, num_layers, num_heads, head_size, init_cache_func, sliding_window=None
     ):
+        self.block_size = block_size
         self.num_blocks = num_blocks
         self.free_blocks = list(range(num_blocks))
         self.kv_cache = KVCache(
@@ -455,14 +454,17 @@ def run(args):
 
     num_kv_heads = config.get_num_key_value_heads() // args.num_shards
     head_size = config.hidden_size // config.num_attention_heads
-    num_blocks = 500
 
-    use_flash_decoding = False
+    use_flash_decoding = True
 
     if use_flash_decoding:
         allocate_func_name = "tvm.contrib.flash_attn.allocate_kv_cache"
+        block_size = 256
+        num_blocks = 30
     else:
         allocate_func_name = "tvm.contrib.vllm.allocate_kv_cache"
+        block_size = 16
+        num_blocks = 500
 
     if model.disco_session:
         init_cache_func = model.disco_session.get_global_func(allocate_func_name)
@@ -471,6 +473,7 @@ def run(args):
 
     cache_manager = CacheManager(
         num_blocks,
+        block_size,
         config.num_hidden_layers,
         num_kv_heads,
         head_size,
@@ -546,46 +549,46 @@ def run(args):
 
             logits_offset += query_token_len
 
-    query_token_lens = [4, 3, 5, 2]
-    func_name = "evaluate_multi_query"
+    # query_token_lens = [4, 3, 5, 2]
+    # func_name = "evaluate_multi_query"
 
-    eval_query_requests = []
+    # eval_query_requests = []
 
-    for request_id, query_token_len in zip(request_ids, query_token_lens):
-        queries_to_eval = requests[request_id].token_ids[-query_token_len:]
-        num_past = len(requests[request_id].token_ids) - query_token_len
-        eval_query_requests.append(EvalQueryRequest(request_id, num_past, queries_to_eval))
+    # for request_id, query_token_len in zip(request_ids, query_token_lens):
+    #     queries_to_eval = requests[request_id].token_ids[-query_token_len:]
+    #     num_past = len(requests[request_id].token_ids) - query_token_len
+    #     eval_query_requests.append(EvalQueryRequest(request_id, num_past, queries_to_eval))
 
-    (
-        input_ids,
-        positions,
-        seq_lens,
-        slot_mapping,
-        query_lens,
-        past_slot_mapping,
-        permute_map,
-    ) = _prepare_eval_queries(
-        eval_query_requests,
-        cache.slot_mappings,
-        None,
-        model.dev,
-    )
+    # (
+    #     input_ids,
+    #     positions,
+    #     seq_lens,
+    #     slot_mapping,
+    #     query_lens,
+    #     past_slot_mapping,
+    #     permute_map,
+    # ) = _prepare_eval_queries(
+    #     eval_query_requests,
+    #     cache.slot_mappings,
+    #     None,
+    #     model.dev,
+    # )
 
-    logits = model.mod[func_name](
-        input_ids,
-        positions,
-        seq_lens,
-        cache.cache,
-        slot_mapping,
-        query_lens,
-        past_slot_mapping,
-        permute_map,
-        model.params,
-    )[0].numpy()
+    # logits = model.mod[func_name](
+    #     input_ids,
+    #     positions,
+    #     seq_lens,
+    #     cache.cache,
+    #     slot_mapping,
+    #     query_lens,
+    #     past_slot_mapping,
+    #     permute_map,
+    #     model.params,
+    # )[0].numpy()
 
-    verify_logits(logits, query_token_lens)
+    # verify_logits(logits, query_token_lens)
 
-    return
+    # return
     query_token_lens = [3, 3, 3, 3]
     func_name = "decode_multi_query"
 
