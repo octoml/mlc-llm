@@ -21,6 +21,7 @@ from mlc_llm import utils
 
 class KVCache:
     def __init__(self, num_blocks, block_size, num_layers, num_heads, head_size, disco_session):
+        # TODO: use tvm.contrib.flash_attn.allocate_kv_cache
         if disco_session:
             init_cache_func = disco_session.get_global_func("tvm.contrib.vllm.allocate_kv_cache")
         else:
@@ -522,80 +523,7 @@ def run(args):
     if model.disco_session:
         return
 
-    for query_token_lens, func_name in [
-        ([4, 3, 5, 2], "evaluate_multi_query"),
-        ([3, 3, 3, 3], "decode_multi_query"),
-    ]:
-        if func_name == "evaluate_multi_query":
-            eval_query_requests = []
-
-            for request_id, query_token_len in zip(request_ids, query_token_lens):
-                queries_to_eval = requests[request_id].token_ids[-query_token_len:]
-                num_past = len(requests[request_id].token_ids) - query_token_len
-                eval_query_requests.append(EvalQueryRequest(request_id, num_past, queries_to_eval))
-
-            (
-                input_ids,
-                positions,
-                seq_lens,
-                slot_mapping,
-                query_lens,
-                past_slot_mapping,
-                permute_map,
-            ) = _prepare_eval_queries(
-                eval_query_requests,
-                cache.slot_mappings,
-                None,
-                model.dev,
-            )
-
-            logits = model.mod[func_name](
-                input_ids,
-                positions,
-                seq_lens,
-                cache.cache,
-                slot_mapping,
-                query_lens,
-                past_slot_mapping,
-                permute_map,
-                model.params,
-            )[0].numpy()
-        else:
-            decode_multi_query_requests = requests
-
-            query_len = query_token_lens[0]
-
-            (
-                input_ids,
-                positions,
-                seq_lens,
-                slot_mapping,
-                _,
-                block_tables,
-            ) = _prepare_inputs(
-                decode_multi_query_requests,
-                cache.slot_mappings,
-                cache.block_tables,
-                model.sliding_window,
-                model.dev,
-                False,
-                query_len,
-            )
-
-            input_ids = tvm.nd.array(np.reshape(input_ids.numpy(), [-1, query_len]), dev)
-
-            logits = model.mod[func_name](
-                input_ids,
-                positions,
-                seq_lens,
-                cache.cache,
-                slot_mapping,
-                block_tables,
-                model.params,
-            )[0].numpy()
-
-            logits = np.reshape(logits, (-1, logits.shape[-1]))
-
+    def verify_logits(logits, query_token_lens):
         assert logits.shape[0] == sum(query_token_lens)
 
         logits_offset = 0
@@ -612,6 +540,86 @@ def run(args):
                 )
 
             logits_offset += query_token_len
+
+    # query_token_lens = [4, 3, 5, 2]
+    # func_name = "evaluate_multi_query"
+
+    # eval_query_requests = []
+
+    # for request_id, query_token_len in zip(request_ids, query_token_lens):
+    #     queries_to_eval = requests[request_id].token_ids[-query_token_len:]
+    #     num_past = len(requests[request_id].token_ids) - query_token_len
+    #     eval_query_requests.append(EvalQueryRequest(request_id, num_past, queries_to_eval))
+
+    # (
+    #     input_ids,
+    #     positions,
+    #     seq_lens,
+    #     slot_mapping,
+    #     query_lens,
+    #     past_slot_mapping,
+    #     permute_map,
+    # ) = _prepare_eval_queries(
+    #     eval_query_requests,
+    #     cache.slot_mappings,
+    #     None,
+    #     model.dev,
+    # )
+
+    # logits = model.mod[func_name](
+    #     input_ids,
+    #     positions,
+    #     seq_lens,
+    #     cache.cache,
+    #     slot_mapping,
+    #     query_lens,
+    #     past_slot_mapping,
+    #     permute_map,
+    #     model.params,
+    # )[0].numpy()
+
+    # verify_logits(logits, query_token_lens)
+
+    # TODO: check KV type is flash decode
+    query_token_lens = [3, 3, 3, 3]
+    func_name = "decode_multi_query"
+
+    decode_multi_query_requests = requests
+
+    query_len = query_token_lens[0]
+
+    (
+        input_ids,
+        positions,
+        seq_lens,
+        slot_mapping,
+        _,
+        block_tables,
+    ) = _prepare_inputs(
+        decode_multi_query_requests,
+        cache.slot_mappings,
+        cache.block_tables,
+        model.sliding_window,
+        model.dev,
+        False,
+        query_len,
+    )
+
+    input_ids = tvm.nd.array(np.reshape(input_ids.numpy(), [-1, query_len]), dev)
+
+    logits = model.mod[func_name](
+        input_ids,
+        positions,
+        seq_lens,
+        cache.cache,
+        slot_mapping,
+        block_tables,
+        model.params,
+    )[0].numpy()
+
+    logits = np.reshape(logits, (-1, logits.shape[-1]))
+
+    verify_logits(logits, query_token_lens)
 
 
 if __name__ == "__main__":
