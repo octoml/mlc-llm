@@ -410,6 +410,7 @@ class LlamaModel(nn.Module):
         slot_mapping: Optional[relax.Expr],
         max_seqlen: relax.Expr,
         attn_aux_info: Union[PrefillAttentionInput, DecodeAttentionInput, EvaluateMultiQueryInput],
+        kv_type: KVCacheType,
     ):
         if self.embed_tokens:
             inputs_embeds = self.embed_tokens(inputs)
@@ -426,7 +427,7 @@ class LlamaModel(nn.Module):
             else:
                 cache = None
 
-            attn_input = AttentionInput(cache, slot_mapping, max_seqlen, attn_aux_info, KVCacheType.VLLM)
+            attn_input = AttentionInput(cache, slot_mapping, max_seqlen, attn_aux_info, kv_type)
 
             hidden_states, new_kv = decoder_layer(
                 hidden_states,
@@ -692,6 +693,7 @@ def create_encoding_func(
     bb: relax.BlockBuilder,
     param_manager: ParamManager,
     config: LlamaConfig,
+    kv_type: KVCacheType,
     cpu_dev: VDevice,
     quant_scheme: QuantizationScheme,
     sep_embed: bool = False,
@@ -764,9 +766,9 @@ def create_decoding_func(
     bb: relax.BlockBuilder,
     param_manager: ParamManager,
     config: LlamaConfig,
+    kv_type: KVCacheType,
     cpu_dev: VDevice,
     quant_scheme: QuantizationScheme,
-    use_flash_decoding=False,
 ) -> None:
     """Batched decoding with vLLM paged KV cache."""
     func_name = "decode"
@@ -776,7 +778,7 @@ def create_decoding_func(
 
     seqlen_q_info = [("decode", 1)]
 
-    if use_flash_decoding:
+    if kv_type == KVCacheType.FlashDecoding:
         seqlen_q_info.append(("decode_multi_query", seqlen_q))
 
     for (func_name, seqlen_q) in seqlen_q_info:
@@ -829,6 +831,7 @@ def create_evaluate_multi_query_func(
     bb: relax.BlockBuilder,
     param_manager: ParamManager,
     config: LlamaConfig,
+    kv_type: KVCacheType,
     cpu_dev: VDevice,
     quant_scheme: QuantizationScheme,
 ) -> None:
@@ -953,10 +956,12 @@ def get_model(args, hf_config):
     # The CPU device to copy the result of relax.op.max(seq_lens) to CPU.
     cpu_dev = VDevice("llvm", 0, "global")
 
+    kv_type = KVCacheType.VLM
+
     create_evaluate_func(bb, param_manager, config, cpu_dev, args.quantization, sep_embed)
-    create_encoding_func(bb, param_manager, config, cpu_dev, args.quantization, sep_embed)
-    create_decoding_func(bb, param_manager, config, cpu_dev, args.quantization)
-    create_evaluate_multi_query_func(bb, param_manager, config, cpu_dev, args.quantization)
+    create_encoding_func(bb, param_manager, config, kv_type, cpu_dev, args.quantization, sep_embed)
+    create_decoding_func(bb, param_manager, config, kv_type, cpu_dev, args.quantization)
+    create_evaluate_multi_query_func(bb, param_manager, config, kv_type, cpu_dev, args.quantization)
 
     mod = bb.get()
 
