@@ -196,7 +196,7 @@ def _prepare_inputs(
                 start_idx += prompt_len
 
         else:
-            input_ids += token_ids[:-query_token_len]
+            input_ids += token_ids[-query_token_len:]
 
             for i in range(query_token_len):
                 positions.append(len(token_ids) - (query_token_len - i))
