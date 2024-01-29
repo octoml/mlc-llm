@@ -1213,6 +1213,7 @@ def build_model_from_args(args: argparse.Namespace):
             black_format=True,
         )
         tvm.tir.analysis.verify_well_formed(mod)
+        # os._exit(0)
 
         if args.model_category == "mistral":
             args.sliding_window = model_config.sliding_window
@@ -1238,6 +1239,13 @@ def build_model_from_args(args: argparse.Namespace):
         # transformed parameters.  Further use of the `param_manager`
         # should be optional, such as re-ordering parameter access based
         # on the *.bin that contains each parameter.
+
+        mod.show(
+            name="WithTransformParams",
+            show_all_struct_info=False,
+            black_format=True,
+        )
+        tvm.tir.analysis.verify_well_formed(mod)
 
         transform_seq = []
 
@@ -1265,9 +1273,9 @@ def build_model_from_args(args: argparse.Namespace):
         if args.lora is not None:
             transform_seq.append(reorder_lora_params_after_base_model_params)
 
-        if not args.build_model_only:
-            # Run pre-quantization if provided.
-            args.model_path = param_manager.run_pre_quantize(args.model_path)
+        # if not args.build_model_only:
+        #     # Run pre-quantization if provided.
+        args.model_path = param_manager.run_pre_quantize(args.model_path)
         param_manager.init_torch_pname_to_bin_name(args.use_safetensors)
 
         transform_seq.append(
@@ -1304,11 +1312,12 @@ def build_model_from_args(args: argparse.Namespace):
             )
         )
 
-        # TODO(Lunderberg): Replace this with
-        # transform.CheckForSpecialCase once
-        # https://github.com/apache/tvm/pull/16457 is fully implemented
-        # and landed.
-        transform_seq.append(auto_generate_decode_func)
+        if args.lora is not None:
+            # TODO(Lunderberg): Replace this with
+            # transform.CheckForSpecialCase once
+            # https://github.com/apache/tvm/pull/16457 is fully implemented
+            # and landed.
+            transform_seq.append(auto_generate_decode_func)
 
         mod = tvm.ir.transform.Sequential(transform_seq, name="OptimizeMLCModel")(mod)
 
