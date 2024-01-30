@@ -86,22 +86,240 @@ class AttentionInput:
     aux_info: Union[PrefillAttentionInput, DecodeAttentionInput, EvaluateMultiQueryInput]
 
 
+class AttentionBackend:
+    def __init__(self, num_query_heads, num_key_value_heads, head_dim):
+        self.num_query_heads = num_query_heads
+        self.num_key_value_heads = num_key_value_heads
+        self.head_dim = head_dim
+
+    def decode_attention(
+        self,
+        queries,
+        k_cache,
+        v_cache,
+        block_tables,
+        context_lens,
+        max_context_len,
+        num_seq,
+        seqlen_q,
+    ):
+        pass
+
+    def update_cache(self, keys, values, k_cache, v_cache, slot_mapping):
+        pass
+
+    def reconstruct_from_cache(self, k_cache, v_cache, past_slot_mapping):
+        pass
+
+
+class VllmAttention(AttentionBackend):
+    block_size: int = 16
+
+    def __init__(self, num_query_heads, num_key_value_heads, head_dim, max_context_length):
+        super().__init__(num_query_heads, num_key_value_heads, head_dim)
+
+        partition_size = 512  # partition_size in vLLM attention
+        self.max_num_partitions = (max_context_length + partition_size - 1) // partition_size
+
+    def decode_attention(
+        self,
+        queries,
+        k_cache,
+        v_cache,
+        block_tables,
+        context_lens,
+        max_context_len,
+        num_seq,
+        seqlen_q,
+    ):
+        num_query_tokens = queries.struct_info.shape[0]
+        exp_sums = nn.emit(
+            relax.op.builtin.alloc_tensor(
+                relax.ShapeExpr((num_query_tokens, self.num_query_heads, self.max_num_partitions)),
+                dtype="float32",
+                runtime_device_index=0,
+            )
+        )
+        max_logits = nn.emit(
+            relax.op.builtin.alloc_tensor(
+                relax.ShapeExpr((num_query_tokens, self.num_query_heads, self.max_num_partitions)),
+                dtype="float32",
+                runtime_device_index=0,
+            )
+        )
+        tmp_out = nn.emit(
+            relax.op.builtin.alloc_tensor(
+                relax.ShapeExpr(
+                    (
+                        num_query_tokens,
+                        self.num_query_heads,
+                        self.max_num_partitions,
+                        self.head_dim,
+                    )
+                ),
+                dtype=queries.struct_info.dtype,
+                runtime_device_index=0,
+            )
+        )
+        return nn.emit(
+            relax.op.call_dps_packed(
+                "tvm.contrib.vllm.single_query_cached_kv_attention",
+                [
+                    queries,
+                    k_cache,
+                    v_cache,
+                    block_tables,
+                    context_lens,
+                    16,  # block_size
+                    max_context_len,
+                    exp_sums,
+                    max_logits,
+                    tmp_out,
+                ],
+                out_sinfo=queries.struct_info,
+            )
+        )
+
+    def update_cache(self, keys, values, k_cache, v_cache, slot_mapping):
+        return nn.emit(
+            relax.op.call_pure_packed(
+                "tvm.contrib.vllm.reshape_and_cache",
+                keys,
+                values,
+                k_cache,
+                v_cache,
+                slot_mapping,
+                sinfo_args=[k_cache.struct_info, v_cache.struct_info],
+            )
+        )
+
+    def reconstruct_from_cache(self, k_cache, v_cache, past_slot_mapping):
+        num_kv_head = v_cache.struct_info.shape[1]
+        head_size = v_cache.struct_info.shape[2]
+
+        num_past_token = past_slot_mapping.struct_info.shape[0]
+        kv_shape = (num_past_token, num_kv_head, head_size)
+        kv_sinfo = relax.TensorStructInfo(kv_shape, k_cache.struct_info.dtype)
+
+        return nn.emit(
+            relax.op.call_pure_packed(
+                "tvm.contrib.vllm.reconstruct_from_cache",
+                k_cache,
+                v_cache,
+                past_slot_mapping,
+                sinfo_args=[kv_sinfo, kv_sinfo],
+            )
+        )
+
+
+class FlashDecodingAttention(AttentionBackend):
+    block_size: int = 256
+
+    def __init__(self, num_query_heads, num_key_value_heads, head_dim):
+        super().__init__(num_query_heads, num_key_value_heads, head_dim)
+        self.max_num_partitions = 128
+
+    def decode_attention(
+        self,
+        queries,
+        k_cache,
+        v_cache,
+        block_tables,
+        context_lens,
+        max_context_len,
+        num_seq,
+        seqlen_q,
+    ):
+        queries = nn.emit(
+            reshape(queries, (num_seq, seqlen_q, self.num_query_heads, self.head_dim))
+        )
+
+        softmax_lse_accum = nn.emit(
+            relax.op.builtin.alloc_tensor(
+                relax.ShapeExpr((self.max_num_partitions, num_seq, self.num_query_heads, seqlen_q)),
+                dtype="float32",
+                runtime_device_index=0,
+            )
+        )
+        output_accum = nn.emit(
+            relax.op.builtin.alloc_tensor(
+                relax.ShapeExpr(
+                    (
+                        self.max_num_partitions,
+                        num_seq,
+                        self.num_query_heads,
+                        seqlen_q,
+                        self.head_dim,
+                    )
+                ),
+                dtype="float32",
+                runtime_device_index=0,
+            )
+        )
+
+        return R.call_dps_packed(
+            "tvm.contrib.flash_attn.flash_decoding_with_paged_kvcache",
+            [
+                queries,
+                k_cache,
+                v_cache,
+                block_tables,
+                context_lens,
+                softmax_lse_accum,
+                output_accum,
+            ],
+            out_sinfo=queries.struct_info,
+        )
+
+    def update_cache(self, keys, values, k_cache, v_cache, slot_mapping):
+        return nn.emit(
+            relax.op.call_pure_packed(
+                "tvm.contrib.flash_attn.update_cache",
+                keys,
+                values,
+                k_cache,
+                v_cache,
+                slot_mapping,
+                sinfo_args=[k_cache.struct_info, v_cache.struct_info],
+            )
+        )
+
+    def reconstruct_from_cache(self, k_cache, v_cache, past_slot_mapping):
+        num_kv_head = v_cache.struct_info.shape[2]
+        head_size = v_cache.struct_info.shape[-1]
+
+        num_past_token = past_slot_mapping.struct_info.shape[0]
+        kv_shape = (num_past_token, num_kv_head, head_size)
+        kv_sinfo = relax.TensorStructInfo(kv_shape, k_cache.struct_info.dtype)
+
+        return nn.emit(
+            relax.op.call_pure_packed(
+                "tvm.contrib.flash_attn.reconstruct_from_cache",
+                k_cache,
+                v_cache,
+                past_slot_mapping,
+                sinfo_args=[kv_sinfo, kv_sinfo],
+            )
+        )
+
+
 class LlamaAttentionBatched(LlamaAttentionBase):
     def __init__(self, config: LlamaConfig, kv_type: KVCacheType):
         super().__init__(config)
-        self.kv_type = kv_type
+        if kv_type == KVCacheType.VLLM:
+            max_context_length = config.sliding_window or config.max_sequence_length
+            self.attn_backend = VllmAttention(
+                self.num_query_heads, self.num_key_value_heads, self.head_dim, max_context_length
+            )
+        else:
+            self.attn_backend = FlashDecodingAttention(
+                self.num_query_heads, self.num_key_value_heads, self.head_dim
+            )
+
         self.sliding_window = None
 
         if config.sliding_window:
             self.sliding_window = T.IntImm("int32", config.sliding_window)
-
-        max_context_length = config.sliding_window or config.max_sequence_length
-
-        if kv_type == KVCacheType.VLLM:
-            partition_size = 512  # partition_size in vLLM attention
-            self.max_num_partitions = (max_context_length + partition_size - 1) // partition_size
-        else:
-            self.max_num_partitions = 128
 
     def forward(
         self,
@@ -140,31 +358,9 @@ class LlamaAttentionBatched(LlamaAttentionBase):
                 slot_mapping = attn_input.slot_mapping
 
             # kv caches are updated inplace, but make it look like a pure operation
-            if self.kv_type == KVCacheType.VLLM:
-                kv = nn.emit(
-                    relax.op.call_pure_packed(
-                        "tvm.contrib.vllm.reshape_and_cache",
-                        keys_to_cache,
-                        values_to_cache,
-                        k_cache,
-                        v_cache,
-                        slot_mapping,
-                        sinfo_args=[k_cache.struct_info, v_cache.struct_info],
-                    )
-                )
-            else:
-                kv = nn.emit(
-                    relax.op.call_pure_packed(
-                        "tvm.contrib.flash_attn.update_cache",
-                        keys_to_cache,
-                        values_to_cache,
-                        k_cache,
-                        v_cache,
-                        slot_mapping,
-                        sinfo_args=[k_cache.struct_info, v_cache.struct_info],
-                    )
-                )
-
+            kv = self.attn_backend.update_cache(
+                keys_to_cache, values_to_cache, k_cache, v_cache, slot_mapping
+            )
             k_cache, v_cache = kv[0], kv[1]
         else:
             k_cache = v_cache = None
@@ -172,38 +368,9 @@ class LlamaAttentionBatched(LlamaAttentionBase):
         if isinstance(attn_input.aux_info, EvaluateMultiQueryInput):
             assert k_cache and v_cache
 
-            if self.kv_type == KVCacheType.VLLM:
-                num_kv_head = v_cache.struct_info.shape[1]
-                head_size = v_cache.struct_info.shape[2]
-            else:
-                num_kv_head = v_cache.struct_info.shape[2]
-                head_size = v_cache.struct_info.shape[-1]
-
-            num_past_token = attn_input.aux_info.past_slot_mapping.struct_info.shape[0]
-            kv_shape = (num_past_token, num_kv_head, head_size)
-            kv_sinfo = relax.TensorStructInfo(kv_shape, k_cache.struct_info.dtype)
-
-            if self.kv_type == KVCacheType.VLLM:
-                kv_tensors = nn.emit(
-                    relax.op.call_pure_packed(
-                        "tvm.contrib.vllm.reconstruct_from_cache",
-                        k_cache,
-                        v_cache,
-                        attn_input.aux_info.past_slot_mapping,
-                        sinfo_args=[kv_sinfo, kv_sinfo],
-                    )
-                )
-            else:
-                kv_tensors = nn.emit(
-                    relax.op.call_pure_packed(
-                        "tvm.contrib.flash_attn.reconstruct_from_cache",
-                        k_cache,
-                        v_cache,
-                        attn_input.aux_info.past_slot_mapping,
-                        sinfo_args=[kv_sinfo, kv_sinfo],
-                    )
-                )
-
+            kv_tensors = self.attn_backend.reconstruct_from_cache(
+                k_cache, v_cache, attn_input.aux_info.past_slot_mapping
+            )
             keys_past, values_past = kv_tensors[0], kv_tensors[1]
             # Say we have past tokens [P1, P2, P3] and the current ones [C1, C2, C3].
             # Each of P1, C1 etc is a sequence of tokens.
@@ -256,106 +423,22 @@ class LlamaAttentionBatched(LlamaAttentionBase):
             # Decode, using vLLM or Flash-Decoding kernel
             assert isinstance(attn_input.aux_info, DecodeAttentionInput)
 
-            if self.kv_type == KVCacheType.VLLM:
-                exp_sums = nn.emit(
-                    relax.op.builtin.alloc_tensor(
-                        relax.ShapeExpr(
-                            (num_query_tokens, self.num_query_heads, self.max_num_partitions)
-                        ),
-                        dtype="float32",
-                        runtime_device_index=0,
-                    )
-                )
-                max_logits = nn.emit(
-                    relax.op.builtin.alloc_tensor(
-                        relax.ShapeExpr(
-                            (num_query_tokens, self.num_query_heads, self.max_num_partitions)
-                        ),
-                        dtype="float32",
-                        runtime_device_index=0,
-                    )
-                )
-                tmp_out = nn.emit(
-                    relax.op.builtin.alloc_tensor(
-                        relax.ShapeExpr(
-                            (
-                                num_query_tokens,
-                                self.num_query_heads,
-                                self.max_num_partitions,
-                                self.head_dim,
-                            )
-                        ),
-                        dtype=queries.struct_info.dtype,
-                        runtime_device_index=0,
-                    )
-                )
-                attn_output = nn.emit(
-                    relax.op.call_dps_packed(
-                        "tvm.contrib.vllm.single_query_cached_kv_attention",
-                        [
-                            queries,
-                            k_cache,
-                            v_cache,
-                            attn_input.aux_info.block_tables,
-                            attn_input.aux_info.seq_lens,
-                            16,  # block_size
-                            attn_input.max_seqlen,
-                            exp_sums,
-                            max_logits,
-                            tmp_out,
-                        ],
-                        out_sinfo=queries.struct_info,
-                    )
-                )
+            if len(hidden_states.struct_info.shape) == 3:
+                num_seq, seqlen_q, _ = hidden_states.struct_info.shape
             else:
-                if len(hidden_states.struct_info.shape) == 3:
-                    num_seq, seqlen_q, _ = hidden_states.struct_info.shape
-                else:
-                    num_seq = hidden_states.struct_info.shape[0]
-                    seqlen_q = 1
+                num_seq = hidden_states.struct_info.shape[0]
+                seqlen_q = 1
 
-                queries = nn.emit(
-                    reshape(queries, (num_seq, seqlen_q, self.num_query_heads, self.head_dim))
-                )
-
-                softmax_lse_accum = nn.emit(
-                    relax.op.builtin.alloc_tensor(
-                        relax.ShapeExpr(
-                            (self.max_num_partitions, num_seq, self.num_query_heads, seqlen_q)
-                        ),
-                        dtype="float32",
-                        runtime_device_index=0,
-                    )
-                )
-                output_accum = nn.emit(
-                    relax.op.builtin.alloc_tensor(
-                        relax.ShapeExpr(
-                            (
-                                self.max_num_partitions,
-                                num_seq,
-                                self.num_query_heads,
-                                seqlen_q,
-                                self.head_dim,
-                            )
-                        ),
-                        dtype="float32",
-                        runtime_device_index=0,
-                    )
-                )
-
-                attn_output = R.call_dps_packed(
-                    "tvm.contrib.flash_attn.flash_decoding_with_paged_kvcache",
-                    [
-                        queries,
-                        k_cache,
-                        v_cache,
-                        attn_input.aux_info.block_tables,
-                        attn_input.aux_info.seq_lens,
-                        softmax_lse_accum,
-                        output_accum,
-                    ],
-                    out_sinfo=queries.struct_info,
-                )
+            attn_output = self.attn_backend.decode_attention(
+                queries,
+                k_cache,
+                v_cache,
+                attn_input.aux_info.block_tables,
+                attn_input.aux_info.seq_lens,
+                attn_input.max_seqlen,
+                num_seq,
+                seqlen_q,
+            )
 
         attn_output = nn.emit(reshape(attn_output, hidden_states.struct_info.shape))
         attn_output = self.o_proj(attn_output)
@@ -619,7 +702,7 @@ def get_inputs(
         num_blocks = tvm.tir.Var("num_blocks", "int64")
 
         if kv_type == KVCacheType.VLLM:
-            block_size = 16
+            block_size = VllmAttention.block_size
 
             vec_size = 8  # 128 bit, fp16 x 8
             num_key_value_heads = config.get_num_key_value_heads() // config.num_shards
@@ -634,7 +717,7 @@ def get_inputs(
             )
             v_cache_shape = (num_blocks, num_key_value_heads, head_size, block_size)
         else:
-            block_size = 256
+            block_size = FlashDecodingAttention.block_size
 
             num_key_value_heads = config.get_num_key_value_heads() // config.num_shards
             head_size = hidden_size // config.num_attention_heads
