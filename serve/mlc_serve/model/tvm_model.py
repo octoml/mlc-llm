@@ -93,6 +93,7 @@ def _prepare_inputs(
     all_decode_block_tables,
     sliding_window,
     is_prefill,
+    num_decode_query_tokens=1,
 ):
     (
         input_ids,
@@ -109,12 +110,16 @@ def _prepare_inputs(
         all_decode_block_tables,
         sliding_window,
         is_prefill,
+        num_decode_query_tokens,
     )
 
     if block_tables is not None:
         block_tables = tvm.nd.from_dlpack(block_tables)
     if indices_within_window is not None:
         indices_within_window = tvm.nd.from_dlpack(indices_within_window)
+
+    if not is_prefill and num_decode_query_tokens > 1:
+        input_ids = torch.reshape(input_ids, (-1, num_decode_query_tokens))
 
     return (
         tvm.nd.from_dlpack(input_ids),
@@ -220,12 +225,25 @@ class Model:
         sequence_ids = []
         prompt_lens = []
         num_sequences = []
+        num_decode_query_tokens = 1
 
         for request in requests:
             if isinstance(request, PrefillRequest):
                 sequence_ids.append(get_prompt_sequence_id(request.request_id))
                 num_sequences.append(request.num_sequence)
             else:
+                if request.num_query_tokens > 1:
+                    if num_decode_query_tokens == 1:
+                        num_decode_query_tokens = request.num_query_tokens
+
+                    assert (
+                        num_decode_query_tokens == request.num_query_tokens
+                    ), "The number of decoding query tokens per request in a batch must be fixed."
+                else:
+                    assert (
+                        num_decode_query_tokens == 1
+                    ), "Single-query and multi-query decoding tokens cannot be mixed in a batch."
+
                 sequence_ids.append(request.sequence_id)
                 prompt_lens.append(request.prompt_token_counts)
 
@@ -247,6 +265,7 @@ class Model:
             cache.decode_block_tables,
             self.sliding_window,
             is_prefill,
+            num_decode_query_tokens,
         )
 
         input_shape = input_ids.shape
@@ -284,33 +303,37 @@ class Model:
                     slot_mapping,
                     self.params,
                 )
-
-            if self.disco_session:
-                logits, _ = out.debug_get_from_remote(0)
-            else:
-                logits = out[
-                    0
-                ]  # Ignore returned KV cache since it is updated in-place anyway.
         else:
             torch.cuda.nvtx.range_push(f"forward decode {input_shape}")
 
             if self.disco_session:
                 block_tables = copy_to_worker_0(self.disco_session, block_tables)
 
-            out = self.mod["decode"](
-                input_ids,
-                positions,
-                seq_lens,
-                self.cache_blocks,
-                slot_mapping,
-                block_tables,
-                self.params,
-            )
-
-            if self.disco_session:
-                logits, _ = out.debug_get_from_remote(0)
+            if num_decode_query_tokens is not None and num_decode_query_tokens > 1:
+                out = self.mod["decode_multi_query"](
+                    input_ids,
+                    positions,
+                    seq_lens,
+                    self.cache_blocks,
+                    slot_mapping,
+                    block_tables,
+                    self.params,
+                )
             else:
-                logits = out[0]
+                out = self.mod["decode"](
+                    input_ids,
+                    positions,
+                    seq_lens,
+                    self.cache_blocks,
+                    slot_mapping,
+                    block_tables,
+                    self.params,
+                )
+
+        if self.disco_session:
+            logits, _ = out.debug_get_from_remote(0)
+        else:
+            logits = out[0]
 
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()

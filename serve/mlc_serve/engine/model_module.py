@@ -28,9 +28,10 @@ class PrefillRequest:
 class DecodeRequest:
     sequence_id: SequenceId
     prompt_token_counts: int
-    # All tokens for this request, including prompt
+    # Decoded tokens for this sequence
     token_ids: List[int]
     sampling_params: SamplingParams
+    num_query_tokens: int = 1
 
 
 @dataclass

@@ -180,6 +180,7 @@ def prepare_inputs(
     all_decode_block_tables,
     sliding_window,
     is_prefill,
+    num_decode_query_tokens=1,
 ):
     block_tables = []
     seq_lens = []
@@ -206,13 +207,17 @@ def prepare_inputs(
                 start_idx += prompt_len
 
         else:
-            input_ids.append(token_ids[-1])
             seq_len = prompt_lens[i] + len(token_ids)
-            positions.append(seq_len - 1)
+            input_ids += token_ids[-num_decode_query_tokens:]
+
+            for i in range(num_decode_query_tokens):
+                positions.append(seq_len - (num_decode_query_tokens - i))
+
+            slot_mapping += all_slot_mappings[sequence_id][-num_decode_query_tokens:]
+
             block_table = all_decode_block_tables[sequence_id]
             max_num_blocks_per_seq = max(max_num_blocks_per_seq, len(block_table))
             block_tables.append(block_table.get_blocks())
-            slot_mapping.append(all_slot_mappings[sequence_id][-1])
 
             if sliding_window:
                 seq_lens.append(min(seq_len, sliding_window))
