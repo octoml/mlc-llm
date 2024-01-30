@@ -155,7 +155,7 @@ def sample(
         torch.cuda.nvtx.range_pop()
         return None
 
-    res_random = torch.multinomial(probs, 1, True).cpu().numpy()[:, 0]
+    res_random = torch.multinomial(probs, 1, True)[:, 0].cpu().numpy()
 
     if logits_random.shape[0] == num_seq:
         torch.cuda.nvtx.range_pop()
