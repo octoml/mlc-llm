@@ -354,6 +354,10 @@ class Model:
             self.copy_cache_blocks_func(self.cache_blocks, block_mapping)
             cache.pending_copy_from_to = []
 
+        if len(logits.shape) == 3:
+            # TODO(masahi, yelite): Proper logic for handling multi-query logits (speculative decoding).
+            return []
+
         try:
             next_tokens = sample(logits, sampling_params, self.vocab_size)
             assert next_tokens is not None
