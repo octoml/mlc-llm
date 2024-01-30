@@ -84,11 +84,8 @@ def sample(
         mask_random_dvc = mask_random_cpu
         mask_greedy_dvc = mask_greedy_cpu
     else:  # gpu
-        mask_random_dvc = torch.tensor(
-            [p.sampling_type == SamplingType.RANDOM for p in sampling_params],
-            dtype=torch.bool, device=logits.device
-        )
-        mask_greedy_dvc = torch.logical_not(mask_random_dvc)
+        mask_random_dvc = mask_random_cpu.to(logits.device)
+        mask_greedy_dvc = mask_greedy_cpu.to(logits.device)
 
     logits_greedy = logits[mask_greedy_dvc]
 
