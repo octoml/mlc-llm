@@ -1004,31 +1004,37 @@ def _create_quantize_func(param_manager: ParamManager) -> tvm.IRModule:
     # Construct the input of the function.
     # We need a list of ranges for each
     # parameter to get its corresponding tensors loaded from disk.
-    input_tensor_info: List[relax.TensorStructInfo] = []
+    input_tensors: List[relax.Var] = []
     loaded_tensor_ranges: List[range] = []
     for name in param_manager.param_names:
         param = param_manager.params[name]
-        _, loaded_tensor_info = param.quant_spec.get_loaded_tensor_info(name, param.param_info)
+        loaded_tensor_names, loaded_tensor_info = param.quant_spec.get_loaded_tensor_info(
+            name, param.param_info
+        )
         loaded_tensor_ranges.append(
             range(
-                len(input_tensor_info),
-                len(input_tensor_info) + len(loaded_tensor_info),
+                len(input_tensors),
+                len(input_tensors) + len(loaded_tensor_info),
             )
         )
-        input_tensor_info += loaded_tensor_info
-    raw_param_tuple = relax.Var("params", relax.TupleStructInfo(input_tensor_info))
+        input_tensors.extend(
+            relax.Var(name, struct_info)
+            for name, struct_info in zip(loaded_tensor_names, loaded_tensor_info)
+        )
 
-    with bb.function("transform_params", params=[raw_param_tuple]):
+    with bb.function(
+        "transform_params",
+        params=input_tensors,
+        attrs={"num_input": 0},
+    ):
         with bb.dataflow():
             quantized_params: List[relax.Var] = []
             for pidx, name in enumerate(param_manager.param_names):
                 param = param_manager.params[name]
-                param_vars: List[relax.Var] = []
-                # Emit relax.TupleGetItem to get the raw parameters or pre-quantized params.
-                for loaded_tensor_idx in loaded_tensor_ranges[pidx]:
-                    param_vars.append(
-                        bb.emit(relax.TupleGetItem(raw_param_tuple, loaded_tensor_idx))
-                    )
+                param_vars: List[relax.Var] = [
+                    input_tensors[loaded_tensor_idx]
+                    for loaded_tensor_idx in loaded_tensor_ranges[pidx]
+                ]
 
                 # Get the quantization function of this parameter.
                 f_quantize = param.quant_spec.get_quantize_func(param.param_info)
@@ -1071,7 +1077,6 @@ def _create_quantize_func(param_manager: ParamManager) -> tvm.IRModule:
             output = bb.emit_output(relax.Tuple(quantized_params))
         bb.emit_func_output(output)
 
-    mod = bb.get()
     param_manager.param2qrange = param2qrange
     # Return the created IRModule.
     return bb.get()

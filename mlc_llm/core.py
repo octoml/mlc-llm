@@ -32,7 +32,7 @@ from mlc_llm.relax_model.param_manager import (
     chain_parameter_transforms,
     transform_params_for_each_rank,
 )
-from mlc_llm.transform import fuse_split_rotary_embedding, rewrite_attention
+from mlc_llm.transform import fuse_split_rotary_embedding, rewrite_attention, SetEntryFuncs
 from tvm import dlight as dl
 from tvm import relax
 from tvm.contrib.nvcc import parse_compute_version
@@ -775,6 +775,8 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
         mod_deploy, f"{args.model}_{args.quantization.name}".replace("-", "_"), args
     )
 
+    mod_deploy = relax.transform.LegalizeOps()(mod_deploy)
+
     if target_kind != "cpu":
         dispatch_target = (
             args.target
@@ -815,6 +817,223 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
     utils.debug_dump_shader(ex, f"{args.model}_{args.quantization.name}_{target_kind}", args)
     ex.export_library(args.lib_path, **args.export_kwargs)
     print(f"Finish exporting to {args.lib_path}")
+
+
+def generate_mod_transform(model_generators, args, config):
+    # Sharded models are currently implemented by adjusting parameter
+    # sizes based on `self.num_shards`, whenever `build_model_only` is
+    # true.  This produces incorrect input shapes for the parameter
+    # transformation.  In order to produce the correct parameter
+    # transformation function, we need to generate `transform_params`
+    # based on a parameter manager generated with `build_model_only =
+    # False`.
+    #
+    # This is a bit hacky, and can be removed with the migration to SLM.
+    cached_flag = args.build_model_only
+    args.build_model_only = False
+
+    mod, param_manager, params, model_config = model_generators[args.model_category].get_model(
+        args, config
+    )
+
+    parameter_transforms = []
+
+    manager_transform = param_manager.create_parameter_transformation(
+        optimize_parameter_order=False
+    )
+
+    # MLC does not have any quantization option that uses bfloat16.
+    # While the entire model could be computed in bfloat16, not all
+    # operators support it.  For now, reproducing the ParamManager's
+    # conversion of bfloat16 to float16.
+    if config["torch_dtype"] != model_config.dtype:
+        assert config["torch_dtype"] == "bfloat16"
+        assert model_config.dtype == "float16"
+
+        bb = relax.BlockBuilder()
+
+        from tvm.script import tir as T, relax as R
+
+        # TODO(Lunderberg): Instead of a hard-coded PrimFunc for
+        # `is_bfloat16_dtype`, make a relax operator `R.is_dtype(A,
+        # R.dtype("bfloat16"))` that legalizes into the PrimFunc
+        # definition.
+        @T.prim_func(private=True)
+        def is_bfloat16_dtype(tensor: T.handle) -> T.bool:
+            T.func_attr({"tir.is_scheduled": True, "tir.is_host_func": True})
+
+            # From #include <tvm/tir/builtin.h>
+            kArrTypeCode = T.meta_var(5)
+            kArrTypeBits = T.meta_var(6)
+            kArrTypeLanes = T.meta_var(7)
+
+            # From #include <dlpack/dlpack.h>
+            kDLBfloat = T.meta_var(4)
+
+            type_code = T.tvm_struct_get(tensor, 0, kArrTypeCode, dtype="uint8")
+            type_bits = T.tvm_struct_get(tensor, 0, kArrTypeBits, dtype="uint8")
+            type_lanes = T.tvm_struct_get(tensor, 0, kArrTypeLanes, dtype="uint16")
+
+            is_bfloat16: T.bool = (
+                (type_code == kDLBfloat) and (type_bits == 16) and (type_lanes == 1)
+            )
+            T.ret(is_bfloat16)
+
+        is_bfloat16_dtype = bb.add_func(is_bfloat16_dtype, "is_bfloat16_dtype")
+
+        @R.function(private=True)
+        def as_float16_1d(A: R.Tensor(["n"])) -> R.Tensor(["n"], "float16"):
+            n = T.int64()
+
+            is_bfloat16 = is_bfloat16_dtype(A)
+
+            if is_bfloat16:
+                A = R.match_cast(A, R.Tensor([n], "bfloat16"))
+                B = A.astype("float16")
+            else:
+                B = R.match_cast(A, R.Tensor([n], "float16"))
+            return B
+
+        as_float16_1d = bb.add_func(as_float16_1d, "as_float16_1d")
+
+        @R.function(private=True)
+        def as_float16_2d(A: R.Tensor(["m", "n"])) -> R.Tensor(["m", "n"], "float16"):
+            m = T.int64()
+            n = T.int64()
+
+            is_bfloat16 = is_bfloat16_dtype(A)
+
+            if is_bfloat16:
+                A = R.match_cast(A, R.Tensor([m, n], "bfloat16"))
+                B = A.astype("float16")
+            else:
+                B = R.match_cast(A, R.Tensor([m, n], "float16"))
+            return B
+
+        as_float16_2d = bb.add_func(as_float16_2d, "as_float16_2d")
+
+        float16_params = manager_transform["transform_params"].params
+        either_float16_params = [
+            relax.Var(
+                param.name_hint,
+                relax.TensorStructInfo(param.struct_info.shape, param.struct_info.vdevice),
+            )
+            for param in float16_params
+        ]
+
+        with bb.function("transform_params", either_float16_params, attrs={"num_input": 0}):
+            with bb.dataflow():
+                float16_exprs = []
+                for input_param in either_float16_params:
+                    if input_param.struct_info.ndim == 1:
+                        float16_expr = as_float16_1d(input_param)
+                    else:
+                        float16_expr = as_float16_2d(input_param)
+
+                    float16_expr = bb.emit(float16_expr, input_param.name_hint + ".float16")
+                    float16_exprs.append(float16_expr)
+                bb.emit_output(float16_exprs)
+
+            bb.emit_func_output(float16_exprs)
+
+        parameter_transforms.append(bb.get())
+
+
+    # If the model provided constants, bind them to the transform_params.
+    # This ensures that the generated function can reproduce the same
+    # output parameters even when executed outside of the `build.py`
+    # context.
+    if params is not None:
+        func = manager_transform["transform_params"]
+        param_bindings = {
+            var: param for var, param in zip(func.params, params) if param is not None
+        }
+        bound_param_indices = [i for i, var in enumerate(func.params) if var in param_bindings]
+
+        func = func.bind_params(param_bindings)
+        # Preserve the indices of all parameters that aren't being bound.
+        new_params = list(func.params)
+        for index in bound_param_indices:
+            new_params.insert(index, relax.Var(f"dummy_param_{index}", relax.ObjectStructInfo()))
+        func = relax.Function(
+            params=new_params,
+            body=func.body,
+            ret_struct_info=func.ret_struct_info,
+            is_pure=func.is_pure,
+            attrs=func.attrs,
+            span=func.span,
+        )
+        manager_transform["transform_params"] = func
+
+    parameter_transforms.append(manager_transform)
+
+    # Run pre-sharding if required
+    if args.num_shards > 1 and args.use_presharded_weights:
+        mod_shard = create_shard_transformation_func(param_manager, args, model_config)
+        parameter_transforms.append(mod_shard)
+
+    # Chain all parameter transforms together.  This allows
+    # ReorderTransformFunc to be applied to the single
+    # resulting parameter transformation function.
+    mod_transform = functools.reduce(chain_parameter_transforms, parameter_transforms)
+
+    seq = [
+        # TODO: Handle model params without a tuple in
+        # optimize_transform_param_order, so that the parameter names can
+        # be preserved longer.
+        generate_orig_param_names,
+        # TODO(Lunderberg): Implement
+        # relax.transform.Simplify() that applies
+        # canonicalization, CSE, and DCE until
+        # convergence.
+        relax.transform.CanonicalizeBindings(),
+        relax.transform.EliminateCommonSubexpr(),
+        relax.transform.DeadCodeElimination(),
+        relax.transform.CanonicalizeBindings(),
+        relax.transform.EliminateCommonSubexpr(),
+        relax.transform.DeadCodeElimination(),
+        # Re-order parameters to avoid needed to minimize the number
+        # of loaded files required
+        tvm.ir.transform.ApplyPassToFunction(
+            mlc_llm.transform.ReorderTransformFunc(),
+            ".*transform_params",
+        ),
+    ]
+
+    mod_transform = tvm.ir.transform.Sequential(
+        seq,
+        name="ParameterTransformOptimizations",
+    )(mod_transform)
+
+    args.build_model_only = cached_flag
+
+    return mod_transform
+
+
+@tvm.transform.module_pass(opt_level=0)
+def generate_orig_param_names(mod, _context):
+    if "transform_params" not in mod:
+        return mod
+
+    mod = mod.clone()
+
+    func = mod["transform_params"]
+    if func.attrs is not None and "num_input" in func.attrs:
+        num_input = func.attrs["num_input"].value
+    else:
+        num_input = 0
+
+    from tvm.script import relax as R
+
+    param_names = [R.str(param.name_hint) for param in mod["transform_params"].params[num_input:]]
+
+    @R.function
+    def get_original_param_names():
+        return R.tuple(*param_names)
+
+    mod["get_original_param_names"] = get_original_param_names
+
+    return mod
 
 
 def build_model_from_args(args: argparse.Namespace):
@@ -895,31 +1114,67 @@ def build_model_from_args(args: argparse.Namespace):
         for qspec_updater_class in param_manager.qspec_updater_classes:
             qspec_updater = qspec_updater_class(param_manager)
             qspec_updater.visit_module(mod)
+
+        # Update the IRModule to accept the quantized parameters as input.
         mod = param_manager.transform_dequantize()(mod)
 
-        if not args.build_model_only:
-            parameter_transforms = []
+        # Update the IRModule to include the `transform_params` function.
+        mod_transform = generate_mod_transform(model_generators, args, config)
+        mod.update(mod_transform)
 
+        # At this point, the IRModule contains all functions required to
+        # either transform the parameters or to run inference using the
+        # transformed parameters.  Further use of the `param_manager`
+        # should be optional, such as re-ordering parameter access based
+        # on the *.bin that contains each parameter.
+
+        transform_seq = []
+
+        transform_seq.append(optimize_mod_pipeline(args, model_config))
+
+        transform_seq.append(
+            tvm.ir.transform.ApplyPassToFunction(
+                relax.transform.BundleModelParams("base_params"),
+                "(?!transform_params).*",
+            )
+        )
+
+        transform_seq.append(
+            tvm.ir.transform.ApplyPassToFunction(
+                tvm.ir.transform.Sequential(
+                    [
+                        relax.transform.ToNonDataflow(),
+                        relax.transform.LazyTransformParams(fset_item=None),
+                    ],
+                    name="ParameterTransformOptimizations",
+                ),
+                ".*transform_params",
+            )
+        )
+
+        mod = tvm.ir.transform.Sequential(transform_seq, name="OptimizeMLCModel")(mod)
+
+        utils.debug_dump_script(mod, "mod_deploy.py", args)
+
+        if not args.build_model_only:
             # Run pre-quantization if provided.
             args.model_path = param_manager.run_pre_quantize(args.model_path)
             param_manager.init_torch_pname_to_bin_name(args.use_safetensors)
-            parameter_transforms.append(
-                param_manager.create_parameter_transformation(optimize_parameter_order=False)
-            )  # disable to prevent errors
 
-            # Run pre-sharding if required
-            if args.num_shards > 1 and args.use_presharded_weights:
-                mod_shard = create_shard_transformation_func(param_manager, args, model_config)
-                mod_shard = transform_params_for_each_rank(num_shards=args.num_shards)(mod_shard)
-                parameter_transforms.append(mod_shard)
-
-            # Chain all parameter transforms together.  This allows
-            # ReorderTransformFunc to be applied to the single
-            # resulting parameter transformation function.
-            mod_transform = functools.reduce(chain_parameter_transforms, parameter_transforms)
-
+            # In a multi-GPU environment, the built `transform_params`
+            # takes the original unsharded parameters and produces a
+            # sharded parameter set for the GPU, running in parallel
+            # for each of `num_shards` GPUs.  If we are producing a
+            # sharded parameter set to be saved, running the
+            # `transform_params` function `num_shards` times would
+            # require loading the parameters from disk `num_shards`
+            # times.  Running `transform_params_for_each_rank` (and
+            # simplifying afterwards) avoids this overhead.
             seq = tvm.ir.transform.Sequential(
                 [
+                    SetEntryFuncs("transform_params"),
+                    transform_params_for_each_rank(num_shards=args.num_shards),
+                    relax.transform.BundleModelParams(),
                     relax.transform.CanonicalizeBindings(),
                     relax.transform.EliminateCommonSubexpr(),
                     relax.transform.DeadCodeElimination(),
@@ -1022,7 +1277,6 @@ def build_model_from_args(args: argparse.Namespace):
         if args.convert_weights_only:
             exit(0)
 
-        mod = optimize_mod_pipeline(args, model_config)(mod)
         if args.num_shards > 1:
             # We require a "create_sharding_info" function for all
             # multi-GPU models, even if they are using pre-sharded
