@@ -577,8 +577,6 @@ def run(args):
             logits_offset += query_token_len
 
     query_token_lens = [4, 3, 5, 2]
-    func_name = "evaluate_multi_query"
-
     eval_query_requests = []
 
     for request_id, query_token_len in zip(request_ids, query_token_lens):
@@ -601,7 +599,7 @@ def run(args):
         model.dev,
     )
 
-    logits = model.mod[func_name](
+    logits = model.mod["evaluate_multi_query"](
         input_ids,
         positions,
         seq_lens,
@@ -619,10 +617,7 @@ def run(args):
         return
 
     query_token_lens = [3, 3, 3, 3]
-    func_name = "decode_multi_query"
-
     decode_multi_query_requests = requests
-
     query_len = query_token_lens[0]
 
     (
@@ -644,7 +639,7 @@ def run(args):
 
     input_ids = tvm.nd.array(np.reshape(input_ids.numpy(), [-1, query_len]), dev)
 
-    logits = model.mod[func_name](
+    logits = model.mod["decode_multi_query"](
         input_ids,
         positions,
         seq_lens,
