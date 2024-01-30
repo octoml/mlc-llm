@@ -314,7 +314,9 @@ class LlamaAttentionBatched(LlamaAttentionBase):
                     num_seq = hidden_states.struct_info.shape[0]
                     seqlen_q = 1
 
-                queries = nn.emit(reshape(queries, (num_seq, seqlen_q, self.num_query_heads, self.head_dim)))
+                queries = nn.emit(
+                    reshape(queries, (num_seq, seqlen_q, self.num_query_heads, self.head_dim))
+                )
 
                 softmax_lse_accum = nn.emit(
                     relax.op.builtin.alloc_tensor(
@@ -328,7 +330,13 @@ class LlamaAttentionBatched(LlamaAttentionBase):
                 output_accum = nn.emit(
                     relax.op.builtin.alloc_tensor(
                         relax.ShapeExpr(
-                            (self.max_num_partitions, num_seq, self.num_query_heads, seqlen_q, self.head_dim)
+                            (
+                                self.max_num_partitions,
+                                num_seq,
+                                self.num_query_heads,
+                                seqlen_q,
+                                self.head_dim,
+                            )
                         ),
                         dtype="float32",
                         runtime_device_index=0,
@@ -349,9 +357,7 @@ class LlamaAttentionBatched(LlamaAttentionBase):
                     out_sinfo=queries.struct_info,
                 )
 
-        attn_output = nn.emit(
-            reshape(attn_output, hidden_states.struct_info.shape)
-        )
+        attn_output = nn.emit(reshape(attn_output, hidden_states.struct_info.shape))
         attn_output = self.o_proj(attn_output)
 
         return attn_output, (k_cache, v_cache)
@@ -590,7 +596,13 @@ class LlamaForCausalLM(nn.Module):
 
 
 def get_inputs(
-        num_query_token, num_seq, input_shape, config, kv_type=None, max_num_blocks_per_seq=None, sep_embed=False
+    num_query_token,
+    num_seq,
+    input_shape,
+    config,
+    kv_type=None,
+    max_num_blocks_per_seq=None,
+    sep_embed=False,
 ):
     hidden_size = config.hidden_size
 
@@ -627,12 +639,7 @@ def get_inputs(
             num_key_value_heads = config.get_num_key_value_heads() // config.num_shards
             head_size = hidden_size // config.num_attention_heads
 
-            k_cache_shape = (
-                num_blocks,
-                block_size,
-                num_key_value_heads,
-                head_size
-            )
+            k_cache_shape = (num_blocks, block_size, num_key_value_heads, head_size)
             v_cache_shape = k_cache_shape
 
         get_cache_sinfo = lambda i: relax.TensorStructInfo(
@@ -731,7 +738,9 @@ def create_encoding_func(
     num_inputs = 5
 
     with bb.function(func_name):
-        model = LlamaForCausalLM(config, cpu_dev, tvm.tir.SizeVar("vocab_size", "int64"), kv_type, sep_embed)
+        model = LlamaForCausalLM(
+            config, cpu_dev, tvm.tir.SizeVar("vocab_size", "int64"), kv_type, sep_embed
+        )
         param_manager.register_params(model, func_name, quant_scheme, get_param_quant_kind)
 
         input_ids, positions, seq_lens, past_key_values, slot_mapping, _ = get_inputs(
@@ -817,7 +826,9 @@ def create_decoding_func(
             )
 
             with bb.dataflow():
-                model = LlamaForCausalLM(config, cpu_dev, tvm.tir.SizeVar("vocab_size", "int64"), kv_type)
+                model = LlamaForCausalLM(
+                    config, cpu_dev, tvm.tir.SizeVar("vocab_size", "int64"), kv_type
+                )
                 param_manager.register_params(model, func_name, quant_scheme, get_param_quant_kind)
 
                 logits, new_kvs = model(
@@ -866,7 +877,9 @@ def create_evaluate_multi_query_func(
     num_inputs = 8
 
     with bb.function(func_name):
-        model = LlamaForCausalLM(config, cpu_dev, tvm.tir.Var("vocab_size", "int64"), kv_type, False)
+        model = LlamaForCausalLM(
+            config, cpu_dev, tvm.tir.Var("vocab_size", "int64"), kv_type, False
+        )
         param_manager.register_params(model, func_name, quant_scheme, get_param_quant_kind)
 
         input_ids, positions, seq_lens, past_key_values, slot_mapping, _ = get_inputs(
@@ -977,7 +990,10 @@ def get_model(args, hf_config):
     # The CPU device to copy the result of relax.op.max(seq_lens) to CPU.
     cpu_dev = VDevice("llvm", 0, "global")
 
-    kv_type = KVCacheType.FlashDecoding
+    if args.paged_kv_cache_type == "flash-decoding":
+        kv_type = KVCacheType.FlashDecoding
+    else:
+        kv_type = KVCacheType.VLLM
 
     create_evaluate_func(bb, param_manager, config, cpu_dev, args.quantization, sep_embed)
     create_encoding_func(bb, param_manager, config, kv_type, cpu_dev, args.quantization, sep_embed)

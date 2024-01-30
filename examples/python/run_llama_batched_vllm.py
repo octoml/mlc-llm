@@ -338,7 +338,6 @@ class Model:
         self.sliding_window = sliding_window
 
         if sliding_window:
-            # TODO
             self.block_sliding_window = sliding_window // block_size
         else:
             self.block_sliding_window = None
@@ -424,12 +423,10 @@ class Model:
 
 def get_paged_kv_cache_type(model_artifact_path):
     config_file_path = os.path.join(model_artifact_path, "build_config.json")
-
     assert os.path.exists(config_file_path)
 
     with open(config_file_path, mode="rt", encoding="utf-8") as f:
         build_cfg = json.load(f)
-
         return build_cfg["paged_kv_cache_type"]
 
 
@@ -469,7 +466,6 @@ def run(args):
         config = LlamaConfig(**json.load(i_f))
 
     kv_type = get_paged_kv_cache_type(args.artifact_path)
-
     use_flash_decoding = kv_type == "flash-decoding"
 
     if use_flash_decoding:
