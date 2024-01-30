@@ -225,6 +225,8 @@ class Model:
         sequence_ids = []
         prompt_lens = []
         num_sequences = []
+        # TODO(masahi, yelite): Update this when a new request type for speculative decoding
+        # is implemented.
         num_decode_query_tokens = 1
 
         for request in requests:
@@ -232,18 +234,6 @@ class Model:
                 sequence_ids.append(get_prompt_sequence_id(request.request_id))
                 num_sequences.append(request.num_sequence)
             else:
-                if request.num_query_tokens > 1:
-                    if num_decode_query_tokens == 1:
-                        num_decode_query_tokens = request.num_query_tokens
-
-                    assert (
-                        num_decode_query_tokens == request.num_query_tokens
-                    ), "The number of decoding query tokens per request in a batch must be fixed."
-                else:
-                    assert (
-                        num_decode_query_tokens == 1
-                    ), "Single-query and multi-query decoding tokens cannot be mixed in a batch."
-
                 sequence_ids.append(request.sequence_id)
                 prompt_lens.append(request.prompt_token_counts)
 

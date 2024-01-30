@@ -31,7 +31,6 @@ class DecodeRequest:
     # Decoded tokens for this sequence
     token_ids: List[int]
     sampling_params: SamplingParams
-    num_query_tokens: int = 1
 
 
 @dataclass
