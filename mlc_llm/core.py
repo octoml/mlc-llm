@@ -860,6 +860,48 @@ def extract_lora_ranks(
     return lora_ranks
 
 
+def generate_mod_transform(model_generators, args, config):
+    # Sharded models are currently implemented by adjusting parameter
+    # sizes based on `self.num_shards`, whenever `build_model_only` is
+    # true.  This produces incorrect input shapes for the parameter
+    # transformation.  In order to produce the correct parameter
+    # transformation function, we need to generate `transform_params`
+    # based on a parameter manager generated with `build_model_only =
+    # False`.
+    #
+    # This is a bit hacky, and can be removed with the migration to SLM.
+    cached_flag = args.build_model_only
+    args.build_model_only = False
+
+    mod, param_manager, params, model_config = model_generators[args.model_category].get_model(
+        args, config
+    )
+
+    parameter_transforms = []
+
+    parameter_transforms.append(
+        # Disable optimized param ordering, since it will be re-run later
+        param_manager.create_parameter_transformation(optimize_parameter_order=False)
+    )
+
+    # Run pre-sharding if required
+    if args.num_shards > 1 and args.use_presharded_weights:
+        # TODO: Ensure that the correct shapes are present in the
+        # `transform_params` function when there is more than one
+        # shard.
+        mod_shard = create_shard_transformation_func(param_manager, args, model_config)
+        mod_shard = transform_params_for_each_rank(mod_shard, num_shards=args.num_shards)
+        parameter_transforms.append(mod_shard)
+
+    # Chain all parameter transforms together.  This allows
+    # ReorderTransformFunc to be applied to the single
+    # resulting parameter transformation function.
+    mod_transform = functools.reduce(chain_parameter_transforms, parameter_transforms)
+
+    args.build_model_only = cached_flag
+    return mod_transform
+
+
 def build_model_from_args(args: argparse.Namespace):
     if args.quantization == "q4f16_0":
         print(
@@ -937,49 +979,27 @@ def build_model_from_args(args: argparse.Namespace):
         for qspec_updater_class in param_manager.qspec_updater_classes:
             qspec_updater = qspec_updater_class(param_manager)
             qspec_updater.visit_module(mod)
+
+        # Update the IRModule to accept the quantized parameters as input.
         mod = param_manager.transform_dequantize()(mod)
 
-        if not args.build_model_only:
-            parameter_transforms = []
+        # Update the IRModule to include the `transform_params` function.
+        mod_transform = generate_mod_transform(model_generators, args, config)
+        mod.update(mod_transform)
 
+        # At this point, the IRModule contains all functions required to
+        # either transform the parameters or to run inference using the
+        # transformed parameters.  Further use of the `param_manager`
+        # should be optional, such as re-ordering parameter access based
+        # on the *.bin that contains each parameter.
+
+        if not args.build_model_only:
             # Run pre-quantization if provided.
             args.model_path = param_manager.run_pre_quantize(args.model_path)
             param_manager.init_torch_pname_to_bin_name(args.use_safetensors)
-            parameter_transforms.append(
-                param_manager.create_parameter_transformation(optimize_parameter_order=False)
-            )  # disable to prevent errors
 
-            # Run pre-sharding if required
-            if args.num_shards > 1 and args.use_presharded_weights:
-                mod_shard = create_shard_transformation_func(param_manager, args, model_config)
-                mod_shard = transform_params_for_each_rank(mod_shard, num_shards=args.num_shards)
-                parameter_transforms.append(mod_shard)
-
-            # Chain all parameter transforms together.  This allows
-            # ReorderTransformFunc to be applied to the single
-            # resulting parameter transformation function.
-            mod_transform = functools.reduce(chain_parameter_transforms, parameter_transforms)
-
-            seq = tvm.ir.transform.Sequential(
-                [
-                    relax.transform.CanonicalizeBindings(),
-                    relax.transform.EliminateCommonSubexpr(),
-                    relax.transform.DeadCodeElimination(),
-                    # TODO(Lunderberg): Implement
-                    # relax.transform.Simplify() that applies
-                    # canonicalization, CSE, and DCE until
-                    # convergence.
-                    relax.transform.CanonicalizeBindings(),
-                    relax.transform.EliminateCommonSubexpr(),
-                    relax.transform.DeadCodeElimination(),
-                    param_manager.optimize_transform_param_order(),
-                ],
-                name="SimplifyModTransform",
-            )
-
-            mod_transform = seq(mod_transform)
-
-            params = utils.convert_weights(mod_transform, param_manager, params, args)
+            mod = param_manager.optimize_transform_param_order()(mod)
+            params = utils.convert_weights(mod, param_manager, params, args)
 
             if args.num_shards > 1 and use_ft_quant:
                 preprocessed = []
