@@ -77,7 +77,7 @@ def sample(
 
     mask_random_cpu = torch.tensor(
         [p.sampling_type == SamplingType.RANDOM for p in sampling_params],
-        dtype=torch.bool
+        dtype=torch.bool,
     )
     mask_greedy_cpu = torch.logical_not(mask_random_cpu)
     if logits.device == torch.device("cpu"):
