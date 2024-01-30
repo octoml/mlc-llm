@@ -76,13 +76,19 @@ def sample(
     logits = torch.from_dlpack(logits)
     num_seq = len(sampling_params)
 
-    mask_random = torch.tensor(
+    mask_random_cpu = torch.tensor(
         [p.sampling_type == SamplingType.RANDOM for p in sampling_params],
         dtype=torch.bool,
     )
-    mask_greedy = torch.logical_not(mask_random)
+    mask_greedy_cpu = torch.logical_not(mask_random_cpu)
+    if logits.device == torch.device("cpu"):
+        mask_random_dvc = mask_random_cpu
+        mask_greedy_dvc = mask_greedy_cpu
+    else:  # gpu
+        mask_random_dvc = mask_random_cpu.to(logits.device)
+        mask_greedy_dvc = mask_greedy_cpu.to(logits.device)
 
-    logits_greedy = logits[mask_greedy]
+    logits_greedy = logits[mask_greedy_dvc]
 
     if logits_greedy.shape[0] > 0:
         res_greedy = torch.argmax(logits_greedy, -1).cpu().numpy()
@@ -141,7 +147,7 @@ def sample(
                     .to(device=logits.device)
                 )
 
-    logits_random = logits[mask_random]
+    logits_random = logits[mask_random_dvc]
 
     if divide_by_temperature:
         t = torch.tensor(temperatures, dtype=logits.dtype, device=logits.device)
@@ -156,17 +162,17 @@ def sample(
         torch.cuda.nvtx.range_pop()
         return None
 
-    res_random = torch.multinomial(probs, 1, True).cpu().numpy()[:, 0]
+    res_random = torch.multinomial(probs, 1, True)[:, 0].cpu().numpy()
 
     if logits_random.shape[0] == num_seq:
         torch.cuda.nvtx.range_pop()
         return res_random
 
     res = np.empty((num_seq,), dtype=np.int32)
-    res[mask_random] = res_random
+    res[mask_random_cpu] = res_random
 
     if logits_greedy.shape[0] > 0:
-        res[mask_greedy] = res_greedy
+        res[mask_greedy_cpu] = res_greedy
 
     torch.cuda.nvtx.range_pop()
     return res

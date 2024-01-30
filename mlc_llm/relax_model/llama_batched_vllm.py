@@ -558,7 +558,7 @@ class LlamaForCausalLM(nn.Module):
 
         # Set the cached sin/cos to the maximum of 2048 and max seq len.
         # This will be eliminated further with online rotary embedding calculation.
-        cache_len = te.var("cache_len", "int64")
+        cache_len = te.var("cached_rotary_embedding_len", "int64")
         self.cos_cached = nn.Parameter((cache_len, head_dim), dtype=config.dtype, name="cos_cached")
         self.sin_cached = nn.Parameter((cache_len, head_dim), dtype=config.dtype, name="sin_cached")
         ############ End ############
@@ -762,8 +762,8 @@ def create_evaluate_func(
     """Evaluate logits for the last token in each sequence. Same as prefill but without KV cache."""
     func_name = "evaluate"
 
-    num_query_token = tvm.tir.SizeVar("num_query_token", "int64")
-    num_seq = tvm.tir.SizeVar("num_seq", "int64")
+    num_query_token = tvm.tir.SizeVar("num_tokens_excluding_cache", "int64")
+    num_seq = tvm.tir.SizeVar("batch_size", "int64")
 
     with bb.function(func_name):
         model = LlamaForCausalLM(config, cpu_dev, tvm.tir.Var("vocab_size", "int64"), sep_embed)
@@ -815,8 +815,8 @@ def create_encoding_func(
     """
     func_name = "prefill_with_embed" if sep_embed else "prefill"
 
-    num_query_token = tvm.tir.SizeVar("num_query_token", "int64")
-    num_seq = tvm.tir.SizeVar("num_seq", "int64")
+    num_query_token = tvm.tir.SizeVar("num_tokens_excluding_cache", "int64")
+    num_seq = tvm.tir.SizeVar("batch_size", "int64")
 
     num_inputs = 5
 
@@ -885,7 +885,7 @@ def create_decoding_func(
     """Batched decoding with vLLM paged KV cache."""
     func_name = "decode"
 
-    num_seq = tvm.tir.SizeVar("num_seq", "int64")
+    num_seq = tvm.tir.SizeVar("batch_size", "int64")
 
     func_names = ["decode"]
 
@@ -952,9 +952,9 @@ def create_evaluate_multi_query_func(
 ) -> None:
     func_name = "evaluate_multi_query"
 
-    num_query_token = tvm.tir.SizeVar("num_query_token", "int64")
-    num_past_token = tvm.tir.SizeVar("num_past_token", "int64")
-    num_seq = tvm.tir.SizeVar("num_seq", "int64")
+    num_query_token = tvm.tir.SizeVar("num_tokens_excluding_cache", "int64")
+    num_past_token = tvm.tir.SizeVar("num_tokens_in_cache", "int64")
+    num_seq = tvm.tir.SizeVar("batch_size", "int64")
     seq_lens_sum = tvm.tir.SizeVar("seq_lens_sum", "int64")
 
     num_inputs = 8
