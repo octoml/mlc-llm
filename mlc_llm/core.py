@@ -928,13 +928,80 @@ def build_model_from_args(args: argparse.Namespace):
         # should be optional, such as re-ordering parameter access based
         # on the *.bin that contains each parameter.
 
+        transform_seq = []
+
+        transform_seq.append(optimize_mod_pipeline(args, model_config))
+
+        transform_seq.append(
+            tvm.ir.transform.ApplyPassToFunction(
+                relax.transform.BundleModelParams("base_params"),
+                "(?!transform_params).*",
+            )
+        )
+
+        transform_seq.append(
+            tvm.ir.transform.ApplyPassToFunction(
+                tvm.ir.transform.Sequential(
+                    [
+                        # Simplifying passes that could, in principle, be
+                        # applied to all functions and not just the
+                        # parameter transforms.
+                        #
+                        # TODO(Lunderberg): Implement
+                        # relax.transform.Simplify() that applies
+                        # canonicalization, CSE, and DCE until
+                        # convergence.
+                        relax.transform.CanonicalizeBindings(),
+                        relax.transform.EliminateCommonSubexpr(),
+                        relax.transform.DeadCodeElimination(),
+                        relax.transform.CanonicalizeBindings(),
+                        relax.transform.EliminateCommonSubexpr(),
+                        relax.transform.DeadCodeElimination(),
+                        # Re-order parameters to avoid needed to load from
+                        # multiple pytorch files at the same time.
+                        param_manager.optimize_transform_param_order(),
+                        # API-changing pass, to avoid needing to load all
+                        # parameters (and therefore increasing the memory
+                        # footprint) before calling the parameter
+                        # transformation function.
+                        relax.transform.ToNonDataflow(),
+                        relax.transform.LazyTransformParams(fset_item=None),
+                    ],
+                    name="ParameterTransformOptimizations",
+                ),
+                ".*transform_params",
+            )
+        )
+
+        mod = tvm.ir.transform.Sequential(transform_seq, name="OptimizeMLCModel")(mod)
+
+        utils.debug_dump_script(mod, "mod_deploy.py", args)
+
         if not args.build_model_only:
             # Run pre-quantization if provided.
             args.model_path = param_manager.run_pre_quantize(args.model_path)
             param_manager.init_torch_pname_to_bin_name(args.use_safetensors)
 
-            mod = param_manager.optimize_transform_param_order()(mod)
-            params = utils.convert_weights(mod, param_manager, params, args)
+            seq = tvm.ir.transform.Sequential(
+                [
+                    relax.transform.CanonicalizeBindings(),
+                    relax.transform.EliminateCommonSubexpr(),
+                    relax.transform.DeadCodeElimination(),
+                    # TODO(Lunderberg): Implement
+                    # relax.transform.Simplify() that applies
+                    # canonicalization, CSE, and DCE until
+                    # convergence.
+                    relax.transform.CanonicalizeBindings(),
+                    relax.transform.EliminateCommonSubexpr(),
+                    relax.transform.DeadCodeElimination(),
+                    param_manager.optimize_transform_param_order(),
+                ],
+                name="SimplifyModTransform",
+            )
+
+            mod_transform = seq(mod_transform)
+
+            params = utils.convert_weights(mod_transform, param_manager, params, args)
 
             if args.num_shards > 1 and use_ft_quant:
                 preprocessed = []
@@ -1019,7 +1086,6 @@ def build_model_from_args(args: argparse.Namespace):
         if args.convert_weights_only:
             exit(0)
 
-        mod = optimize_mod_pipeline(args, model_config)(mod)
         if args.num_shards > 1:
             # We require a "create_sharding_info" function for all
             # multi-GPU models, even if they are using pre-sharded
