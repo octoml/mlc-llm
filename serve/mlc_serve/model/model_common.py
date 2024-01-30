@@ -75,11 +75,20 @@ def sample(
     logits = torch.from_dlpack(logits)
     num_seq = len(sampling_params)
 
-    mask_random_dvc = torch.tensor(
+    mask_random_cpu = torch.tensor(
         [p.sampling_type == SamplingType.RANDOM for p in sampling_params],
-        dtype=torch.bool, device=logits.device
+        dtype=torch.bool
     )
-    mask_greedy_dvc = torch.logical_not(mask_random_dvc)
+    mask_greedy_cpu = torch.logical_not(mask_random_cpu)
+    if logits.device == torch.device("cpu"):
+        mask_random_dvc = mask_random_cpu
+        mask_greedy_dvc = mask_greedy_cpu
+    else:  # gpu
+        mask_random_dvc = torch.tensor(
+            [p.sampling_type == SamplingType.RANDOM for p in sampling_params],
+            dtype=torch.bool, device=logits.device
+        )
+        mask_greedy_dvc = torch.logical_not(mask_random_dvc)
 
     logits_greedy = logits[mask_greedy_dvc]
 
@@ -161,11 +170,6 @@ def sample(
         torch.cuda.nvtx.range_pop()
         return res_random
 
-    mask_random_cpu = torch.tensor(
-        [p.sampling_type == SamplingType.RANDOM for p in sampling_params],
-        dtype=torch.bool
-    )
-    mask_greedy_cpu = torch.logical_not(mask_random_cpu)
     res = np.empty((num_seq,), dtype=np.int32)
     res[mask_random_cpu] = res_random
 
