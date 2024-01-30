@@ -161,11 +161,16 @@ def sample(
         torch.cuda.nvtx.range_pop()
         return res_random
 
+    mask_random_cpu = torch.tensor(
+        [p.sampling_type == SamplingType.RANDOM for p in sampling_params],
+        dtype=torch.bool
+    )
+    mask_greedy_cpu = torch.logical_not(mask_random_cpu)
     res = np.empty((num_seq,), dtype=np.int32)
-    res[mask_random] = res_random
+    res[mask_random_cpu] = res_random
 
     if logits_greedy.shape[0] > 0:
-        res[mask_greedy] = res_greedy
+        res[mask_greedy_cpu] = res_greedy
 
     torch.cuda.nvtx.range_pop()
     return res
