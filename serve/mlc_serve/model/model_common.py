@@ -77,7 +77,7 @@ def sample(
 
     mask_random = torch.tensor(
         [p.sampling_type == SamplingType.RANDOM for p in sampling_params],
-        dtype=torch.bool,
+        dtype=torch.bool, device=logits.device
     )
     mask_greedy = torch.logical_not(mask_random)
 
