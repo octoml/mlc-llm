@@ -129,8 +129,10 @@ def _prepare_inputs(
 class Model:
     def __init__(
         self,
-        config,
-        dev,
+        config: ModelArtifactConfig,
+        dev: tvm.runtime.Device,
+        block_size: int,
+        copy_blocks_func_name: str,
     ):
         self.mod, self.params, self.disco_session = get_tvm_model(config, dev)
         self.dev = dev
@@ -139,7 +141,7 @@ class Model:
         self.num_shards = config.num_shards
 
         if self.sliding_window:
-            self.block_sliding_window = self.sliding_window // CacheManager.block_size
+            self.block_sliding_window = self.sliding_window // block_size
         else:
             self.block_sliding_window = None
 
@@ -149,7 +151,7 @@ class Model:
             )
         else:
             self.copy_cache_blocks_func = tvm.get_global_func(
-                "tvm.contrib.vllm.copy_blocks"
+                copy_blocks_func_name,
             )
 
         self.cache_blocks = None
@@ -432,7 +434,16 @@ def init_tvm_model(
 ) -> Tuple[TextGenerator, CacheManager]:
     dev = tvm.device("cuda", 0)
 
-    model = Model(model_artifact_config, dev)
+    if model_artifact_config.paged_kv_cache_type == "flash-decoding":
+        allocate_func_name = "tvm.contrib.flash_attn.allocate_kv_cache"
+        copy_blocks_func_name = "tvm.contrib.flash_attn.copy_blocks"
+        block_size = 256
+    else:
+        allocate_func_name = "tvm.contrib.vllm.allocate_kv_cache"
+        copy_blocks_func_name = "tvm.contrib.vllm.copy_blocks"
+        block_size = 16
+
+    model = Model(model_artifact_config, dev, block_size, copy_blocks_func_name)
 
     if model_artifact_config.num_shards > 1:
         model.disco_session.sync_worker_0()
@@ -448,6 +459,7 @@ def init_tvm_model(
         LOG.info("Running memory profiling.")
         num_blocks = get_num_cache_blocks(
             model,
+            block_size,
             [1] * engine_config.max_num_batched_tokens,
             model_artifact_config.num_hidden_layers,
             num_kv_heads,
@@ -456,7 +468,7 @@ def init_tvm_model(
     else:
         num_blocks = 500
 
-    num_cache_slots = num_blocks * CacheManager.block_size
+    num_cache_slots = num_blocks * block_size
 
     if num_cache_slots <= engine_config.max_num_batched_tokens:
         raise RuntimeError(
@@ -470,22 +482,21 @@ def init_tvm_model(
     LOG.info(f"Using {num_blocks} cache blocks.")
 
     if model.disco_session:
-        init_cache_func = model.disco_session.get_global_func(
-            "tvm.contrib.vllm.allocate_kv_cache"
-        )
+        init_cache_func = model.disco_session.get_global_func(allocate_func_name)
     else:
-        init_cache_func = tvm.get_global_func("tvm.contrib.vllm.allocate_kv_cache")
+        init_cache_func = tvm.get_global_func(allocate_func_name)
 
     model.cache_blocks = init_cache_func(
         head_size,
         model_artifact_config.num_hidden_layers,
         num_kv_heads,
-        CacheManager.block_size,
+        block_size,
         num_blocks,
     )
 
     cache_manager = CacheManager(
         num_blocks,
+        block_size,
         model_artifact_config.sliding_window,
     )
 

@@ -20,6 +20,7 @@ def get_gpu_memory(gpu: int = 0) -> int:
 
 def get_num_cache_blocks(
     model,
+    block_size,
     seq_lens,
     num_layers,
     num_kv_heads,
@@ -28,7 +29,7 @@ def get_num_cache_blocks(
 ):
     used_memory_bytes = model.profile_memory_usage(seq_lens)
     cache_block_size = CacheManager.get_cache_block_size(
-        num_layers, num_kv_heads, head_size
+        block_size, num_layers, num_kv_heads, head_size
     )
     total_vram = get_gpu_memory()
     return int(
