@@ -392,6 +392,7 @@ class BuildArgs:
             "action": "store_true",
         },
     )
+    # TODO(masahi): Remove the use of this option with paged_kv_cache_type
     use_vllm_attention: bool = field(
         default=False,
         metadata={

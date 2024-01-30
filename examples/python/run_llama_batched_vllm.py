@@ -422,6 +422,17 @@ class Model:
         ]
 
 
+def get_paged_kv_cache_type(model_artifact_path):
+    config_file_path = os.path.join(model_artifact_path, "build_config.json")
+
+    assert os.path.exists(config_file_path)
+
+    with open(config_file_path, mode="rt", encoding="utf-8") as f:
+        build_cfg = json.load(f)
+
+        return build_cfg["paged_kv_cache_type"]
+
+
 def parse_args():
     # Example
     # python build.py --model vicuna-v1-7b --quantization q4f16_ft --use-cache=0 --max-seq-len 768 --enable-batching --use-vllm-attention
@@ -457,8 +468,9 @@ def run(args):
     with open(os.path.join(model_path, "config.json"), encoding="utf-8") as i_f:
         config = LlamaConfig(**json.load(i_f))
 
-    # TODO
-    use_flash_decoding = True
+    kv_type = get_paged_kv_cache_type(args.artifact_path)
+
+    use_flash_decoding = kv_type == "flash-decoding"
 
     if use_flash_decoding:
         allocate_func_name = "tvm.contrib.flash_attn.allocate_kv_cache"
@@ -630,7 +642,7 @@ def run(args):
         cache.block_tables,
         model.sliding_window,
         model.dev,
-        False,
+        False,  # is_prefill
         query_len,
     )
 
