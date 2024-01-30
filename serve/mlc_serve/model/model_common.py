@@ -75,13 +75,13 @@ def sample(
     logits = torch.from_dlpack(logits)
     num_seq = len(sampling_params)
 
-    mask_random = torch.tensor(
+    mask_random_dvc = torch.tensor(
         [p.sampling_type == SamplingType.RANDOM for p in sampling_params],
         dtype=torch.bool, device=logits.device
     )
-    mask_greedy = torch.logical_not(mask_random)
+    mask_greedy_dvc = torch.logical_not(mask_random_dvc)
 
-    logits_greedy = logits[mask_greedy]
+    logits_greedy = logits[mask_greedy_dvc]
 
     if logits_greedy.shape[0] > 0:
         res_greedy = torch.argmax(logits_greedy, -1).cpu().numpy()
@@ -140,7 +140,7 @@ def sample(
                     .to(device=logits.device)
                 )
 
-    logits_random = logits[mask_random]
+    logits_random = logits[mask_random_dvc]
 
     if divide_by_temperature:
         t = torch.tensor(temperatures, dtype=logits.dtype, device=logits.device)
