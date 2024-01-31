@@ -462,7 +462,7 @@ def _parse_args(parsed) -> argparse.Namespace:
         elif parsed.paged_kv_cache_type == "flash-decoding":
             assert tvm.get_global_func(
                 "tvm.contrib.flash_attn.flash_decoding_with_paged_kvcache", True
-            ), "TVM needs to be built with -DUSE_CUTLASS=ON to use Flash-Ddecoding."
+            ), "TVM needs to be built with -DUSE_CUTLASS=ON to use Flash-Decoding."
 
     model_name = [
         parsed.model,
