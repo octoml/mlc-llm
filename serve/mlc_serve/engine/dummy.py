@@ -12,9 +12,9 @@ from .base import (
 
 
 class DummyInferenceEngine:
-    def __init__(self):
-        self.queue_lock = Lock()
-        self.has_new_requests = Condition(self.queue_lock)
+    def __init__(self) -> None:
+        self.queue_lock: Lock = Lock()
+        self.has_new_requests: Condition = Condition(self.queue_lock)
         self.request_queue: Dict[RequestId, int] = {}
 
     def add(self, requests: list[Request]):

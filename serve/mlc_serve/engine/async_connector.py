@@ -1,7 +1,7 @@
 import asyncio
 import structlog
-from typing import AsyncIterator, Any
-from concurrent.futures import ThreadPoolExecutor
+from typing import AsyncIterator, Dict
+from collections import deque
 
 from .base import (
     InferenceEngine,
@@ -25,7 +25,8 @@ class AsyncEngineConnector:
         self.engine_loop_task = None
         self.engine_loop_exception = None
         self.shutdown_event = asyncio.Event()
-        self.result_queues = dict[RequestId, ResultQueue]()
+        self.result_queues: Dict[RequestId, ResultQueue] = {}
+        self.recent_cancelled_requests = deque[RequestId](maxlen=64)
 
     async def start(self):
         """
@@ -90,6 +91,7 @@ class AsyncEngineConnector:
             # Running this sync because `await` inside of cancellation events is problematic
             self.engine.cancel(request.request_id)
             LOG.info("AsyncEngineConnector.generate request sucessfully cancelled.", request_id=request.request_id)
+            self.recent_cancelled_requests.appendleft(request.request_id)
             # Always re-raise CancellationErrors unless you know what you're doing.
             raise
         finally:
@@ -139,13 +141,14 @@ class AsyncEngineConnector:
         coroutines = []
         for item in result.outputs:
             request_id = item.request_id
-            if request_id not in self.result_queues:
+            if request_id in self.result_queues:
+                queue = self.result_queues[request_id]
+                coroutines.append(queue.put(item))
+            elif request_id not in self.recent_cancelled_requests:
+                # if request is not in result_queues, and not cancelled recently,
+                # something goes wrong and we want to be aware of it.
                 LOG.warn(
                     f"Unknown request id when dispatching result: {request_id}"
                 )
-                continue
-
-            queue = self.result_queues[request_id]
-            coroutines.append(queue.put(item))
 
         await asyncio.gather(*coroutines)

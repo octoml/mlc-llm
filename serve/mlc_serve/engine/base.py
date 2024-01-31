@@ -6,11 +6,23 @@ from abc import ABC, abstractmethod
 
 from typing import List, Callable, Any, Optional, Dict
 import inspect
+import numpy as np
 
 from .sampling_params import SamplingParams, SamplingType
+from ..openai_logprob_protocol import LogprobsContent
 
 LOG = structlog.stdlib.get_logger(__name__)
 RequestId = str
+
+
+@dataclass
+class RawLogprobsInfo:
+    current_token_id: int
+    current_logprob: float
+    top_token_ids: Optional[np.array]
+    top_logprobs: Optional[np.array]
+
+RawLogprobsInfos = List[Optional[RawLogprobsInfo]]
 
 
 # TODO(@sunggg): consider transition to something like Pydantic
@@ -19,14 +31,7 @@ class MLCServeEngineConfig:
     # The maximum number of tokens in the batch.
     # TODO(@sunggg): figure out better defaults
     use_staging_engine: bool = True
-    # we don't generally expect users to set `max_num_batched_tokens` directly
-    # since it is less intuitive.
-    # instead, we expose `max_input_len` and `max_num_sequences`
-    # so that `max_num_batched_tokens` can be deduced by the following equation.
-    # -> `max_num_batched_tokens` = `max_input_len`*`max_num_sequences`
-    max_input_len: int = 512
-    max_num_sequences: int = 8
-    max_num_batched_tokens: int = -1
+    max_num_batched_tokens: int = 4096
     min_decode_steps: int = 32
     max_decode_steps: int = 48
     init_timeout: int = 120
@@ -48,22 +53,8 @@ def get_engine_config(dict_config):
     # since engine config is critical to the performance
     assert isinstance(engine_config.use_staging_engine, bool)
     assert isinstance(engine_config.max_num_batched_tokens, int)
-    assert isinstance(engine_config.max_input_len, int)
-    assert isinstance(engine_config.max_num_sequences, int)
     assert isinstance(engine_config.max_decode_steps, int)
     assert isinstance(engine_config.min_decode_steps, int)
-
-    # TODO(@sunggg): engine allows -1 for these params. figure out the behavior and enable checks properly
-    assert (
-        engine_config.max_num_batched_tokens == -1
-    ), "`max_num_batched_tokens` is not supposed to be configured directly. \
-            Use `max_num_sequences` and `max_input_len` instead."
-    assert engine_config.max_input_len > 0
-    assert engine_config.max_num_sequences > 0
-    engine_config.max_num_batched_tokens = (
-        engine_config.max_num_sequences * engine_config.max_input_len
-    )
-
     assert (engine_config.min_decode_steps > 0) and (engine_config.max_decode_steps > 0)
     assert engine_config.max_decode_steps > engine_config.min_decode_steps
 
@@ -176,6 +167,7 @@ class SequenceOutput:
     finish_reason: Optional[FinishReason] = None
     # Number of generated tokens so far
     num_generated_tokens: int = 0
+    logprob_info: List[Optional[LogprobsContent]] = field(default_factory=list)
 
     @property
     def is_finished(self) -> bool:
@@ -185,7 +177,7 @@ class SequenceOutput:
 @dataclass
 class RequestOutput:
     request_id: RequestId
-    sequences: list[SequenceOutput]
+    sequences: List[SequenceOutput]
     # TODO: reconsider the place to put this number
     # Only set for outputs with valid sequence outputs
     num_prompt_tokens: Optional[int] = None

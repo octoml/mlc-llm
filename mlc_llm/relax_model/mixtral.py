@@ -5,6 +5,7 @@ from tvm.script import relax as R, tir as T
 from tvm import relax
 from tvm.relax.frontend.nn import Tensor
 from .llama import MixtralConfig, Linear
+import functools
 
 
 class MoELinear(nn.Module):
@@ -18,7 +19,7 @@ class MoELinear(nn.Module):
         if config.quantization_scheme.name == "q0f16":
             # weight is row major
             self.weight = nn.Parameter(
-                (num_experts, in_features, out_features),
+                (num_experts, out_features, in_features),
                 dtype="float16",
             )
         elif config.quantization_scheme.name == "q4f16_ft":
@@ -206,77 +207,62 @@ class MoE(nn.Module):
 
     def get_indices(
         self, cumsum_colwise_flattened: relax.Expr, expert_indices: relax.Expr
-    ) -> relax.Expr:
+    ) -> relax.Tuple:
         from tvm import relax
         from tvm.script import tir as T
 
-        @T.prim_func
-        def get_flattened_expert_indices_scheduled(
-            var_cumsum_colwise_flattened: T.handle,
+        TX = 1024
+        experts_per_tok = T.int32(self.num_experts_per_tok)
+
+        @T.prim_func(private=True)
+        def _func(
+            var_cumsum: T.handle,
             var_expert_indices: T.handle,
-            var_flattened_expert_indices: T.handle,
+            var_flattened_indices: T.handle,
+            var_token_indices: T.handle,
         ):
-            T.func_attr({"tir.is_scheduled": 1})
+            T.func_attr({"tir.is_scheduled": 1, "tir.noalias": True})
             batch_size = T.SizeVar("batch_size", "int32")
-            cumsum_flattened_length = T.SizeVar("cumsum_flattened_length", "int32")
-
-            cumsum_colwise_flattened = T.match_buffer(
-                var_cumsum_colwise_flattened, shape=[cumsum_flattened_length], dtype="int32"
-            )
+            cumsum_len = T.SizeVar("cumsum_len", "int32")  # [experts_per_tok * batch_size]
+            cumsum = T.match_buffer(var_cumsum, [cumsum_len], "int32")
             expert_indices = T.match_buffer(
-                var_expert_indices, shape=[batch_size, self.num_experts_per_tok], dtype="int32"
+                var_expert_indices, [batch_size, experts_per_tok], "int32"
             )
-            flattened_expert_indices = T.match_buffer(
-                var_flattened_expert_indices,
-                shape=[batch_size * self.num_experts_per_tok],
-                dtype="int32",
+            flattened_indices = T.match_buffer(
+                var_flattened_indices, [batch_size * experts_per_tok], "int32"
             )
-
-            for io in T.thread_binding(
-                0, T.ceildiv(cumsum_flattened_length, T.int32(1024)), "blockIdx.x"
+            token_indices = T.match_buffer(
+                var_token_indices, [batch_size * experts_per_tok], "int32"
+            )
+            for bj_o in T.thread_binding(
+                0, T.ceildiv(batch_size * experts_per_tok, TX), "blockIdx.x"
             ):
-                for ii in T.thread_binding(
-                    0, T.min(cumsum_flattened_length, T.int32(1024)), "threadIdx.x"
-                ):
-                    with T.block("get_indices"):
-                        vi = T.axis.spatial(cumsum_flattened_length, io * T.int32(1024) + ii)
-                        T.where(io * T.int32(1024) + ii < cumsum_flattened_length)
-                        T.reads(
-                            cumsum_colwise_flattened[vi - 1 : vi - 1 + 2],
-                            expert_indices[:, 0 : self.num_experts_per_tok],
-                        )
-                        T.writes(flattened_expert_indices[:])
-                        expert_idx = T.alloc_buffer(shape=(), dtype="int32", scope="local")
-                        if cumsum_colwise_flattened[vi] > T.if_then_else(
-                            vi == 0, T.int32(0), cumsum_colwise_flattened[vi - 1]
-                        ):
-                            idx: T.SizeVar("idx", "int32") = cumsum_colwise_flattened[vi] - 1
-                            instance_id: T.SizeVar("instance_id", "int32") = T.truncmod(
-                                vi, batch_size
+                for bj_i in T.thread_binding(0, TX, "threadIdx.x"):
+                    with T.block("indices"):
+                        T.reads(expert_indices[:, :], cumsum[:])
+                        T.writes(flattened_indices[:], token_indices[:])
+                        if bj_o * TX + bj_i < batch_size * experts_per_tok:
+                            b: T.int32 = T.floordiv(bj_o * TX + bj_i, experts_per_tok)
+                            j: T.int32 = T.floormod(bj_o * TX + bj_i, experts_per_tok)
+                            e: T.int32 = expert_indices[b, j]
+                            flattened_indices[cumsum[e * batch_size + b] - 1] = (
+                                b * experts_per_tok + j
                             )
-                            expert_id: T.SizeVar("expert_id", "int32") = T.truncdiv(vi, batch_size)
-                            for j in T.serial(0, self.num_experts_per_tok):
-                                with T.block("select_expert"):
-                                    vj = T.axis.spatial(self.num_experts_per_tok, j)
-                                    vinstance_id = T.axis.spatial(batch_size, instance_id)
-                                    vexpert_id = T.axis.spatial(
-                                        T.truncdiv(cumsum_flattened_length, batch_size), expert_id
-                                    )
-                                    if expert_indices[vinstance_id, vj] == vexpert_id:
-                                        expert_idx[()] = vj
-                            flattened_expert_indices[idx] = (
-                                instance_id * self.num_experts_per_tok + expert_idx[()]
-                            )
+                            token_indices[cumsum[e * batch_size + b] - 1] = b
 
         bb = relax.BlockBuilder.current()
-        gvar = bb.add_func(get_flattened_expert_indices_scheduled, "get_flattened_expert_indices")
+        gvar = bb.add_func(_func, "get_indices")
         return bb.emit(
             relax.call_tir(
                 gvar,
                 [cumsum_colwise_flattened, expert_indices],
-                out_sinfo=relax.TensorStructInfo(
-                    [expert_indices.struct_info.shape[0] * self.num_experts_per_tok], "int32"
-                ),
+                out_sinfo=[
+                    relax.TensorStructInfo(
+                        [expert_indices.struct_info.shape[0] * self.num_experts_per_tok],
+                        "int32",
+                    )
+                    for _ in range(2)
+                ],
             )
         )
 
@@ -380,6 +366,20 @@ class MoE(nn.Module):
             )
         )
 
+    def moe_sum(self, tokens):
+        assert len(tokens.struct_info.shape) == 3
+
+        def unrolled_sum(x):
+            return tvm.te.compute(
+                (x.shape[0], x.shape[2]),
+                lambda i, j: functools.reduce(
+                    tir.Add, [x[i, k, j] for k in range(self.num_experts_per_tok)]
+                ),
+                name="unrolled_sum",
+            )
+
+        return nn.emit_te(unrolled_sum, tokens)
+
     def forward(self, hidden_states):
         hidden_states_shape = hidden_states.struct_info.shape
         hidden_size = hidden_states_shape[-1]
@@ -403,9 +403,10 @@ class MoE(nn.Module):
         mask_T_flattened = nn.emit(relax.op.flatten(relax.op.permute_dims(expert_mask)))
 
         cumsum_colwise_flattened = self.cumsum(mask_T_flattened)
-        flattened_indices = self.get_indices(cumsum_colwise_flattened, expert_indices)
+        flattened_indices, token_indices = self.get_indices(
+            cumsum_colwise_flattened, expert_indices
+        )
         indptr = self.get_indptr(cumsum_colwise_flattened)
-        token_indices = self.get_token_indices(flattened_indices)
 
         gathered_x = nn.emit(relax.op.take(hidden_states, token_indices, axis=0))
         linear_out = self.experts(gathered_x, indptr)
@@ -417,7 +418,7 @@ class MoE(nn.Module):
         expert_weights = nn.emit(
             relax.op.reshape(expert_weights, (-1, self.num_experts_per_tok, 1))
         )
-        weighted_sum = nn.emit(relax.op.sum(unflattened * expert_weights, axis=1))
+        weighted_sum = self.moe_sum(nn.emit(unflattened * expert_weights))
 
         # reshape back to 3D
         weighted_sum = nn.emit(relax.op.reshape(weighted_sum, hidden_states_shape))

@@ -392,6 +392,7 @@ class BuildArgs:
             "action": "store_true",
         },
     )
+    # TODO(masahi): Remove the use of this option with paged_kv_cache_type
     use_vllm_attention: bool = field(
         default=False,
         metadata={
@@ -401,6 +402,10 @@ class BuildArgs:
             ),
             "action": "store_true",
         },
+    )
+    paged_kv_cache_type: str = field(
+        default="vllm",
+        metadata={"help": "The type of paged KV cache, either vllm or flash-decoding"},
     )
 
     @property
@@ -595,6 +600,9 @@ def mod_transform_before_build(
             model_names.append("evaluate")
             model_names.append("evaluate_multi_query")
 
+            if args.paged_kv_cache_type == "flash-decoding":
+                model_names.append("decode_multi_query")
+
         if args.sep_embed:
             model_names = ["embed", "prefill_with_embed"] + model_names[1:]
             if args.enable_batching:
@@ -706,6 +714,7 @@ def dump_build_config(
     config: Dict[str, Any] = {
         "num_shards": args.num_shards,
         "quantization": args.quantization.name,
+        "paged_kv_cache_type": args.paged_kv_cache_type,
         "library_name": args.lib_name,
         "build_options": str(args)
     }

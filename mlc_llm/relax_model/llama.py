@@ -726,7 +726,9 @@ class LlamaModelBase(nn.Module):
 
 
 class LlamaModelForSingleSequence(LlamaModelBase):
-    def __init__(self, config: LlamaConfig, vocab_size_var: tvm.tir.SizeVar, sep_embed: bool = False):
+    def __init__(
+        self, config: LlamaConfig, vocab_size_var: tvm.tir.SizeVar, sep_embed: bool = False
+    ):
         super().__init__(config, vocab_size_var, sep_embed, enable_batching=False)
 
     def _prepare_decoder_attention_mask(self, input_shape, src_len, dtype):
@@ -847,7 +849,7 @@ class LlamaForCausalLM(nn.Module):
 
         # Set the cached sin/cos to the maximum of 2048 and max seq len.
         # This will be eliminated further with online rotary embedding calculation.
-        cache_len = te.var("cache_len", "int64")
+        cache_len = te.var("cached_rotary_embedding_len", "int64")
         self.cos_cached = nn.Parameter((cache_len, head_dim), dtype=config.dtype, name="cos_cached")
         self.sin_cached = nn.Parameter((cache_len, head_dim), dtype=config.dtype, name="sin_cached")
         ############ End ############
@@ -905,7 +907,7 @@ def create_embed_func(
 ) -> None:
     func_name = "embed"
 
-    seq_len = tvm.tir.SizeVar("m", "int64")
+    seq_len = tvm.tir.SizeVar("num_tokens_excluding_cache", "int64")
     with bb.function(func_name):
         model = LlamaEmbedTokensWrapper(config, tvm.tir.SizeVar("vocab_size", "int64"))
         param_manager.register_params(model, func_name, quant_scheme, get_param_quant_kind)
@@ -932,8 +934,8 @@ def create_prefill_func_for_single_seq(
     func_name = "prefill_with_embed" if sep_embed else "prefill"
 
     bsz = 1
-    seq_len = tvm.tir.SizeVar("n", "int64")
-    all_seq_len = tvm.tir.SizeVar("m", "int64")
+    seq_len = tvm.tir.SizeVar("num_tokens_excluding_cache", "int64")
+    all_seq_len = tvm.tir.SizeVar("num_tokens_including_cache", "int64")
     hidden_size = config.hidden_size
     with bb.function(func_name):
         model = LlamaForCausalLM(
@@ -978,8 +980,8 @@ def create_prefill_func_for_batching(
 ) -> None:
     func_name = "prefill_with_embed"
 
-    bsz = tir.SizeVar("nseq", "int64")
-    total_seq_len = tvm.tir.SizeVar("m", "int64")
+    bsz = tir.SizeVar("batch_size", "int64")
+    total_seq_len = tvm.tir.SizeVar("num_tokens_excluding_cache", "int64")
     hidden_size = config.hidden_size
     with bb.function(func_name):
         model = LlamaForCausalLM(
@@ -1017,7 +1019,7 @@ def create_decoding_func_for_single_seq(
     func_name = "decode"
 
     bsz = 1
-    all_seq_len = tvm.tir.SizeVar("m", "int64")
+    all_seq_len = tvm.tir.SizeVar("num_tokens_including_cache", "int64")
 
     with bb.function(func_name):
         model = LlamaForCausalLM(config, tvm.tir.SizeVar("vocab_size", "int64"))
@@ -1056,7 +1058,7 @@ def create_decoding_func_for_batching(
 ) -> None:
     func_name = "decode_with_embed"
 
-    bsz = tir.SizeVar("nseq", "int64")
+    bsz = tir.SizeVar("batch_size", "int64")
     hidden_size = config.hidden_size
     with bb.function(func_name):
         model = LlamaForCausalLM(
@@ -1155,7 +1157,7 @@ def create_softmax_func_for_single_seq(bb: relax.BlockBuilder, config: LlamaConf
 
 def create_softmax_func_for_batching(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
     with bb.function("softmax_with_temperature"):
-        bsz = tvm.tir.SizeVar("nseq", "int64")
+        bsz = tvm.tir.SizeVar("batch_size", "int64")
         logits = nn.Placeholder(
             (bsz, 1, tvm.tir.SizeVar("vocab_size", "int64")),
             dtype="float32",
@@ -1190,8 +1192,8 @@ def emit_paged_kv_cache_op(bb: relax.BlockBuilder, config: LlamaConfig) -> None:
         var_pos2seqidx: T.handle,
         layer_id: T.int64,
     ):
-        nseq = T.int64()
-        ntoken = T.SizeVar("ntoken", "int64")
+        nseq = T.SizeVar("batch_size", "int64")
+        ntoken = T.SizeVar("num_tokens_excluding_cache", "int64")
         npage = T.int64()
         page_size = T.SizeVar("page_size", "int64")
         num_pages = T.int64()
@@ -1251,7 +1253,6 @@ def setup_params(mod, param_manager, dtype, config, args):
         if isinstance(config, MixtralConfig):
             for k, v in mappings:
                 pname = pname.replace(k, v)
-            # pname = pname.replace("model.", "")
             if config.quantization_scheme.name == "q4f16_ft":
                 if pname.endswith("scales"):
                     # TODO: remove after quantization integarted
@@ -1315,7 +1316,7 @@ def setup_params(mod, param_manager, dtype, config, args):
     def quantize(experts, relax_pname):
         print("quantizing experts", relax_pname)
         func = tvm.get_global_func("cutlass.symmetric_quantize")
-        nd_experts = tvm.nd.array(experts)
+        nd_experts = tvm.nd.array(experts.transpose(0, 2, 1))
         qweight, qscale = func(nd_experts, True)
         if relax_pname.endswith("weight"):
             return qweight
@@ -1332,50 +1333,20 @@ def setup_params(mod, param_manager, dtype, config, args):
                 # combine along out_features dimension and then experts dimension
                 experts = []
                 assert len(torch_params) == 2 * config.num_local_experts
-
-                use_pytorch = True
-                if use_pytorch and dtype == "float16":
-                    import torch
-
-                    torch_params = [torch.from_numpy(param).cuda() for param in torch_params]
-                    for i in range(config.num_local_experts):
-                        gate, up = (
-                            torch_params[i],
-                            torch_params[i + config.num_local_experts],
-                        )  # torch weight in col major
-                        gate_up = torch.concatenate([gate, up], axis=0).type(torch.float16)
-                        experts.append(gate_up.transpose(1, 0))
-                    result = torch.stack(experts)
-                    result = result.cpu().numpy()
-                else:
-                    for i in range(config.num_local_experts):
-                        gate, up = (
-                            torch_params[i],
-                            torch_params[i + config.num_local_experts],
-                        )  # torch weight in col major
-                        gate_up = np.concatenate([gate, up], axis=0).astype(dtype)
-                        experts.append(gate_up.transpose())
-                    result = np.stack(experts)
-                # print(config.quantization_scheme.name)
+                for i in range(config.num_local_experts):
+                    gate, up = (
+                        torch_params[i],
+                        torch_params[i + config.num_local_experts],
+                    )  # torch weight in col major
+                    gate_up = np.concatenate([gate, up], axis=0).astype(dtype)
+                    experts.append(gate_up)
+                result = np.stack(experts)
                 if config.quantization_scheme.name == "q4f16_ft" and "experts" in relax_pname:
                     result = quantize(result, relax_pname)
                 return result
             if "experts" in relax_pname:
-                use_pytorch = True
-                if use_pytorch and dtype == "float16":
-                    import torch
-
-                    torch_params = [torch.from_numpy(param).cuda() for param in torch_params]
-                    experts = torch.stack(
-                        [expert.type(torch.float16).transpose(1, 0) for expert in torch_params]
-                    )
-                    result = experts.cpu().numpy()
-                else:
-                    experts = [expert.astype(dtype).transpose() for expert in torch_params]
-                    result = np.stack(experts)
-                # torch_params = [torch.from_numpy(param).cuda() for param in torch_params]
-                # experts = [expert.type(dtype).transpose(1, 0) for expert in torch_params]
-                # result = torch.stack(experts).detach().numpy()
+                experts = [expert.astype(dtype) for expert in torch_params]
+                result = np.stack(experts)
                 if config.quantization_scheme.name == "q4f16_ft" and "experts" in relax_pname:
                     result = quantize(result, relax_pname)
                 return result
@@ -1522,10 +1493,10 @@ def get_model(args, hf_config):
     mod = bb.get()
 
     tir_bound_map = dict()
-    tir_bound_map["n"] = (
+    tir_bound_map["num_tokens_excluding_cache"] = (
         args.prefill_chunk_size if args.prefill_chunk_size > 0 else config.max_sequence_length
     )
-    tir_bound_map["m"] = config.max_sequence_length
+    tir_bound_map["num_tokens_including_cache"] = config.max_sequence_length
     tir_bound_map["vocab_size"] = args.max_vocab_size
     if enable_batching:
         tir_bound_map["nseq"] = args.max_batch_size

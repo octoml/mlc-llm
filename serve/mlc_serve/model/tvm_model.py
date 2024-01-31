@@ -1,6 +1,6 @@
 import math
 import os
-from typing import List, Union, Tuple, Sequence
+from typing import List, Optional, Union, Tuple, Sequence
 
 import structlog
 import numpy as np
@@ -10,7 +10,7 @@ from tvm import relax
 from tvm.runtime import disco as di
 
 from .base import ModelArtifactConfig
-from .paged_cache_manager import KVCache, CacheManager
+from .paged_cache_manager import KVCacheInfo, CacheManager
 from .model_common import (
     sample,
     prepare_inputs,
@@ -19,8 +19,9 @@ from .model_common import (
 )
 
 from ..engine import (
-    SequenceId,
     PROMPT_SEQEUNCE_INDEX,
+    RawLogprobsInfos,
+    SequenceId,
     get_prompt_sequence_id,
     MLCServeEngineConfig,
 )
@@ -155,6 +156,8 @@ class Model:
                 "tvm.contrib.vllm.copy_blocks"
             )
 
+        self.cache_blocks = None
+
     def get_used_memory(self):
         if self.disco_session:
             params = self.params.debug_get_from_remote(0)
@@ -204,6 +207,15 @@ class Model:
 
         return self.get_used_memory()
 
+    def get_logprob_infos(
+        self,
+        i: int,
+        logprob_infos: Optional[RawLogprobsInfos],
+    ) -> Optional[RawLogprobsInfos]:
+        if logprob_infos is None or logprob_infos[i] is None:
+            return None
+        return [logprob_infos[i]]
+
     def sample_from_logits(
         self,
         logits: Union[tvm.nd.NDArray, torch.Tensor],
@@ -217,7 +229,7 @@ class Model:
         sampling_params = [req.sampling_params for req in requests]
 
         try:
-            next_tokens = sample(logits, sampling_params, self.vocab_size)
+            next_tokens, logprob_infos = sample(logits, sampling_params, self.vocab_size)
             assert next_tokens is not None
             outputs = []
             for i, (sequence_id, new_token) in enumerate(
@@ -234,6 +246,7 @@ class Model:
                                 sequence_id=SequenceId(sequence_id.request_id, seq_id),
                                 generated_tokens=[new_token],
                                 error=None,
+                                logprob_info=self.get_logprob_infos(i, logprob_infos),
                             )
                         )
                 else:
@@ -242,6 +255,7 @@ class Model:
                             sequence_id=sequence_id,
                             generated_tokens=[new_token],
                             error=None,
+                            logprob_info=self.get_logprob_infos(i, logprob_infos),
                         )
                     )
 
@@ -257,7 +271,7 @@ class Model:
             for i, (sequence_id, logits_per_token, sampling_param) in enumerate(
                 zip(sequence_ids, torch.from_dlpack(logits), sampling_params)
             ):
-                maybe_new_token = sample(
+                maybe_new_token, logprob_infos = sample(
                     torch.unsqueeze(logits_per_token, 0),
                     [sampling_param],
                     self.vocab_size,
@@ -282,6 +296,7 @@ class Model:
                                     ),
                                     generated_tokens=[new_token],  # type: ignore
                                     error=None,
+                                    logprob_info=self.get_logprob_infos(0, logprob_infos),
                                 )
                             )
                     else:
@@ -290,6 +305,7 @@ class Model:
                                 sequence_id=sequence_id,
                                 generated_tokens=[new_token],  # type: ignore
                                 error=None,
+                                logprob_info=self.get_logprob_infos(0, logprob_infos),
                             )
                         )
                 else:
@@ -303,6 +319,7 @@ class Model:
                                     ),
                                     generated_tokens=[],
                                     error=err_msg,
+                                    logprob_info=self.get_logprob_infos(0, logprob_infos),
                                 )
                             )
                     else:
@@ -311,6 +328,7 @@ class Model:
                                 sequence_id=sequence_id,
                                 generated_tokens=[],
                                 error=err_msg,
+                                logprob_info=self.get_logprob_infos(0, logprob_infos),
                             )
                         )
 
@@ -451,7 +469,7 @@ class Model:
                     input_ids,
                     positions,
                     seq_lens,
-                    cache.cache_blocks,
+                    self.cache_blocks,
                     slot_mapping,
                     indices_within_window,
                     self.params,
@@ -461,17 +479,10 @@ class Model:
                     input_ids,
                     positions,
                     seq_lens,
-                    cache.cache_blocks,
+                    self.cache_blocks,
                     slot_mapping,
                     self.params,
                 )
-
-            if self.disco_session:
-                logits, _ = out.debug_get_from_remote(0)
-            else:
-                logits = out[
-                    0
-                ]  # Ignore returned KV cache since it is updated in-place anyway.
         else:
             torch.cuda.nvtx.range_push(f"forward decode {input_shape}")
 
@@ -482,16 +493,18 @@ class Model:
                 input_ids,
                 positions,
                 seq_lens,
-                cache.cache_blocks,
+                self.cache_blocks,
                 slot_mapping,
                 block_tables,
                 self.params,
             )
 
-            if self.disco_session:
-                logits, _ = out.debug_get_from_remote(0)
-            else:
-                logits = out[0]
+        if self.disco_session:
+            logits, _ = out.debug_get_from_remote(0)
+        else:
+            logits = out[
+                0
+            ]  # Ignore returned KV cache since it is updated in-place anyway.
 
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
@@ -509,7 +522,7 @@ class Model:
                     "int64",
                 )
 
-            self.copy_cache_blocks_func(cache.cache_blocks, block_mapping)
+            self.copy_cache_blocks_func(self.cache_blocks, block_mapping)
             cache.pending_copy_from_to = []
 
         return self.sample_from_logits(logits, sequence_ids, requests)
@@ -536,7 +549,7 @@ def init_tvm_model(
         LOG.info("Running memory profiling.")
         num_blocks = get_num_cache_blocks(
             model,
-            [engine_config.max_input_len] * engine_config.max_num_sequences,
+            [1] * engine_config.max_num_batched_tokens,
             model_artifact_config.num_hidden_layers,
             num_kv_heads,
             head_size,
@@ -552,7 +565,7 @@ def init_tvm_model(
             f" only {num_blocks} cache blocks can be allocated. The number of"
             f" available cache slots is {num_cache_slots}, not enough for"
             f" {engine_config.max_num_batched_tokens} tokens. Try reducing"
-            " --max_input_len or --max_num_sequences."
+            " --max_num_batched_tokens."
         )
 
     LOG.info(f"Using {num_blocks} cache blocks.")
@@ -564,7 +577,7 @@ def init_tvm_model(
     else:
         init_cache_func = tvm.get_global_func("tvm.contrib.vllm.allocate_kv_cache")
 
-    cache_blocks = init_cache_func(
+    model.cache_blocks = init_cache_func(
         head_size,
         model_artifact_config.num_hidden_layers,
         num_kv_heads,
@@ -573,7 +586,6 @@ def init_tvm_model(
     )
 
     cache_manager = CacheManager(
-        cache_blocks,
         num_blocks,
         model_artifact_config.sliding_window,
     )

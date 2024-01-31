@@ -1,6 +1,6 @@
-from typing import Union
 from pathlib import Path
 import structlog
+from typing import List, Union
 
 from .base import get_model_artifact_config
 from .paged_cache_manager import CacheManager
@@ -10,12 +10,12 @@ from .tvm_model import init_tvm_model
 from ..engine import MLCServeEngineConfig
 from ..engine.model_module import (
     DecodeRequest,
+    ModelModule,
     PrefillRequest,
     MultiQueryDecodeRequest,
     TextGenerationResult,
     TextGenerator,
 )
-from ..engine.model_module import ModelModule
 
 LOG = structlog.stdlib.get_logger(__name__)
 

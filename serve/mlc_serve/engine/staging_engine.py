@@ -5,8 +5,8 @@ import logging
 import multiprocessing
 import queue
 from threading import Lock
-from typing import Callable
 from collections import defaultdict
+from typing import Callable
 
 import structlog
 
@@ -24,6 +24,7 @@ from .base import (
 from .engine_common import (
     get_new_request_state,
     update_sequence,
+    logprobs_detokenize
 )
 from .model_module import ModelModule, TokenizerModule
 from .staging_engine_worker import (
@@ -251,6 +252,7 @@ class StagingInferenceEngine(ScopedInferenceEngine):
                         delta,
                         finish_reason,
                         num_generated_tokens=len(gen_seq.generated_token_ids),
+                        logprob_info=logprobs_detokenize(self.tokenizer, seq_output.logprob_info),
                     )
 
                     seq_outputs[request_id].append(output)

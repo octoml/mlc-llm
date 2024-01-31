@@ -40,7 +40,7 @@ setup(
     keywords="machine learning",
     zip_safe=False,
     packages=find_packages(),
-    package_dir={"mlc_llm": "mlc_llm"},
+    package_dir={"mlc_llm": "mlc_llm",},
     install_requires=["numpy", "torch", "transformers", "scipy", "timm"],
     entry_points={"console_scripts": ["mlc_llm_build = mlc_llm.build:main"]},
     distclass=Distribution,
