@@ -1,6 +1,6 @@
 import math
 import os
-from typing import List, Union, Tuple, Sequence
+from typing import List, Optional, Union, Tuple, Sequence
 
 import structlog
 import numpy as np
@@ -18,8 +18,9 @@ from .model_common import (
 )
 
 from ..engine import (
-    SequenceId,
     PROMPT_SEQEUNCE_INDEX,
+    RawLogprobsInfos,
+    SequenceId,
     get_prompt_sequence_id,
     MLCServeEngineConfig,
 )
@@ -210,6 +211,16 @@ class Model:
 
         return self.get_used_memory()
 
+    def get_logprob_infos(
+        self,
+        i: int,
+        logprob_infos: Optional[RawLogprobsInfos],
+    ) -> Optional[RawLogprobsInfos]:
+        if logprob_infos is None or logprob_infos[i] is None:
+            return None
+        return [logprob_infos[i]]
+
+
     def generate(
         self,
         requests: Sequence[Union[PrefillRequest, DecodeRequest]],
@@ -323,7 +334,9 @@ class Model:
         if self.disco_session:
             logits, _ = out.debug_get_from_remote(0)
         else:
-            logits = out[0]
+            logits = out[
+                0
+            ]  # Ignore returned KV cache since it is updated in-place anyway.
 
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
@@ -349,7 +362,7 @@ class Model:
             return []
 
         try:
-            next_tokens = sample(logits, sampling_params, self.vocab_size)
+            next_tokens, logprob_infos = sample(logits, sampling_params, self.vocab_size)
             assert next_tokens is not None
             outputs = []
             for i, (sequence_id, new_token) in enumerate(
@@ -365,6 +378,7 @@ class Model:
                                 sequence_id=SequenceId(sequence_id.request_id, seq_id),
                                 generated_tokens=[new_token],
                                 error=None,
+                                logprob_info=self.get_logprob_infos(i, logprob_infos),
                             )
                         )
                 else:
@@ -373,6 +387,7 @@ class Model:
                             sequence_id=sequence_id,
                             generated_tokens=[new_token],
                             error=None,
+                            logprob_info=self.get_logprob_infos(i, logprob_infos),
                         )
                     )
 
@@ -388,7 +403,7 @@ class Model:
             for i, (sequence_id, logits_per_token, sampling_param) in enumerate(
                 zip(sequence_ids, torch.from_dlpack(logits), sampling_params)
             ):
-                maybe_new_token = sample(
+                maybe_new_token, logprob_infos = sample(
                     torch.unsqueeze(logits_per_token, 0),
                     [sampling_param],
                     self.vocab_size,
@@ -412,6 +427,7 @@ class Model:
                                     ),
                                     generated_tokens=[new_token],  # type: ignore
                                     error=None,
+                                    logprob_info=self.get_logprob_infos(0, logprob_infos),
                                 )
                             )
                     else:
@@ -420,6 +436,7 @@ class Model:
                                 sequence_id=sequence_id,
                                 generated_tokens=[new_token],  # type: ignore
                                 error=None,
+                                logprob_info=self.get_logprob_infos(0, logprob_infos),
                             )
                         )
                 else:
@@ -432,6 +449,7 @@ class Model:
                                     ),
                                     generated_tokens=[],
                                     error=err_msg,
+                                    logprob_info=self.get_logprob_infos(0, logprob_infos),
                                 )
                             )
                     else:
@@ -440,6 +458,7 @@ class Model:
                                 sequence_id=sequence_id,
                                 generated_tokens=[],
                                 error=err_msg,
+                                logprob_info=self.get_logprob_infos(0, logprob_infos),
                             )
                         )
 

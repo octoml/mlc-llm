@@ -1,7 +1,6 @@
 import asyncio
 import structlog
-from typing import AsyncIterator, Any
-from concurrent.futures import ThreadPoolExecutor
+from typing import AsyncIterator, Dict
 from collections import deque
 
 from .base import (
@@ -26,7 +25,7 @@ class AsyncEngineConnector:
         self.engine_loop_task = None
         self.engine_loop_exception = None
         self.shutdown_event = asyncio.Event()
-        self.result_queues = dict[RequestId, ResultQueue]()
+        self.result_queues: Dict[RequestId, ResultQueue] = {}
         self.recent_cancelled_requests = deque[RequestId](maxlen=64)
 
     async def start(self):

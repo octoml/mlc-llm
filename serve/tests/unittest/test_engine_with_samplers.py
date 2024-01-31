@@ -48,7 +48,7 @@ def create_engine(
 
 
 def create_request(
-    idx, prompt, temp, freq_pen, pre_pen, max_tokens, stop, ignore_eos, logit_bias=None
+    idx, prompt, temp, freq_pen, pre_pen, max_tokens, stop, ignore_eos, top_logprobs=0, logprobs=False, logit_bias=None
 ):
     return Request(
         request_id=str(idx),
@@ -58,6 +58,8 @@ def create_request(
             frequency_penalty=freq_pen,
             presence_penalty=pre_pen,
             logit_bias=logit_bias,
+            logprobs=logprobs,
+            top_logprobs=top_logprobs,
         ),
         stopping_criteria=StoppingCriteria(max_tokens=max_tokens, stop_sequences=stop),
         debug_options=DebugOptions(ignore_eos=ignore_eos),
@@ -337,6 +339,43 @@ def _test_penalty(
     if use_staging_engine:
         engine.stop()
 
+def _test_logprobs(
+    model_artifact_path, 
+    use_staging_engine, 
+    max_num_sequences=4,
+    max_input_len=512,
+    num_requests=5,
+    top_logprobs=3,
+):
+    prompt = "hi"
+    engine = create_engine(
+        model_artifact_path,
+        use_staging_engine,
+        max_num_sequences,
+        max_input_len,
+    )
+    s = 113
+    requests = [create_request(idx=str(n-s), prompt=prompt, temp=0, max_tokens=n, stop=None, ignore_eos=True, top_logprobs=top_logprobs, logprobs=True) for n in range(s, s+num_requests)]
+    engine.add(requests)
+
+    generated = ["" for _ in range(num_requests)]
+
+    while engine.has_pending_requests():
+        results = engine.step()
+        for res in results.outputs:
+            assert len(res.sequences) == 1
+            seq = res.sequences[0]
+
+            assert seq.finish_reason is not None or len(list(seq.logprobs.content[0]["top_logprobs"])) == top_logprobs
+
+            if seq.is_finished:
+                assert seq.num_generated_tokens == requests[int(res.request_id)].stopping_criteria.max_tokens
+                assert seq.finish_reason == FinishReason.Length
+            else:
+                generated[int(res.request_id)] += seq.delta
+
+    if use_staging_engine:
+        engine.stop()
 
 if __name__ == "__main__":
     parser = get_default_mlc_serve_argparser("test engine with samplers")
@@ -349,6 +388,8 @@ if __name__ == "__main__":
     _test_ignore_eos(args.model_artifact_path, use_staging_engine=False)
     _test_stop(args.model_artifact_path, use_staging_engine=False)
     _test_stop(args.model_artifact_path, use_staging_engine=True)
+    _test_logprobs(args.model_artifact_path, use_staging_engine=True)
+    _test_logprobs(args.model_artifact_path, use_staging_engine=False)
     # These tests are broken since we are now imposing no length limit
     # if max_tokens = None. The tests do not finish in a reasonable time.
     # _test_max_context_length(model_artifact_path, use_staging_engine=True)

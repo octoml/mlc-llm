@@ -1,6 +1,6 @@
-from typing import Union
 from pathlib import Path
 import structlog
+from typing import List, Union
 
 from .base import get_model_artifact_config
 from .paged_cache_manager import CacheManager
@@ -10,11 +10,11 @@ from .tvm_model import init_tvm_model
 from ..engine import MLCServeEngineConfig
 from ..engine.model_module import (
     DecodeRequest,
+    ModelModule,
     PrefillRequest,
     TextGenerationResult,
     TextGenerator,
 )
-from ..engine.model_module import ModelModule
 
 LOG = structlog.stdlib.get_logger(__name__)
 
@@ -24,8 +24,8 @@ class PagedCacheModelTextGenerator:
         self.model = model
 
     def generate(
-        self, requests: list[Union[PrefillRequest, DecodeRequest]], kv_cache
-    ) -> list[TextGenerationResult]:
+        self, requests: List[Union[PrefillRequest, DecodeRequest]], kv_cache
+    ) -> List[TextGenerationResult]:
         prefill_requests = [r for r in requests if isinstance(r, PrefillRequest)]
         decode_requests = [r for r in requests if isinstance(r, DecodeRequest)]
 

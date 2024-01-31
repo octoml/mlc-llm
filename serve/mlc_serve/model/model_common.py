@@ -1,4 +1,4 @@
-from typing import List, Union, Optional
+from typing import List, Optional, Tuple, Union
 
 import structlog
 import numpy as np
@@ -9,6 +9,9 @@ from .paged_cache_manager import CacheManager
 from ..engine import (
     SamplingType,
     SamplingParams,
+    LOGPROB_TOP_K_MAX,
+    RawLogprobsInfo,
+    RawLogprobsInfos,
 )
 
 LOG = structlog.stdlib.get_logger(__name__)
@@ -35,6 +38,86 @@ def get_num_cache_blocks(
     return int(
         (total_vram * gpu_memory_utilization - used_memory_bytes) // cache_block_size
     )
+
+
+def get_raw_logprob_info(
+    logits,
+    token_id,
+    top_logprobs_num,
+) -> RawLogprobsInfo:
+    logprobs = torch.log_softmax(logits, dim=-1)
+    res_logprob = logprobs[token_id]
+
+    if top_logprobs_num == 0:
+        top_logprobs = None
+        top_tokens = None
+    else:
+        assert top_logprobs_num <= LOGPROB_TOP_K_MAX, "Invalid input top_logprobs"
+        top_logprobs, top_tokens = torch.topk(
+            logprobs, k=top_logprobs_num, dim=-1, largest=True, sorted=True
+        )
+        top_tokens=top_tokens.cpu().numpy()
+        top_logprobs=top_logprobs.cpu().numpy()
+
+    # Set to raw logprob info
+    return RawLogprobsInfo(
+        current_token_id=token_id,
+        current_logprob=res_logprob,
+        top_token_ids=top_tokens,
+        top_logprobs=top_logprobs,
+    )
+
+
+def get_logprob_indices(
+    sampling_params: List[SamplingParams],
+    num_seq: int,
+) -> Tuple[List[Tuple[int, int, int]], List[Tuple[int, int, int]]]:
+    lgp_inds_greedy: List[Tuple[int, int, int]] = []
+    lgp_inds_random: List[Tuple[int, int, int]] = []
+
+    g_ind = 0
+    r_ind = 0
+    for i in range(num_seq):
+        sampling_param = sampling_params[i]
+        if sampling_param.sampling_type == SamplingType.RANDOM:
+            if sampling_param.logprobs:
+                lgp_inds_random.append((i, r_ind, sampling_param.top_logprobs))
+            r_ind = r_ind + 1
+        else:
+            if sampling_param.logprobs:
+                lgp_inds_greedy.append((i, g_ind, sampling_param.top_logprobs))
+            g_ind = g_ind + 1
+
+    return lgp_inds_greedy, lgp_inds_random
+
+
+def get_raw_logprob_infos(
+    logprob_infos: RawLogprobsInfos,
+    indices: List[Tuple[int, int, int]],
+    logits: torch.Tensor,
+    token_ids: torch.Tensor,
+) -> RawLogprobsInfos:
+    for (i, ind, top_logprobs) in indices:
+        logprob_infos[i] = get_raw_logprob_info(
+            logits[ind],
+            token_ids[ind],
+            top_logprobs,
+        )
+
+    return logprob_infos
+
+
+def check_logprob_infos(
+    logprob_infos: RawLogprobsInfos,
+) -> Optional[RawLogprobsInfos]:
+    check = False
+    for info in logprob_infos:
+        if info is not None:
+            check = True
+            break
+    if check:
+        return logprob_infos
+    return None
 
 
 def _apply_top_p_top_k(logits, top_ps, top_ks):
@@ -65,7 +148,7 @@ def sample(
     sampling_params: List[SamplingParams],
     vocab_size: int,
     check_safety=False,
-) -> Optional[np.ndarray]:
+) -> Optional[Tuple[np.ndarray, Optional[RawLogprobsInfos]]]:
     def _is_safe_to_sample(prob_like):
         return (
             torch.sum(torch.isnan(prob_like) | torch.isinf(prob_like) | (prob_like < 0))
@@ -90,12 +173,26 @@ def sample(
 
     logits_greedy = logits[mask_greedy_dvc]
 
+    logprob_infos: RawLogprobsInfos = [None] * num_seq
+    lgp_inds_greedy, lgp_inds_random = get_logprob_indices(
+        sampling_params,
+        num_seq,
+    )
+
     if logits_greedy.shape[0] > 0:
         res_greedy = torch.argmax(logits_greedy, -1).cpu().numpy()
 
+        logprob_infos = get_raw_logprob_infos(
+            logprob_infos,
+            lgp_inds_greedy,
+            logits_greedy,
+            res_greedy,
+        )
+
+        # Case when there's only greedy sampling
         if logits_greedy.shape[0] == num_seq:
             torch.cuda.nvtx.range_pop()
-            return res_greedy
+            return res_greedy, check_logprob_infos(logprob_infos)
 
     temperatures = []
     top_ps = []
@@ -164,9 +261,17 @@ def sample(
 
     res_random = torch.multinomial(probs, 1, True)[:, 0].cpu().numpy()
 
+    logprob_infos = get_raw_logprob_infos(
+        logprob_infos,
+        lgp_inds_random,
+        logits_random,
+        res_random,
+    )
+
+    # Case when there's only random sampling
     if logits_random.shape[0] == num_seq:
         torch.cuda.nvtx.range_pop()
-        return res_random
+        return res_random, check_logprob_infos(logprob_infos)
 
     res = np.empty((num_seq,), dtype=np.int32)
     res[mask_random_cpu] = res_random
@@ -175,7 +280,7 @@ def sample(
         res[mask_greedy_cpu] = res_greedy
 
     torch.cuda.nvtx.range_pop()
-    return res
+    return res, check_logprob_infos(logprob_infos)
 
 
 def prepare_inputs(

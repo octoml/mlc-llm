@@ -22,6 +22,18 @@ def add_sampling_flags(parser):
         action="store_true",
         help="Apply all penalties, logit bias, top-p and top-k.",
     )
+    parser.add_argument(
+        "--logprobs",
+        action="store_true",
+        default=False,
+        help="Switch on logprobs output"
+    )
+    parser.add_argument(
+        "--top-logprobs",
+        type=int,
+        default=5,
+        help="Number of top logprobs to output, limited by 5. Works only with logprobs true."
+    )
 
 
 def postproc_sampling_args(args):
@@ -33,6 +45,8 @@ def postproc_sampling_args(args):
         "repetition_penalty": 1.0,
         "top_p": 1.0,
         "top_k": -1,
+        "logprobs": False,
+        "top_logprobs": 5,
     }
 
     if args.apply_all_sampling_params:
@@ -51,3 +65,7 @@ def postproc_sampling_args(args):
     if args.apply_top_p_top_k:
         args.sampling_setting["top_k"] = 2
         args.sampling_setting["top_p"] = 0.7
+
+    if args.logprobs:
+        args.sampling_setting["logprobs"] = True
+        args.sampling_setting["top_logprobs"] = args.top_logprobs

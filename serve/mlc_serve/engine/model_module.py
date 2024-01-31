@@ -4,7 +4,14 @@ Required interfaces for the actual inference capability in InferenceEngine.
 from dataclasses import dataclass
 from typing import Optional, Protocol, Union, List, Sequence
 
-from .base import ChatMessage, RequestId, MLCServeEngineConfig, RequestState, SequenceId
+from .base import (
+    ChatMessage,
+    MLCServeEngineConfig,
+    RawLogprobsInfos,
+    RequestId,
+    RequestState,
+    SequenceId,
+)
 from ..model.base import ModelArtifactConfig
 from .sampling_params import SamplingParams
 
@@ -44,6 +51,7 @@ class TextGenerationResult:
     # making this a list of token ids to leave room for speculative decoding
     generated_tokens: List[int]
     error: Optional[str]
+    logprob_info: Optional[RawLogprobsInfos]
 
 
 class KVCache(Protocol):

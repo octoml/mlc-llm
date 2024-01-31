@@ -6,6 +6,8 @@ from typing import Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
+from ..openai_logprob_protocol import Logprobs
+
 
 class ErrorResponse(BaseModel):
     object: str = "error"
@@ -71,11 +73,14 @@ class ChatCompletionRequest(BaseModel):
     logit_bias: Optional[Dict[int, float]] = None
     user: Optional[str] = None
     ignore_eos: Optional[bool] = False
+    logprobs: bool = False
+    top_logprobs: int = 0
 
 
 class ChatCompletionResponseChoice(BaseModel):
     index: int
     message: ChatMessage
+    logprobs: Optional[Logprobs] = None
     finish_reason: Optional[Literal["stop", "length", "cancelled"]] = None
 
 
@@ -96,6 +101,7 @@ class DeltaMessage(BaseModel):
 class ChatCompletionResponseStreamChoice(BaseModel):
     index: int
     delta: DeltaMessage
+    logprobs: Optional[Logprobs] = None
     finish_reason: Optional[Literal["stop", "length"]] = None
 
 
