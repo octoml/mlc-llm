@@ -2,7 +2,7 @@
 # https://github.com/lm-sys/FastChat/blob/168ccc29d3f7edc50823016105c024fe2282732a/fastchat/protocol/openai_api_protocol.py
 # https://github.com/vllm-project/vllm/blob/acbed3ef40f015fcf64460e629813922fab90380/vllm/entrypoints/openai/protocol.py
 import time
-from typing import Dict, List, Literal, Optional, Union
+from typing import Dict, List, Literal, Optional, Union, Any
 
 from pydantic import BaseModel, Field
 
@@ -58,9 +58,16 @@ class ChatMessage(BaseModel):
     content: str
 
 
+class ChatResponseFormat(BaseModel):
+    type: str
+    response_schema: Optional[Dict[str, Any]] = Field(None, alias="schema")
+
+
 class ChatCompletionRequest(BaseModel):
     model: str
-    messages: Union[str, List[ChatMessage]]  # according to openai chat completion spec, here should be only a list of ChatMessage
+    messages: Union[
+        str, List[ChatMessage]
+    ]  # according to openai chat completion spec, here should be only a list of ChatMessage
     max_tokens: Optional[int] = None
     temperature: float = 1.0
     top_p: float = 1.0
@@ -75,6 +82,7 @@ class ChatCompletionRequest(BaseModel):
     ignore_eos: Optional[bool] = False
     logprobs: bool = False
     top_logprobs: int = 0
+    response_format: Optional[ChatResponseFormat] = None
 
 
 class ChatCompletionResponseChoice(BaseModel):
