@@ -1137,8 +1137,59 @@ def generate_mod_transform(model_generators, args, config):
     # resulting parameter transformation function.
     mod_transform = functools.reduce(chain_parameter_transforms, parameter_transforms)
 
+    param_manager.init_torch_pname_to_bin_name(args.use_safetensors)
+
+    seq = [
+        # TODO(Lunderberg): Implement
+        # relax.transform.Simplify() that applies
+        # canonicalization, CSE, and DCE until
+        # convergence.
+        relax.transform.CanonicalizeBindings(),
+        relax.transform.EliminateCommonSubexpr(),
+        relax.transform.DeadCodeElimination(),
+        relax.transform.CanonicalizeBindings(),
+        relax.transform.EliminateCommonSubexpr(),
+        relax.transform.DeadCodeElimination(),
+        # TODO: Handle model params without a tuple in
+        # optimize_transform_param_order, so that the parameter names can
+        # be preserved longer.
+        generate_orig_param_names,
+        relax.transform.BundleModelParams(),
+        # Re-order parameters to avoid needed to load from
+        # multiple pytorch files at the same time.
+        tvm.ir.transform.ApplyPassToFunction(
+            param_manager.optimize_transform_param_order(),
+            ".*transform_params",
+        ),
+    ]
+
+    mod_transform = tvm.ir.transform.Sequential(
+        seq,
+        name="ParameterTransformOptimizations",
+    )(mod_transform)
+
     args.build_model_only = cached_flag
     return mod_transform
+
+
+@tvm.transform.module_pass(opt_level=0)
+def generate_orig_param_names(mod, _context):
+    if "transform_params" not in mod:
+        return mod
+
+    mod = mod.clone()
+
+    from tvm.script import relax as R
+
+    param_names = [R.str(param.name_hint) for param in mod["transform_params"].params]
+
+    @R.function
+    def get_original_param_names():
+        return R.tuple(*param_names)
+
+    mod["get_original_param_names"] = get_original_param_names
+
+    return mod
 
 
 def build_model_from_args(args: argparse.Namespace):
@@ -1275,34 +1326,14 @@ def build_model_from_args(args: argparse.Namespace):
 
         # if not args.build_model_only:
         #     # Run pre-quantization if provided.
-        args.model_path = param_manager.run_pre_quantize(args.model_path)
-        param_manager.init_torch_pname_to_bin_name(args.use_safetensors)
+        # args.model_path = param_manager.run_pre_quantize(args.model_path)
+        # param_manager.init_torch_pname_to_bin_name(args.use_safetensors)
 
+        # transform_seq.append(generate_orig_param_names)
         transform_seq.append(
             tvm.ir.transform.ApplyPassToFunction(
                 tvm.ir.transform.Sequential(
                     [
-                        # Simplifying passes that could, in principle, be
-                        # applied to all functions and not just the
-                        # parameter transforms.
-                        #
-                        # TODO(Lunderberg): Implement
-                        # relax.transform.Simplify() that applies
-                        # canonicalization, CSE, and DCE until
-                        # convergence.
-                        relax.transform.CanonicalizeBindings(),
-                        relax.transform.EliminateCommonSubexpr(),
-                        relax.transform.DeadCodeElimination(),
-                        relax.transform.CanonicalizeBindings(),
-                        relax.transform.EliminateCommonSubexpr(),
-                        relax.transform.DeadCodeElimination(),
-                        # Re-order parameters to avoid needed to load from
-                        # multiple pytorch files at the same time.
-                        param_manager.optimize_transform_param_order(),
-                        # API-changing pass, to avoid needing to load all
-                        # parameters (and therefore increasing the memory
-                        # footprint) before calling the parameter
-                        # transformation function.
                         relax.transform.ToNonDataflow(),
                         relax.transform.LazyTransformParams(),
                     ],
