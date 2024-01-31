@@ -104,6 +104,8 @@ async def request_completion(
     model_name = request.model
     try:
         sampling_params = _get_sampling_params(request)
+        if request.response_format and request.response_format.type == "json_object":
+            sampling_params.json_schema = request.response_format.response_schema
     except ValueError as e:
         raise ValueError(
             """
