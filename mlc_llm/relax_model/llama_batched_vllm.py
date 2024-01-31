@@ -440,7 +440,10 @@ class LlamaAttentionBatched(LlamaAttentionBase):
                 seqlen_q,
             )
 
-        attn_output = nn.emit(reshape(attn_output, hidden_states.struct_info.shape))
+        attn_output_shape = tuple(hidden_states.struct_info.shape)[:-1] + (
+            self.num_query_heads * self.head_dim,
+        )
+        attn_output = nn.emit(reshape(attn_output, attn_output_shape))
         attn_output = self.o_proj(attn_output)
 
         return attn_output, (k_cache, v_cache)
