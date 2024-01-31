@@ -388,7 +388,7 @@ class Model:
             input_ids,
             positions,
             seq_lens,
-            cache.cache_blocks,
+            self.cache_blocks,
             slot_mapping,
             query_lens,
             past_slot_mapping,
