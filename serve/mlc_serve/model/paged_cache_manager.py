@@ -179,8 +179,8 @@ class CacheManager:
 
                 prompt_seq_id = get_prompt_sequence_id(id.request_id)
                 allocated_slot_counts = len(
-                    self.kv_cache.slot_mappings[prompt_seq_id]
-                ) + len(self.kv_cache.slot_mappings[id])
+                    self.kv_cache_info.slot_mappings[prompt_seq_id]
+                ) + len(self.kv_cache_info.slot_mappings[id])
 
                 for current_size in range(allocated_slot_counts + 1, size + 1):
                     pos = current_size - 1

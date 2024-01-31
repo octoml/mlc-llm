@@ -229,7 +229,9 @@ class Model:
         sampling_params = [req.sampling_params for req in requests]
 
         try:
-            next_tokens, logprob_infos = sample(logits, sampling_params, self.vocab_size)
+            next_tokens, logprob_infos = sample(
+                logits, sampling_params, self.vocab_size
+            )
             assert next_tokens is not None
             outputs = []
             for i, (sequence_id, new_token) in enumerate(
@@ -296,7 +298,9 @@ class Model:
                                     ),
                                     generated_tokens=[new_token],  # type: ignore
                                     error=None,
-                                    logprob_info=self.get_logprob_infos(0, logprob_infos),
+                                    logprob_info=self.get_logprob_infos(
+                                        0, logprob_infos
+                                    ),
                                 )
                             )
                     else:
@@ -319,7 +323,9 @@ class Model:
                                     ),
                                     generated_tokens=[],
                                     error=err_msg,
-                                    logprob_info=self.get_logprob_infos(0, logprob_infos),
+                                    logprob_info=self.get_logprob_infos(
+                                        0, logprob_infos
+                                    ),
                                 )
                             )
                     else:
@@ -335,7 +341,9 @@ class Model:
             return outputs
 
     def generate_multi_query(
-        self, requests: List[MultiQueryDecodeRequest], cache: KVCache
+        self,
+        requests: List[MultiQueryDecodeRequest],
+        cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
         sequence_ids = []
         last_query_offsets: List[int] = []
@@ -405,7 +413,7 @@ class Model:
         requests: Sequence[
             Union[PrefillRequest, DecodeRequest, MultiQueryDecodeRequest]
         ],
-        cache: KVCache,
+        cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
         if len(requests) == 0:
             return []
