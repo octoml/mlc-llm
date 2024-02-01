@@ -15,6 +15,7 @@ from .model_common import (
     sample,
     prepare_inputs,
     prepare_multi_query_decode_inputs,
+    get_logprob_infos,
     get_num_cache_blocks,
 )
 
@@ -207,15 +208,6 @@ class Model:
 
         return self.get_used_memory()
 
-    def get_logprob_infos(
-        self,
-        i: int,
-        logprob_infos: Optional[RawLogprobsInfos],
-    ) -> Optional[RawLogprobsInfos]:
-        if logprob_infos is None or logprob_infos[i] is None:
-            return None
-        return [logprob_infos[i]]
-
     def sample_from_logits(
         self,
         logits: Union[tvm.nd.NDArray, torch.Tensor],
@@ -248,7 +240,7 @@ class Model:
                                 sequence_id=SequenceId(sequence_id.request_id, seq_id),
                                 generated_tokens=[new_token],
                                 error=None,
-                                logprob_info=self.get_logprob_infos(i, logprob_infos),
+                                logprob_info=get_logprob_infos(i, logprob_infos),
                             )
                         )
                 else:
@@ -257,7 +249,7 @@ class Model:
                             sequence_id=sequence_id,
                             generated_tokens=[new_token],
                             error=None,
-                            logprob_info=self.get_logprob_infos(i, logprob_infos),
+                            logprob_info=get_logprob_infos(i, logprob_infos),
                         )
                     )
 
@@ -298,7 +290,7 @@ class Model:
                                     ),
                                     generated_tokens=[new_token],  # type: ignore
                                     error=None,
-                                    logprob_info=self.get_logprob_infos(
+                                    logprob_info=get_logprob_infos(
                                         0, logprob_infos
                                     ),
                                 )
@@ -309,7 +301,7 @@ class Model:
                                 sequence_id=sequence_id,
                                 generated_tokens=[new_token],  # type: ignore
                                 error=None,
-                                logprob_info=self.get_logprob_infos(0, logprob_infos),
+                                logprob_info=get_logprob_infos(0, logprob_infos),
                             )
                         )
                 else:
@@ -323,7 +315,7 @@ class Model:
                                     ),
                                     generated_tokens=[],
                                     error=err_msg,
-                                    logprob_info=self.get_logprob_infos(
+                                    logprob_info=get_logprob_infos(
                                         0, logprob_infos
                                     ),
                                 )
@@ -334,7 +326,7 @@ class Model:
                                 sequence_id=sequence_id,
                                 generated_tokens=[],
                                 error=err_msg,
-                                logprob_info=self.get_logprob_infos(0, logprob_infos),
+                                logprob_info=get_logprob_infos(0, logprob_infos),
                             )
                         )
 
