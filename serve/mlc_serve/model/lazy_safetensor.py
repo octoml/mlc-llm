@@ -37,7 +37,7 @@ SAFETENSOR_TO_TVM_DTYPE = {
 
 class LazySafetensorDir:
     def __init__(self, dirpath: Union[str, pathlib.Path]):
-        self.dirpath = dirpath
+        self.dirpath = pathlib.Path(dirpath)
         self._safetensor_files = [
             LazySafetensorFile(filepath)
             # safetensors.safe_open(filepath, "pt")
@@ -171,3 +171,20 @@ class LazySafetensor:
         assert bytes_read == data_len, "Could not read full array"
 
         return arr
+
+
+@tvm.register_func("mlc_serve.model.define_safetensors_get_item")
+def define_safetensors_get_item(
+    safetensors_dir: str,
+    param_names: str,
+    dev: tvm.runtime.Device,
+) -> None:
+    param_names = param_names.split("\n")
+
+    safetensors = LazySafetensorDir(safetensors_dir)
+
+    @tvm.register_func("get_item", override=True)
+    def get_item(i):
+        safetensor = safetensors[param_names[i]]
+        tvm_on_cpu = safetensor.as_tvm_array()
+        return tvm.nd.array(tvm_on_cpu, dev)
