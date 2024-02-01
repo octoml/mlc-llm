@@ -838,7 +838,7 @@ def generate_mod_transform(model_generators, args, config):
         # `transform_params` function when there is more than one
         # shard.
         mod_shard = create_shard_transformation_func(param_manager, args, model_config)
-        mod_shard = transform_params_for_each_rank(mod_shard, num_shards=args.num_shards)
+        # mod_shard = transform_params_for_each_rank(mod_shard, num_shards=args.num_shards)
         parameter_transforms.append(mod_shard)
 
     # Chain all parameter transforms together.  This allows
