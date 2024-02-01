@@ -889,9 +889,15 @@ def generate_orig_param_names(mod, _context):
 
     mod = mod.clone()
 
+    func = mod["transform_params"]
+    if func.attrs is not None and "num_input" in func.attrs:
+        num_input = func.attrs["num_input"].value
+    else:
+        num_input = 0
+
     from tvm.script import relax as R
 
-    param_names = [R.str(param.name_hint) for param in mod["transform_params"].params]
+    param_names = [R.str(param.name_hint) for param in mod["transform_params"].params[num_input:]]
 
     @R.function
     def get_original_param_names():
