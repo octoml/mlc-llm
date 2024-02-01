@@ -254,7 +254,11 @@ class SynchronousInferenceEngine(InferenceEngine, EngineBase):
                     self.cache_manager.free_request(state)
                     self.requests_to_be_cancelled.remove(request_id)
 
-            self.evict_request()
+            self.evict_request(
+                cancell_callback=lambda request_id: self.requests_to_be_cancelled.add(
+                    request_id
+                )
+            )
 
             self._discard_cancelled_requests_from_queue()
 

@@ -248,8 +248,6 @@ class Model:
             past_slot_mapping = copy_to_worker_0(self.disco_session, past_slot_mapping)
             permute_map = copy_to_worker_0(self.disco_session, permute_map)
 
-        print("evaluate_multi_query")
-
         out = self.mod["evaluate_multi_query"](
             input_ids,
             positions,

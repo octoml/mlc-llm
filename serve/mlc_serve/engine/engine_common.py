@@ -415,7 +415,7 @@ class EngineBase:
             < self.max_decode_steps * num_sequences
         )
 
-    def evict_request(self) -> int:
+    def evict_request(self, cancell_callback: Callable[[RequestId], None]) -> int:
         # Must be called with the queue lock held
         num_eviction = 0
 
@@ -438,6 +438,28 @@ class EngineBase:
                 candidate_victims = parallel_sample_requests
 
             request_to_remove = min(candidate_victims, key=lambda s: s.num_total_tokens)
+            victim_state = self.current_batch[request_to_remove.request_id]
+
+            if victim_state.num_sequences != 1:
+                prev_generated_token_counts = sum(
+                    [
+                        len(gen_seq.generated_token_ids)
+                        for gen_seq in victim_state.generation_sequences
+                    ]
+                )
+                # We could allow evicting and restoring a parallel-sampling request whose prev_generated_token_counts
+                # is > max_num_batched_tokens, by making the model split a list of EvalMultiQuery requests into parts,
+                # so that an inference on each part can be done with the max_num_batched_tokens budget.
+                # But this introduces an undesirable coupling between the engine and the model.
+                if prev_generated_token_counts >= self.max_num_batched_tokens:
+                    cancell_callback(request_to_remove.request_id)
+                    self.remove_request_from_batch(request_to_remove.request_id)
+                    LOG.warn(
+                        f"Cancelling a parallel-sampling request '{request_to_remove.request_id}'"
+                        f"since it has generated more than {self.max_num_batched_tokens} tokens in total"
+                         "and currently we do not support preempting such request.",
+                    )
+                    continue
 
             self.remove_request_from_batch(request_to_remove.request_id)
             request_to_remove.is_prefilled = False
@@ -499,6 +521,9 @@ class EngineBase:
             # Restoring an evicted parallel-sampling request is done by separate
             # Prefill and MultiQuery requests. The maximum below is an upper bound on the
             # batch size increase due to this request.
+            # TODO(masahi): Prefill and EvalMultiQuery requests are handled separately by the model.
+            # So comparing the sum of their batched token counts against max_num_batched_tokens
+            # is not optimal.
             num_new_batched_tokens += max(state.prompt_len, prev_generated_token_counts)
 
         if num_new_batched_tokens > self.max_num_batched_tokens:
