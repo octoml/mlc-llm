@@ -1124,9 +1124,13 @@ def transform_params_for_each_rank(
     generic_transform = mod["transform_params"]
     tensor_params = generic_transform.params[1:]
 
+    attrs = {}
+    if generic_transform.attrs is not None and "num_input" in generic_transform.attrs:
+        attrs["num_input"] = generic_transform.attrs["num_input"] - 1
+
     bb = relax.BlockBuilder()
 
-    with bb.function("transform_params", params=tensor_params):
+    with bb.function("transform_params", params=tensor_params, attrs=attrs):
         output = []
         for rank in range(num_shards):
             # TODO(Lunderberg): Implement this in terms of a
@@ -1189,12 +1193,44 @@ def chain_parameter_transforms(mod_a: tvm.IRModule, mod_b: tvm.IRModule) -> tvm.
 
     bb = relax.BlockBuilder()
 
-    with bb.function("transform_params", params=func_a.params):
+    def get_num_input_attr(func):
+        if func.attrs is None:
+            return 0
+
+        attrs = func.attrs
+        if "num_input" not in attrs:
+            return 0
+        num_input = attrs["num_input"]
+
+        assert isinstance(num_input, tvm.tir.IntImm)
+        return num_input.value
+
+    # Either func_a or func_b may have parameters that are provided at
+    # a later point.  The chaining of parameter transforms assumes
+    # that all model weights accepted by func_b are produced by
+    # func_a.  If func_b accepts non-weight parameters (e.g. the GPU
+    # rank), these must still be provided.
+    func_a_num_input = get_num_input_attr(func_a)
+    func_b_num_input = get_num_input_attr(func_b)
+
+    output_num_input = func_a_num_input + func_b_num_input
+    output_params = [
+        *func_a.params[:func_a_num_input],
+        *func_b.params[:func_b_num_input],
+        *func_a.params[func_a_num_input:],
+    ]
+
+    with bb.function(
+        "transform_params", params=output_params, attrs={"num_input": output_num_input}
+    ):
         with bb.dataflow():
             # TODO(Lunderberg): Implement this in terms of a
             # generic utility that inlines local functions.
             func_a_output = bb.emit(func_a.body)
-            func_b_param_map = {param: expr for (param, expr) in zip(func_b.params, func_a_output)}
+            func_b_param_map = {
+                param: expr
+                for (param, expr) in zip(func_b.params[func_b_num_input:], func_a_output)
+            }
             func_b_output = func_b.bind_params(func_b_param_map).body
             gv = bb.emit_output(func_b_output)
         bb.emit_func_output(gv)
