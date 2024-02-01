@@ -39,6 +39,15 @@ def get_num_cache_blocks(
     )
 
 
+def get_logprob_infos(
+    i: int,
+    logprob_infos: Optional[RawLogprobsInfos],
+) -> Optional[RawLogprobsInfos]:
+    if logprob_infos is None or logprob_infos[i] is None:
+        return None
+    return [logprob_infos[i]]
+
+
 def get_raw_logprob_info(
     logits,
     token_id,
