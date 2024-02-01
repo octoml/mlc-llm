@@ -1,7 +1,8 @@
 import math
 import os
 import json
-from typing import List, Tuple, Sequence
+import pathlib
+from typing import List, Union, Tuple, Sequence
 
 import structlog
 import numpy as np
@@ -18,6 +19,8 @@ from .model_common import (
     prepare_multi_query_decode_inputs,
     get_num_cache_blocks,
 )
+from .lazy_safetensor import LazySafetensorDir
+
 from ..engine import (
     get_prompt_sequence_id,
     MLCServeEngineConfig,
@@ -36,20 +39,82 @@ from .sampler import SamplingState
 LOG = structlog.stdlib.get_logger(__name__)
 
 
-def load_disco_module(artifact_path, lib_path, num_shards):
-    sess = di.ProcessSession(num_workers=num_shards, entrypoint="tvm.exec.disco_worker")
-    devices = range(num_shards)
-    sess.init_ccl("nccl", *devices)
-    module = sess.load_vm_module(lib_path)
+def load_disco_weights_through_shard_loader(sess, param_path, lib_path):
+    # TODO(Lunderberg): Use a callback for get_item/set_item so these
+    # only need to be defined on the transform_params path.
+    worker_device = sess.get_global_func("runtime.disco.device")()
+    sess.import_python_module("mlc_serve.model.lazy_safetensor")
+    sess.get_global_func("mlc_serve.model.define_safetensors_get_item")(
+        ".", "", worker_device
+    )
+
+    metadata_path = param_path.joinpath("ndarray-cache.json")
+    module = sess.load_vm_module(lib_path.as_posix())
 
     loader_create = sess.get_global_func("runtime.disco.ShardLoader")
-    metadata_path = os.path.join(artifact_path, "params", "ndarray-cache.json")
-    with open(metadata_path, "r", encoding="utf-8") as f:
+    with metadata_path.open(encoding="utf-8") as f:
         ndarray_cache_metadata = f.read()
 
-    loader = loader_create(metadata_path, ndarray_cache_metadata, "", module)
+    loader = loader_create(metadata_path.as_posix(), ndarray_cache_metadata, "", module)
     loader_load = sess.get_global_func("runtime.disco.ShardLoaderLoadAllPresharded")
     params = loader_load(loader)
+
+    return module, params
+
+
+def load_disco_weights_through_transform_params(sess, orig_param_path, lib_path):
+    worker_id = sess.get_global_func("runtime.disco.worker_id")()
+    worker_device = sess.get_global_func("runtime.disco.device")()
+
+    @tvm.register_func("get_item", override=True)
+    def _unused_get_item():
+        pass
+
+    vm = relax.VirtualMachine(tvm.runtime.load_module(lib_path.as_posix()), tvm.cpu())
+    param_names = vm["get_original_param_names"]()
+
+    sess.import_python_module("mlc_serve.model.lazy_safetensor")
+    sess.get_global_func("mlc_serve.model.define_safetensors_get_item")(
+        orig_param_path.as_posix(), "\n".join(param_names), worker_device
+    )
+
+    module = sess.load_vm_module(lib_path.as_posix())
+    params = module["transform_params"](worker_id)
+    return module, params
+
+
+def load_disco_module(
+    artifact_path: Union[str, pathlib.Path],
+    lib_path: Union[str, pathlib.Path],
+    num_shards,
+):
+    artifact_path = pathlib.Path(artifact_path)
+    lib_path = pathlib.Path(lib_path)
+
+    sess = di.ProcessSession(num_workers=num_shards, entrypoint="tvm.exec.disco_worker")
+
+    sess.init_ccl("nccl", *range(num_shards))
+
+    param_path = artifact_path.joinpath("params")
+    orig_param_path = artifact_path.joinpath("original_params")
+
+    if param_path.exists():
+        LOG.info("Loading multi-GPU pre-processed weights", path=param_path)
+        module, params = load_disco_weights_through_shard_loader(
+            sess, param_path, lib_path
+        )
+    elif orig_param_path.exists():
+        LOG.info(
+            "Loading multi-GPU weights through transform_params", path=orig_param_path
+        )
+        module, params = load_disco_weights_through_transform_params(
+            sess, orig_param_path, lib_path
+        )
+    else:
+        raise RuntimeError(
+            f"The artifact path {artifact_path} contains neither a 'params' directory, "
+            f"nor an 'original_params' directory."
+        )
 
     return module, params, sess
 
@@ -66,36 +131,144 @@ def broadcast_from_worker_0(sess: di.Session, src, shape, dtype):
     return dst
 
 
+def load_tvm_weights(
+    param_path: Union[str, pathlib.Path], dev: tvm.runtime.Device
+) -> List[tvm.runtime.NDArray]:
+    """Load a set of weights
+
+    Loads a set of weights.  Assumes that the weights had previously
+    been saved using `tvmjs.dump_ndarray_cache`.
+
+    Parameters
+    ----------
+    param_path: Union[str, pathlib.Path]
+
+        The path to the saved parameters.
+
+    dev: tvm.runtime.Device
+
+        The device onto which the saved parameters should be loaded.
+
+    Returns
+    -------
+    params: List[tvm.runtime.NDArray]
+
+        The loaded parameters
+
+    """
+    param_path = pathlib.Path(param_path)
+
+    from tvm.contrib import tvmjs  # pylint: disable=import-outside-toplevel
+
+    params, metadata = tvmjs.load_ndarray_cache(param_path.as_posix(), dev)
+
+    try:
+        params_names = [
+            d["name"]
+            for d in json.loads(str(vm.module.get_function("_metadata")()))["params"]
+        ]
+    except:
+        params_names = [f"param_{i}" for i in range(metadata["ParamSize"])]
+
+    return [params[param_name] for param_name in param_names]
+
+
+def preprocess_weights(
+    param_path: Union[str, pathlib.Path],
+    executable_module: tvm.runtime.Module,
+    dev: tvm.runtime.Device,
+) -> List[tvm.runtime.NDArray]:
+    """Load and preprocess a set of model weights
+
+    Load and preprocess a set of model weights.
+
+    Parameters
+    ----------
+    param_path: Union[str, pathlib.Path]
+
+        The path to the model parameters parameters.
+
+    executable_module: tvm.runtime.Module
+
+        The compiled module, as returned from
+        `tvm.runtime.load_module`, which contains the functions
+        `transform_params` and `get_original_param_names`.
+
+    dev: tvm.runtime.Device
+
+        The device on which the pre-processed parameters should be
+        loaded, after pre-processing is complete.
+
+    Returns
+    -------
+    params: List[tvm.runtime.NDArray]
+
+        The loaded parameters
+
+    """
+    param_path = pathlib.Path(param_path)
+
+    safetensors = LazySafetensorDir(param_path)
+    param_names = []
+
+    @tvm.register_func("get_item", override=True)
+    def get_item(i):
+        safetensor = safetensors[param_names[i]]
+        tvm_on_cpu = safetensor.as_tvm_array()
+        return tvm.nd.array(tvm_on_cpu, dev)
+
+    vm = relax.VirtualMachine(executable_module, dev)
+
+    param_names.extend(vm["get_original_param_names"]())
+
+    params = vm["transform_params"]()
+
+    return params
+
+
 def get_tvm_model(config, dev):
     LOG.info(f"Loading parameters from {config.model_artifact_path}.")
-    lib_path = os.path.join(config.model_artifact_path, config.library_name)
 
-    if config.num_shards == 1:
-        ex = tvm.runtime.load_module(lib_path)
-        vm = relax.VirtualMachine(ex, dev)
+    artifact_path = pathlib.Path(config.model_artifact_path)
+    lib_path = artifact_path.joinpath(config.library_name)
 
-        from tvm.contrib import tvmjs  # pylint: disable=import-outside-toplevel
-
-        _params, _meta = tvmjs.load_ndarray_cache(
-            f"{config.model_artifact_path}/params", dev
+    if config.num_shards != 1:
+        LOG.info(
+            "Loading multi-GPU model, based on `num_shards` from config",
+            num_shards=config.num_shards,
         )
-        params = []
-        try:
-            params_names = [
-                d["name"]
-                for d in json.loads(str(vm.module.get_function("_metadata")()))[
-                    "params"
-                ]
-            ]
-        except:
-            params_names = [f"param_{i}" for i in range(_meta["ParamSize"])]
+        return load_disco_module(artifact_path, lib_path, config.num_shards)
 
-        for i in range(_meta["ParamSize"]):
-            params.append(_params[params_names[i]])
+    LOG.info(
+        "Loading single-GPU model, based on `num_shards` from config",
+        num_shards=config.num_shards,
+    )
 
-        return vm.module, params, None
+    ex = tvm.runtime.load_module(lib_path.as_posix())
 
-    return load_disco_module(config.model_artifact_path, lib_path, config.num_shards)
+    param_path = artifact_path.joinpath("params")
+    orig_param_path = artifact_path.joinpath("original_params")
+    if param_path.exists():
+        LOG.info("Loading single-GPU pre-processed weights", path=param_path)
+
+        # TODO(Lunderberg): Use a callback for get_item/set_item so these
+        # only need to be defined on the transform_params path.
+        @tvm.register_func("get_item", override=True)
+        def _unused_get_item():
+            pass
+
+        params = load_tvm_weights(param_path, dev)
+    elif orig_param_path.exists():
+        LOG.info("Loading single-GPU weights through transform_params", path=param_path)
+        params = preprocess_weights(orig_param_path, ex, dev)
+    else:
+        raise RuntimeError(
+            f"The artifact path {artifact_path} contains neither a 'params' directory, "
+            f"nor an 'original_params' directory."
+        )
+
+    vm = relax.VirtualMachine(ex, dev)
+    return vm.module, params, None
 
 
 def _prepare_inputs(
