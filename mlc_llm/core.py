@@ -1177,10 +1177,19 @@ def generate_mod_transform(model_generators, args, config):
         ),
     ]
 
-    mod_transform = tvm.ir.transform.Sequential(
-        seq,
-        name="ParameterTransformOptimizations",
-    )(mod_transform)
+    from lunderberg_tvm_instrument import PrintTransformSequence
+
+    with tvm.transform.PassContext(
+        instruments=[
+            PrintTransformSequence(
+                max_blacken_length=None,
+            )
+        ]
+    ):
+        mod_transform = tvm.ir.transform.Sequential(
+            seq,
+            name="ParameterTransformOptimizations",
+        )(mod_transform)
 
     args.build_model_only = cached_flag
     return mod_transform

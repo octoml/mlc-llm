@@ -35,20 +35,68 @@ from ..engine.model_module import (
 LOG = structlog.stdlib.get_logger(__name__)
 
 
-def load_disco_module(artifact_path, lib_path, num_shards):
-    sess = di.ProcessSession(num_workers=num_shards, entrypoint="tvm.exec.disco_worker")
-    devices = range(num_shards)
-    sess.init_ccl("nccl", *devices)
-    module = sess.load_vm_module(lib_path)
+def load_disco_weights_through_shard_loader(sess, param_path, lib_path):
+    metadata_path = param_path.joinpath("ndarray-cache.json")
+    module = sess.load_vm_module(lib_path.as_posix())
 
     loader_create = sess.get_global_func("runtime.disco.ShardLoader")
-    metadata_path = os.path.join(artifact_path, "params", "ndarray-cache.json")
-    with open(metadata_path, "r", encoding="utf-8") as f:
+    with metadata_path.open(encoding="utf-8") as f:
         ndarray_cache_metadata = f.read()
 
-    loader = loader_create(metadata_path, ndarray_cache_metadata, "", module)
+    loader = loader_create(metadata_path.as_posix(), ndarray_cache_metadata, "", module)
     loader_load = sess.get_global_func("runtime.disco.ShardLoaderLoadAllPresharded")
     params = loader_load(loader)
+
+    return module, params
+
+
+def load_disco_weights_through_transform_params(sess, orig_param_path, lib_path):
+    worker_id = sess.get_global_func("runtime.disco.worker_id")()
+    worker_device = sess.get_global_func("runtime.disco.device")()
+
+    @tvm.register_func("get_item", override=True)
+    def _unused_get_item():
+        pass
+
+    vm = relax.VirtualMachine(tvm.runtime.load_module(lib_path.as_posix()), tvm.cpu())
+    param_names = vm["get_original_param_names"]()
+
+    sess.import_python_module("mlc_serve.model.lazy_safetensor")
+    sess.get_global_func("mlc_serve.model.define_safetensors_get_item")(
+        orig_param_path.as_posix(), "\n".join(param_names), worker_device
+    )
+
+    module = sess.load_vm_module(lib_path.as_posix())
+    params = module["transform_params"](worker_id)
+    return module, params
+
+
+def load_disco_module(
+    artifact_path: Union[str, pathlib.Path],
+    lib_path: Union[str, pathlib.Path],
+    num_shards,
+):
+    artifact_path = pathlib.Path(artifact_path)
+    lib_path = pathlib.Path(lib_path)
+
+    sess = di.ProcessSession(num_workers=num_shards, entrypoint="tvm.exec.disco_worker")
+
+    sess.init_ccl("nccl", *range(num_shards))
+
+    param_path = artifact_path.joinpath("params")
+    orig_param_path = artifact_path.joinpath("original_params")
+
+    if param_path.exists():
+        module, params = load_disco_weights_through_shard_loader(param_path, lib_path)
+    elif orig_param_path.exists():
+        module, params = load_disco_weights_through_transform_params(
+            sess, orig_param_path, lib_path
+        )
+    else:
+        raise RuntimeError(
+            f"The artifact path {artifact_path} contains neither a 'params' directory, "
+            f"nor an 'original_params' directory."
+        )
 
     return module, params, sess
 
@@ -181,7 +229,7 @@ def get_tvm_model(config, dev):
         vm = relax.VirtualMachine(ex, dev)
         return vm.module, params, None
 
-    return load_disco_module(config.model_artifact_path, lib_path, config.num_shards)
+    return load_disco_module(artifact_path, lib_path, config.num_shards)
 
 
 def _prepare_inputs(
