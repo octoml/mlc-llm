@@ -29,17 +29,17 @@ class PagedCacheModelTextGenerator:
         requests: list[Union[PrefillRequest, DecodeRequest, MultiQueryDecodeRequest]],
         kv_cache,
     ) -> list[TextGenerationResult]:
-        prefill_requests = [r for r in requests if isinstance(r, PrefillRequest)]
-        decode_requests = [r for r in requests if isinstance(r, DecodeRequest)]
-        multi_query_decode_requests = [
-            r for r in requests if isinstance(r, MultiQueryDecodeRequest)
-        ]
-
+        prefill_requests = []
+        decode_requests = []
         multi_query_decode_requests = []
         multi_query_decode_request_ids = set()
 
         for r in requests:
-            if isinstance(r, MultiQueryDecodeRequest):
+            if isinstance(r, PrefillRequest):
+                prefill_requests.append(r)
+            elif isinstance(r, DecodeRequest):
+                decode_requests.append(r)
+            elif isinstance(r, MultiQueryDecodeRequest):
                 multi_query_decode_requests.append(r)
                 multi_query_decode_request_ids.add(r.sequence_id.request_id)
 
