@@ -31,6 +31,7 @@ from .model_common import (
     sample,
     prepare_inputs,
     get_num_cache_blocks,
+    get_logprob_infos,
 )
 
 from ..engine import (
@@ -298,7 +299,7 @@ def generate(
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
 
-        next_tokens = sample(logits, sampling_params, vocab_size)
+        next_tokens, logprob_infos = sample(logits, sampling_params, vocab_size)
 
     outputs = []
 
@@ -313,6 +314,7 @@ def generate(
                         sequence_id=SequenceId(sequence_id.request_id, seq_id),
                         generated_tokens=[new_token],
                         error=None,
+                        logprob_info=get_logprob_infos(i, logprob_infos),
                     )
                 )
         else:
@@ -321,6 +323,7 @@ def generate(
                     sequence_id=sequence_id,
                     generated_tokens=[new_token],
                     error=None,
+                        logprob_info=get_logprob_infos(i, logprob_infos),
                 )
             )
 

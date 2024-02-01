@@ -1,6 +1,6 @@
 import math
 import os
-from typing import List, Optional, Union, Tuple, Sequence
+from typing import List, Union, Tuple, Sequence
 
 import structlog
 import numpy as np
@@ -20,7 +20,6 @@ from .model_common import (
 
 from ..engine import (
     PROMPT_SEQEUNCE_INDEX,
-    RawLogprobsInfos,
     SequenceId,
     get_prompt_sequence_id,
     MLCServeEngineConfig,
