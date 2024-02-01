@@ -213,8 +213,6 @@ class VllmAttention(AttentionBackend):
 
 
 class FlashDecodingAttention(AttentionBackend):
-    block_size: int = 256
-
     def __init__(self, num_query_heads, num_key_value_heads, head_dim):
         super().__init__(num_query_heads, num_key_value_heads, head_dim)
         self.max_num_partitions = 128
@@ -704,12 +702,12 @@ def get_inputs(
     if kv_type:
         num_blocks = tvm.tir.Var("num_blocks", "int64")
 
+        num_key_value_heads = config.get_num_key_value_heads() // config.num_shards
+        head_size = hidden_size // config.num_attention_heads
+
         if kv_type == KVCacheType.VLLM:
             block_size = VllmAttention.block_size
-
             vec_size = 8  # 128 bit, fp16 x 8
-            num_key_value_heads = config.get_num_key_value_heads() // config.num_shards
-            head_size = hidden_size // config.num_attention_heads
 
             k_cache_shape = (
                 num_blocks,
@@ -720,11 +718,16 @@ def get_inputs(
             )
             v_cache_shape = (num_blocks, num_key_value_heads, head_size, block_size)
         else:
-            block_size = FlashDecodingAttention.block_size
+            # The block size must be a multiple of kBlockN defined in
+            # https://github.com/tlc-pack/libflash_attn/blob/54ed3a4c4f5d902c072f9e7a1656af3c866fe8db/src/flash_fwd_launch_template.h#L131
+            if head_size <= 64:
+                block_size = 256
+            elif head_size <= 128:
+                block_size = 128
+            else:
+                block_size = 64
 
-            num_key_value_heads = config.get_num_key_value_heads() // config.num_shards
-            head_size = hidden_size // config.num_attention_heads
-
+            print("Flash-Decoding block size:", block_size)
             k_cache_shape = (num_blocks, block_size, num_key_value_heads, head_size)
             v_cache_shape = k_cache_shape
 

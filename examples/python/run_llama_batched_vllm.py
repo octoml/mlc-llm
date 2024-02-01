@@ -468,14 +468,22 @@ def run(args):
     kv_type = get_paged_kv_cache_type(args.artifact_path)
     use_flash_decoding = kv_type == "flash-decoding"
 
+    num_kv_heads = config.get_num_key_value_heads() // args.num_shards
+    head_size = config.hidden_size // config.num_attention_heads
+
     if use_flash_decoding:
         allocate_func_name = "tvm.contrib.flash_attn.allocate_kv_cache"
-        block_size = 256
         num_blocks = 30
+        if head_size <= 64:
+            block_size = 256
+        elif head_size <= 128:
+            block_size = 128
+        else:
+            block_size = 64
     else:
         allocate_func_name = "tvm.contrib.vllm.allocate_kv_cache"
-        block_size = 16
         num_blocks = 500
+        block_size = 16
 
     model = Model(
         artifact_path,
@@ -489,9 +497,6 @@ def run(args):
     )
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=False)
-
-    num_kv_heads = config.get_num_key_value_heads() // args.num_shards
-    head_size = config.hidden_size // config.num_attention_heads
 
     if model.disco_session:
         init_cache_func = model.disco_session.get_global_func(allocate_func_name)
