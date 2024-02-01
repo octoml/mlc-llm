@@ -740,11 +740,21 @@ def symlink_original_params(
     artifact_path = pathlib.Path(artifact_path)
     model_path = pathlib.Path(model_path)
 
-    symlink_path = artifact_path.joinpath("original_params")
-    if symlink_path.exists():
-        assert symlink_path.resolve() == model_path.resolve(), (
-            f"Attempted to make a symlink from {symlink_path} to {model_path}, "
-            f"but {model_path} already exists"
-        )
+    symlink_dirpath = artifact_path.joinpath("original_params")
+
+    if symlink_dirpath.exists():
+        assert symlink_dirpath.is_dir()
     else:
-        artifact_path.joinpath("original_params").symlink_to(model_path.resolve())
+        symlink_dirpath.mkdir()
+
+    for safetensors_filepath in model_path.glob("*.safetensors"):
+        symlink_filepath = symlink_dirpath.joinpath(safetensors_filepath.name)
+
+        if symlink_filepath.exists():
+            assert symlink_filepath.resolve() == safetensors_filepath.resolve(), (
+                f"Attempted to make a symlink from {symlink_dirpath} "
+                f"to {safetensors_filepath}, "
+                f"but {model_path} already exists"
+            )
+        else:
+            symlink_filepath.symlink_to(safetensors_filepath.resolve())
