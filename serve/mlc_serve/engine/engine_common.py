@@ -22,7 +22,7 @@ from .base import (
 from .model_module import (
     DecodeRequest,
     PrefillRequest,
-    MultiQueryDecodeRequest,
+    EvalMultiQueryRequest,
     EvictedTokens,
     ConversationTemplate,
     KVCacheManager,
@@ -229,9 +229,9 @@ def update_sequence(
 def get_requests_to_process(
     current_states: list[RequestState], cache_manager: KVCacheManager
 ) -> Tuple[
-    list[Union[PrefillRequest, DecodeRequest, MultiQueryDecodeRequest]], bool, int
+    list[Union[PrefillRequest, DecodeRequest, EvalMultiQueryRequest]], bool, int
 ]:
-    requests: list[Union[PrefillRequest, DecodeRequest, MultiQueryDecodeRequest]] = []
+    requests: list[Union[PrefillRequest, DecodeRequest, EvalMultiQueryRequest]] = []
     # TODO: consider having hybrid batch if the underlying attention kernel supports
     # mixing prefill and decode.
     is_prompt_batch = any(not state.is_prefilled for state in current_states)
@@ -263,7 +263,7 @@ def get_requests_to_process(
 
                 for gen_seq in state.generation_sequences:
                     requests.append(
-                        MultiQueryDecodeRequest(
+                        EvalMultiQueryRequest(
                             sequence_id=gen_seq.seq_id,
                             num_past_tokens=state.prompt_len,
                             queries=EvictedTokens(gen_seq.generated_token_ids),
@@ -275,7 +275,7 @@ def get_requests_to_process(
                         len(gen_seq.generated_token_ids) + 1,
                     )
 
-                # TODO(masahi): How to account for token counts in MultiQueryDecodeRequest in
+                # TODO(masahi): How to account for token counts in EvalMultiQueryRequest in
                 # Prometheus metric?
             elif not state.is_prefilled:
                 token_ids = state.prompt_token_ids

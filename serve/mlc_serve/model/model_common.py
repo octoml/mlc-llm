@@ -20,7 +20,7 @@ from ..engine import (
 from ..engine.model_module import (
     DecodeRequest,
     PrefillRequest,
-    MultiQueryDecodeRequest,
+    EvalMultiQueryRequest,
     TextGenerationResult,
 )
 
@@ -305,7 +305,7 @@ def sample(
 def sample_from_logits(
     logits: Union[tvm.nd.NDArray, torch.Tensor],
     sequence_ids: List[SequenceId],
-    requests: Sequence[Union[PrefillRequest, DecodeRequest, MultiQueryDecodeRequest]],
+    requests: Sequence[Union[PrefillRequest, DecodeRequest, EvalMultiQueryRequest]],
     vocab_size,
 ) -> List[TextGenerationResult]:
     assert logits.shape[0] == len(requests)
@@ -494,7 +494,7 @@ def prepare_inputs(
 
 
 def prepare_multi_query_decode_inputs(
-    requests: List[MultiQueryDecodeRequest],
+    requests: List[EvalMultiQueryRequest],
     all_slot_mappings,
     sliding_window,
     dev,
@@ -536,7 +536,7 @@ def prepare_multi_query_decode_inputs(
 
             if request.num_past_tokens < len(prompt_slot_mappings):
                 raise RuntimeError(
-                    "For MultiQueryDecodeRequest, the number of past tokens"
+                    "For EvalMultiQueryRequest, the number of past tokens"
                     "smaller than the prompt length is not supported for now."
                 )
             elif request.num_past_tokens == len(prompt_slot_mappings):

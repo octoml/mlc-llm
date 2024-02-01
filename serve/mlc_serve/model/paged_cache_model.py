@@ -12,7 +12,7 @@ from ..engine.model_module import (
     DecodeRequest,
     ModelModule,
     PrefillRequest,
-    MultiQueryDecodeRequest,
+    EvalMultiQueryRequest,
     TextGenerationResult,
     TextGenerator,
 )
@@ -26,7 +26,7 @@ class PagedCacheModelTextGenerator:
 
     def generate(
         self,
-        requests: list[Union[PrefillRequest, DecodeRequest, MultiQueryDecodeRequest]],
+        requests: list[Union[PrefillRequest, DecodeRequest, EvalMultiQueryRequest]],
         kv_cache,
     ) -> list[TextGenerationResult]:
         prefill_requests = []
@@ -39,7 +39,7 @@ class PagedCacheModelTextGenerator:
                 prefill_requests.append(r)
             elif isinstance(r, DecodeRequest):
                 decode_requests.append(r)
-            elif isinstance(r, MultiQueryDecodeRequest):
+            elif isinstance(r, EvalMultiQueryRequest):
                 multi_query_decode_requests.append(r)
                 multi_query_decode_request_ids.add(r.sequence_id.request_id)
 

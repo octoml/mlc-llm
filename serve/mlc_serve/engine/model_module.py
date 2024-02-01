@@ -59,7 +59,7 @@ class EvictedTokens:
 
 
 @dataclass
-class MultiQueryDecodeRequest:
+class EvalMultiQueryRequest:
     sequence_id: SequenceId
     num_past_tokens: int
     queries: Union[DraftTokens, EvictedTokens]
@@ -151,7 +151,7 @@ class TextGenerator(Protocol):
 
     def generate(
         self,
-        requests: Sequence[Union[PrefillRequest, DecodeRequest, MultiQueryDecodeRequest]],
+        requests: Sequence[Union[PrefillRequest, DecodeRequest, EvalMultiQueryRequest]],
         kv_cache,
     ) -> List[TextGenerationResult]:
         """

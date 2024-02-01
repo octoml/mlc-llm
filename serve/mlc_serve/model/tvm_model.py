@@ -26,7 +26,7 @@ from ..engine.model_module import (
     DecodeRequest,
     PrefillRequest,
     DraftTokens,
-    MultiQueryDecodeRequest,
+    EvalMultiQueryRequest,
     TextGenerationResult,
     TextGenerator,
 )
@@ -206,7 +206,7 @@ class Model:
 
     def generate_multi_query(
         self,
-        requests: List[MultiQueryDecodeRequest],
+        requests: List[EvalMultiQueryRequest],
         cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
         sequence_ids = []
@@ -279,7 +279,7 @@ class Model:
     def generate(
         self,
         requests: Sequence[
-            Union[PrefillRequest, DecodeRequest, MultiQueryDecodeRequest]
+            Union[PrefillRequest, DecodeRequest, EvalMultiQueryRequest]
         ],
         cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
@@ -287,7 +287,7 @@ class Model:
             return []
 
         is_prefill = isinstance(requests[0], PrefillRequest)
-        is_multi_query_decode = isinstance(requests[0], MultiQueryDecodeRequest)
+        is_multi_query_decode = isinstance(requests[0], EvalMultiQueryRequest)
 
         if is_multi_query_decode:
             return self.generate_multi_query(requests, cache)  # type: ignore
@@ -304,7 +304,7 @@ class Model:
                 sequence_ids.append(request.sequence_id)
                 prompt_lens.append(request.prompt_token_counts)
 
-            assert not isinstance(request, MultiQueryDecodeRequest)
+            assert not isinstance(request, EvalMultiQueryRequest)
             all_token_ids.append(request.token_ids)
 
         (
