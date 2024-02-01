@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, Sequence
 
 import structlog
 import numpy as np
@@ -13,8 +13,16 @@ from ..engine import (
     LOGPROB_TOP_K_MAX,
     RawLogprobsInfo,
     RawLogprobsInfos,
+    PROMPT_SEQEUNCE_INDEX,
+    RawLogprobsInfos,
+    SequenceId,
 )
-from ..engine.model_module import MultiQueryDecodeRequest
+from ..engine.model_module import (
+    DecodeRequest,
+    PrefillRequest,
+    MultiQueryDecodeRequest,
+    TextGenerationResult,
+)
 
 
 LOG = structlog.stdlib.get_logger(__name__)
@@ -67,8 +75,8 @@ def get_raw_logprob_info(
         top_logprobs, top_tokens = torch.topk(
             logprobs, k=top_logprobs_num, dim=-1, largest=True, sorted=True
         )
-        top_tokens=top_tokens.cpu().numpy()
-        top_logprobs=top_logprobs.cpu().numpy()
+        top_tokens = top_tokens.cpu().numpy()
+        top_logprobs = top_logprobs.cpu().numpy()
 
     # Set to raw logprob info
     return RawLogprobsInfo(
@@ -108,7 +116,7 @@ def get_raw_logprob_infos(
     logits: torch.Tensor,
     token_ids: torch.Tensor,
 ) -> RawLogprobsInfos:
-    for (i, ind, top_logprobs) in indices:
+    for i, ind, top_logprobs in indices:
         logprob_infos[i] = get_raw_logprob_info(
             logits[ind],
             token_ids[ind],
@@ -292,6 +300,114 @@ def sample(
 
     torch.cuda.nvtx.range_pop()
     return res, check_logprob_infos(logprob_infos)
+
+
+def sample_from_logits(
+    logits: Union[tvm.nd.NDArray, torch.Tensor],
+    sequence_ids: List[SequenceId],
+    requests: Sequence[Union[PrefillRequest, DecodeRequest, MultiQueryDecodeRequest]],
+    vocab_size,
+) -> List[TextGenerationResult]:
+    assert logits.shape[0] == len(requests)
+
+    sampling_params = [req.sampling_params for req in requests]
+
+    try:
+        next_tokens, logprob_infos = sample(logits, sampling_params, vocab_size)
+        assert next_tokens is not None
+        outputs = []
+        for i, (sequence_id, new_token) in enumerate(zip(sequence_ids, next_tokens)):
+            if not new_token in sampling_params[i].appeared_tokens_freq:
+                requests[i].sampling_params.appeared_tokens_freq[new_token] = 0
+            requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
+            if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
+                assert isinstance(requests[i], PrefillRequest)
+                for seq_id in range(requests[i].num_sequence):  # type: ignore
+                    outputs.append(
+                        TextGenerationResult(
+                            sequence_id=SequenceId(sequence_id.request_id, seq_id),
+                            generated_tokens=[new_token],
+                            error=None,
+                            logprob_info=get_logprob_infos(i, logprob_infos),
+                        )
+                    )
+            else:
+                outputs.append(
+                    TextGenerationResult(
+                        sequence_id=sequence_id,
+                        generated_tokens=[new_token],
+                        error=None,
+                        logprob_info=get_logprob_infos(i, logprob_infos),
+                    )
+                )
+
+        return outputs
+    except RuntimeError:
+        # Fallback to per-token sampling in case some logits values are corrupted.
+        outputs = []
+        err_msg = (
+            "Error from sampling: probability tensor contains either `inf`, `nan`"
+            " or element < 0"
+        )
+
+        for i, (sequence_id, logits_per_token, sampling_param) in enumerate(
+            zip(sequence_ids, torch.from_dlpack(logits), sampling_params)
+        ):
+            maybe_new_token, logprob_infos = sample(
+                torch.unsqueeze(logits_per_token, 0),
+                [sampling_param],
+                vocab_size,
+                check_safety=True,
+            )
+
+            if maybe_new_token is not None:
+                new_token = maybe_new_token[0]
+                if not new_token in requests[i].sampling_params.appeared_tokens_freq:
+                    requests[i].sampling_params.appeared_tokens_freq[new_token] = 0
+                requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
+                if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
+                    assert isinstance(requests[i], PrefillRequest)
+                    for seq_id in range(requests[i].num_sequence):  # type: ignore
+                        outputs.append(
+                            TextGenerationResult(
+                                sequence_id=SequenceId(sequence_id.request_id, seq_id),
+                                generated_tokens=[new_token],  # type: ignore
+                                error=None,
+                                logprob_info=get_logprob_infos(0, logprob_infos),
+                            )
+                        )
+                else:
+                    outputs.append(
+                        TextGenerationResult(
+                            sequence_id=sequence_id,
+                            generated_tokens=[new_token],  # type: ignore
+                            error=None,
+                            logprob_info=get_logprob_infos(0, logprob_infos),
+                        )
+                    )
+            else:
+                if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
+                    assert isinstance(requests[i], PrefillRequest)
+                    for seq_id in range(requests[i].num_sequence):  # type: ignore
+                        outputs.append(
+                            TextGenerationResult(
+                                sequence_id=SequenceId(sequence_id.request_id, seq_id),
+                                generated_tokens=[],
+                                error=err_msg,
+                                logprob_info=get_logprob_infos(0, logprob_infos),
+                            )
+                        )
+                else:
+                    outputs.append(
+                        TextGenerationResult(
+                            sequence_id=sequence_id,
+                            generated_tokens=[],
+                            error=err_msg,
+                            logprob_info=get_logprob_infos(0, logprob_infos),
+                        )
+                    )
+
+        return outputs
 
 
 def prepare_inputs(
