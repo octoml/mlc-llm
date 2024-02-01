@@ -9,8 +9,8 @@ from enum import IntEnum
 from functools import cached_property
 from typing import Dict, Optional
 
-
 _SAMPLING_EPS = 1e-5
+LOGPROB_TOP_K_MAX = 5
 
 
 class SamplingType(IntEnum):
@@ -46,6 +46,13 @@ class SamplingParams:
             to -1 to consider all tokens.
         logit_bias: The bias applied on the logit before sampling. Must be in
             [-100, 100].
+        logprobs: Optional[bool] Whether to return log probabilities of the output
+            tokens or not. If true, returns the log probabilities of each output
+            token returned in the content of message.
+        top_logprobs: Optional[Integer] An integer between 0 and 5 specifying
+            the number of most likely tokens to return at each token position,
+            each with an associated log probability. logprobs must be set to
+            true if this parameter is used.
     """
 
     presence_penalty: float = 0.0
@@ -58,6 +65,8 @@ class SamplingParams:
     appeared_tokens_freq: Dict[int, int] = None
     logit_bias_index: list[int] = None
     logit_bias_value: list[float] = None
+    logprobs: bool = False
+    top_logprobs: int = 0
 
     def __post_init__(self):
         self.appeared_tokens_freq = {}
@@ -95,6 +104,11 @@ class SamplingParams:
                     raise ValueError(
                         f"logit bias must be in [-100, 100], got {bias} for token {token}."
                     )
+        if self.logprobs:
+            if (self.top_logprobs < 0 or self.top_logprobs > LOGPROB_TOP_K_MAX):
+                raise ValueError(
+                    f"top_logprobs must be between 0 and {LOGPROB_TOP_K_MAX}, got {self.top_logprobs}."
+                )
 
     def _verify_greedy_sampling(self) -> None:
         if self.top_p < 1.0 - _SAMPLING_EPS:

@@ -9,7 +9,7 @@ from typing import Annotated, AsyncIterator, List
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-# TODO(amalyshe): hadnle random_seed
+# TODO(amalyshe): handle random_seed
 # from .base import set_global_random_seed
 from ..api.protocol import (
     ChatCompletionRequest,
@@ -20,6 +20,7 @@ from ..api.protocol import (
     ChatMessage,
     DeltaMessage,
     ErrorResponse,
+    Logprobs,
     UsageInfo,
 )
 from ..engine import (
@@ -64,6 +65,9 @@ def _get_sampling_params(request: ChatCompletionRequest) -> SamplingParams:
         sampling_params.top_p = request.top_p
     if request.logit_bias is not None:
         sampling_params.logit_bias = request.logit_bias
+    if request.logprobs:
+        sampling_params.top_logprobs = request.top_logprobs
+        sampling_params.logprobs = request.logprobs
     return sampling_params
 
 
@@ -156,7 +160,7 @@ async def generate_completion_stream(
     created_time = int(time.time())
 
     def create_stream_response(
-        choices: list[ChatCompletionResponseStreamChoice],
+        choices: List[ChatCompletionResponseStreamChoice],
     ) -> ChatCompletionStreamResponse:
         return ChatCompletionStreamResponse(
             id=request_id,
@@ -192,6 +196,7 @@ async def generate_completion_stream(
                     finish_reason=seq.finish_reason.value
                     if seq.finish_reason is not None
                     else None,
+                    logprob_info=Logprobs(content=seq.logprob_info) if seq.logprob_info != [] else None
                 )
                 for seq in res.sequences
             ]
@@ -212,6 +217,7 @@ async def collect_result_stream(
     finish_reasons = [None] * num_sequences
     num_prompt_tokens = 0
     num_generated_tokens = [0 for _ in range(num_sequences)]
+    logprob_infos = [[] for _ in range(num_sequences)] # type: ignore
     async for res in result_generator:
         # TODO: verify that the request cancellation happens after this returns
         if res.error:
@@ -226,18 +232,27 @@ async def collect_result_stream(
             if seq.delta:
                 sequences[seq.index].append(seq.delta)
 
+            if seq.logprob_info:
+                assert seq.delta
+                logprob_infos[seq.index].extend(seq.logprob_info)
+
             if seq.is_finished:
                 assert seq.finish_reason is not None
                 finish_reasons[seq.index] = seq.finish_reason.value  # type: ignore
 
-    choices = [
-        ChatCompletionResponseChoice(
+    choices = []
+    for index, (logprob_info_seq, chunks, finish_reason) in enumerate(zip(logprob_infos, sequences, finish_reasons)):
+        logprobs = None
+        if logprob_info_seq != []:
+            logprobs = Logprobs(content=logprob_info_seq)
+
+        choice = ChatCompletionResponseChoice(
             index=index,
             message=ChatMessage(role="assistant", content="".join(chunks)),
             finish_reason=finish_reason,
+            logprobs=logprobs,
         )
-        for index, (chunks, finish_reason) in enumerate(zip(sequences, finish_reasons))
-    ]
+        choices.append(choice)
 
     usage = UsageInfo(
         prompt_tokens=num_prompt_tokens,

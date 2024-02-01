@@ -123,6 +123,7 @@ class DummyTextGenerator:
                     generated_tokens=[req.token_ids[-1] + 1],
                     # generated_tokens=[1],
                     error=None,
+                    logprob_info=None,
                 )
             )
         return result

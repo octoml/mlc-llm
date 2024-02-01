@@ -82,32 +82,31 @@ def _get_shard_strategies(
         return func
 
     def moe_shard_k_weight_scale(weight: relax.TensorStructInfo):
-        (num_experts, red, spatial), dtype = weight.shape, weight.dtype
+        (num_experts, spatial, red), dtype = weight.shape, weight.dtype
         spatial, red = int(spatial), int(red)
         if param_shape_is_already_sharded:
             red *= num_shards
-        a = te.placeholder((num_experts, red, spatial), dtype=dtype)
-        w = topi.reshape(a, (num_experts, num_shards, red // num_shards, spatial))
-        w = topi.transpose(w, (1, 0, 2, 3))
-        func = te.create_prim_func([a, w])
-        return func
-
-    def moe_shard_gate_up_weight_scale(weight: relax.TensorStructInfo):
-        (num_experts, red, spatial), dtype = weight.shape, weight.dtype
-        spatial, red = int(spatial), int(red)
-        if param_shape_is_already_sharded:
-            spatial *= num_shards
-        a = te.placeholder((num_experts, red, spatial), dtype=dtype)
-        g = te.compute((num_experts, red, spatial // 2), lambda e, i, j: a[e, i, j])
-        u = te.compute((num_experts, red, spatial // 2), lambda e, i, j: a[e, i, spatial // 2 + j])
-        g = topi.reshape(g, (num_experts, red, num_shards, spatial // 2 // num_shards))
-        u = topi.reshape(u, (num_experts, red, num_shards, spatial // 2 // num_shards))
-        w = topi.concatenate((g, u), axis=3)
-        w = topi.reshape(w, (num_experts, red, num_shards, spatial // num_shards))
+        a = te.placeholder((num_experts, spatial, red), dtype=dtype)
+        w = topi.reshape(a, (num_experts, spatial, num_shards, red // num_shards))
         w = topi.transpose(w, (2, 0, 1, 3))
         func = te.create_prim_func([a, w])
         return func
 
+    def moe_shard_gate_up_weight_scale(weight: relax.TensorStructInfo):
+        (num_experts, spatial, red), dtype = weight.shape, weight.dtype
+        spatial, red = int(spatial), int(red)
+        if param_shape_is_already_sharded:
+            spatial *= num_shards
+        a = te.placeholder((num_experts, spatial, red), dtype=dtype)
+        g = te.compute((num_experts, spatial // 2, red), lambda e, i, j: a[e, i, j])
+        u = te.compute((num_experts, spatial // 2, red), lambda e, i, j: a[e, spatial // 2 + i, j])
+        g = topi.reshape(g, (num_experts, num_shards, spatial // 2 // num_shards, red))
+        u = topi.reshape(u, (num_experts, num_shards, spatial // 2 // num_shards, red))
+        w = topi.concatenate((g, u), axis=2)
+        w = topi.reshape(w, (num_experts, num_shards, spatial // num_shards, red))
+        w = topi.transpose(w, (1, 0, 2, 3))
+        func = te.create_prim_func([a, w])
+        return func
 
     # pylint: enable=invalid-name
 
@@ -233,7 +232,12 @@ def create_shard_info_func(param_manager, args, model_config) -> tvm.IRModule:
 
 
 def create_shard_transformation_func(param_manager, args, model_config) -> tvm.IRModule:
-    use_ft_quant = args.quantization.name in ["q4f16_ft", "q8f16_ft", "q4f16_ft_group", "q8f16_ft_group"]
+    use_ft_quant = args.quantization.name in [
+        "q4f16_ft",
+        "q8f16_ft",
+        "q4f16_ft_group",
+        "q8f16_ft_group",
+    ]
 
     if use_ft_quant:
         shard_strategy_to_func = _get_shard_strategies_ft(

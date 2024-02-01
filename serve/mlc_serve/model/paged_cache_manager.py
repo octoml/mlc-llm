@@ -1,6 +1,6 @@
 import math
 from collections import defaultdict
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from ..engine import (
     RequestId,
@@ -104,16 +104,16 @@ class DecodeBlockTable:
 class KVCacheInfo:
     def __init__(
         self,
-        block_size,
+        block_size: int
     ):
         self.block_size = block_size
 
         # SequenceId -> list[int]
-        self.prompt_block_tables = defaultdict(list)
-        self.slot_mappings = defaultdict(list)
+        self.prompt_block_tables = defaultdict(list)  # type: ignore
+        self.slot_mappings = defaultdict(list)  # type: ignore
 
         # The core data structure
-        self.decode_block_tables = dict[SequenceId, DecodeBlockTable]()
+        self.decode_block_tables: dict = dict[SequenceId, DecodeBlockTable]()
 
         # Record indices of blocks to copy after prefill in the format [src1, dst1, src2, dst2, ...]
         self.pending_copy_from_to: list[int] = []
