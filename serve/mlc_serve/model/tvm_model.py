@@ -1,5 +1,6 @@
 import math
 import os
+import pathlib
 from typing import List, Union, Tuple, Sequence
 
 import structlog
@@ -16,6 +17,7 @@ from .model_common import (
     prepare_inputs,
     get_num_cache_blocks,
 )
+from .lazy_safetensor import LazySafetensorDir
 
 from ..engine import (
     SequenceId,
@@ -63,23 +65,120 @@ def broadcast_from_worker_0(sess: di.Session, src, shape, dtype):
     return dst
 
 
+def load_tvm_weights(
+    param_path: Union[str, pathlib.Path], dev: tvm.runtime.Device
+) -> List[tvm.runtime.NDArray]:
+    """Load a set of weights
+
+    Loads a set of weights.  Assumes that the weights had previously
+    been saved using `tvmjs.dump_ndarray_cache`.
+
+    Parameters
+    ----------
+    param_path: Union[str, pathlib.Path]
+
+        The path to the saved parameters.
+
+    dev: tvm.runtime.Device
+
+        The device onto which the saved parameters should be loaded.
+
+    Returns
+    -------
+    params: List[tvm.runtime.NDArray]
+
+        The loaded parameters
+
+    """
+    param_path = pathlib.Path(param_path)
+
+    from tvm.contrib import tvmjs  # pylint: disable=import-outside-toplevel
+
+    params, metadata = tvmjs.load_ndarray_cache(param_path.as_posix(), dev)
+
+    return [params[f"param_{i}"] for i in range(metadata["ParamSize"])]
+
+
+def preprocess_weights(
+    param_path: Union[str, pathlib.Path],
+    executable_module: tvm.runtime.Module,
+    dev: tvm.runtime.Device,
+) -> List[tvm.runtime.NDArray]:
+    """Load and preprocess a set of model weights
+
+    Load and preprocess a set of model weights.
+
+    Parameters
+    ----------
+    param_path: Union[str, pathlib.Path]
+
+        The path to the model parameters parameters.
+
+    executable_module: tvm.runtime.Module
+
+        The compiled module, as returned from
+        `tvm.runtime.load_module`, which contains the functions
+        `transform_params` and `get_original_param_names`.
+
+    dev: tvm.runtime.Device
+
+        The device on which the pre-processed parameters should be
+        loaded, after pre-processing is complete.
+
+    Returns
+    -------
+    params: List[tvm.runtime.NDArray]
+
+        The loaded parameters
+
+    """
+    param_path = pathlib.Path(param_path)
+
+    safetensors = LazySafetensorDir(param_path)
+    param_names = []
+
+    # weight = safetensors["model.norm.weight"]
+
+    @tvm.register_func("get_item", override=True)
+    def get_item(i):
+        safetensor = safetensors[param_names[i]]
+        tvm_on_cpu = safetensor.as_tvm_array()
+        return tvm.nd.array(tvm_on_cpu, dev)
+
+    vm = relax.VirtualMachine(executable_module, dev)
+
+    param_names.extend(vm["get_original_param_names"]())
+
+    from time_utils import Timer
+
+    with Timer("Loading/transforming parameters"):
+        params = vm["transform_params"]()
+
+    return params
+
+
 def get_tvm_model(config, dev):
     LOG.info(f"Loading parameters from {config.model_artifact_path}.")
-    lib_path = os.path.join(config.model_artifact_path, config.library_name)
+
+    artifact_path = pathlib.Path(config.model_artifact_path)
+    lib_path = artifact_path.joinpath(config.library_name)
 
     if config.num_shards == 1:
-        ex = tvm.runtime.load_module(lib_path)
+        ex = tvm.runtime.load_module(lib_path.as_posix())
+
+        param_path = artifact_path.joinpath("params")
+        orig_param_path = artifact_path.joinpath("original_params")
+        if param_path.exists():
+            params = load_tvm_weights(param_path, dev)
+        elif orig_param_path.exists():
+            params = preprocess_weights(orig_param_path, ex, dev)
+        else:
+            raise RuntimeError(
+                f"The artifact path {artifact_path} contains neither a 'params' directory, "
+                f"nor an 'original_params' directory."
+            )
+
         vm = relax.VirtualMachine(ex, dev)
-
-        from tvm.contrib import tvmjs  # pylint: disable=import-outside-toplevel
-
-        _params, _meta = tvmjs.load_ndarray_cache(
-            f"{config.model_artifact_path}/params", dev
-        )
-        params = []
-        for i in range(_meta["ParamSize"]):
-            params.append(_params[f"param_{i}"])
-
         return vm.module, params, None
 
     return load_disco_module(config.model_artifact_path, lib_path, config.num_shards)

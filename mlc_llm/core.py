@@ -1118,10 +1118,24 @@ def generate_mod_transform(model_generators, args, config):
 
     parameter_transforms = []
 
-    parameter_transforms.append(
-        # Disable optimized param ordering, since it will be re-run later
-        param_manager.create_parameter_transformation(optimize_parameter_order=False)
+    # Disable optimized param ordering, since it will be re-run later
+    manager_transform = param_manager.create_parameter_transformation(
+        optimize_parameter_order=False
     )
+    # If the model provided constants, bind them to the transform_params.
+    # This ensures that the generated function can reproduce the same
+    # output parameters even when executed outside of the `build.py`
+    # context.
+    if params is not None:
+        param_bindings = {
+            var: param
+            for var, param in zip(manager_transform["transform_params"].params, params)
+            if param is not None
+        }
+        manager_transform["transform_params"] = manager_transform["transform_params"].bind_params(
+            param_bindings
+        )
+    parameter_transforms.append(manager_transform)
 
     # Run pre-sharding if required
     if args.num_shards > 1 and args.use_presharded_weights:
@@ -1140,6 +1154,11 @@ def generate_mod_transform(model_generators, args, config):
     param_manager.init_torch_pname_to_bin_name(args.use_safetensors)
 
     seq = [
+        # TODO: Handle model params without a tuple in
+        # optimize_transform_param_order, so that the parameter names can
+        # be preserved longer.
+        generate_orig_param_names,
+        relax.transform.BundleModelParams(),
         # TODO(Lunderberg): Implement
         # relax.transform.Simplify() that applies
         # canonicalization, CSE, and DCE until
@@ -1150,11 +1169,6 @@ def generate_mod_transform(model_generators, args, config):
         relax.transform.CanonicalizeBindings(),
         relax.transform.EliminateCommonSubexpr(),
         relax.transform.DeadCodeElimination(),
-        # TODO: Handle model params without a tuple in
-        # optimize_transform_param_order, so that the parameter names can
-        # be preserved longer.
-        generate_orig_param_names,
-        relax.transform.BundleModelParams(),
         # Re-order parameters to avoid needed to load from
         # multiple pytorch files at the same time.
         tvm.ir.transform.ApplyPassToFunction(
@@ -1319,7 +1333,12 @@ def build_model_from_args(args: argparse.Namespace):
         if args.lora is not None:
             transform_seq.append(bundle_lora_params)
 
-        transform_seq.append(relax.transform.BundleModelParams("base_params"))
+        transform_seq.append(
+            tvm.ir.transform.ApplyPassToFunction(
+                relax.transform.BundleModelParams("base_params"),
+                "(?!transform_params).*",
+            )
+        )
 
         if args.lora is not None:
             transform_seq.append(reorder_lora_params_after_base_model_params)
@@ -1335,7 +1354,7 @@ def build_model_from_args(args: argparse.Namespace):
                 tvm.ir.transform.Sequential(
                     [
                         relax.transform.ToNonDataflow(),
-                        relax.transform.LazyTransformParams(),
+                        relax.transform.LazyTransformParams(fset_item=None),
                     ],
                     name="ParameterTransformOptimizations",
                 ),
@@ -1350,7 +1369,10 @@ def build_model_from_args(args: argparse.Namespace):
             # and landed.
             transform_seq.append(auto_generate_decode_func)
 
-        mod = tvm.ir.transform.Sequential(transform_seq, name="OptimizeMLCModel")(mod)
+        from lunderberg_tvm_instrument import PrintTransformSequence
+
+        with tvm.transform.PassContext(instruments=[PrintTransformSequence()]):
+            mod = tvm.ir.transform.Sequential(transform_seq, name="OptimizeMLCModel")(mod)
 
         mod.show(
             name="Optimized",
@@ -1464,6 +1486,8 @@ def build_model_from_args(args: argparse.Namespace):
 
             with open(mlc_model_config_path, "w", encoding="utf-8") as outfile:
                 json.dump(mlc_model_config, outfile, indent=4)
+
+        utils.symlink_original_params(args.artifact_path, args.model_path)
 
         if args.model_category != "minigpt":
             utils.copy_tokenizer(args)

@@ -732,3 +732,19 @@ def parse_target(args: argparse.Namespace) -> None:
         args.lib_format = "dll"
 
     print(f"Target configured: {args.target}")
+
+
+def symlink_original_params(
+    artifact_path: Union[str, pathlib.Path], model_path: Union[str, pathlib.Path]
+):
+    artifact_path = pathlib.Path(artifact_path)
+    model_path = pathlib.Path(model_path)
+
+    symlink_path = artifact_path.joinpath("original_params")
+    if symlink_path.exists():
+        assert symlink_path.resolve() == model_path.resolve(), (
+            f"Attempted to make a symlink from {symlink_path} to {model_path}, "
+            f"but {model_path} already exists"
+        )
+    else:
+        artifact_path.joinpath("original_params").symlink_to(model_path.resolve())
