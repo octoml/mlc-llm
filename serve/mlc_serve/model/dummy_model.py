@@ -11,7 +11,6 @@ from mlc_serve.engine.model_module import (
     DecodeRequest,
     KVCache,
     PrefillRequest,
-    RequestType,
     SequenceId,
     TextGenerationResult,
 )
@@ -98,18 +97,17 @@ class DummyCacheManager:
 class DummyTextGenerator:
     def generate(
         self,
-        requests: list[RequestType],
+        requests: list[Union[PrefillRequest, DecodeRequest]],
         kv_cache: DummyCache,
     ) -> list[TextGenerationResult]:
         result = []
         for req in requests:
-            # TODO(vvchernov): support other types of Request
             if isinstance(req, DecodeRequest):
                 seq_id = req.sequence_id
                 request_id = req.sequence_id.request_id
                 if req.sequence_id.sequence_index > 0:
                     raise RuntimeError("Multiple generated sequences not supported")
-            else:  # PrefillRequest
+            else:
                 seq_id = SequenceId(req.request_id, 0)
                 request_id = req.request_id
 

@@ -351,11 +351,11 @@ def sample_from_logits(
     assert logits.shape[0] == len(requests)
 
     sampling_params = [req.sampling_params for req in requests]
+    outputs: List[TextGenerationResult] = []
 
     try:
         next_tokens, logprob_infos = sample(logits, sampling_params, vocab_size)
         assert next_tokens is not None
-        outputs = []
         for i, (sequence_id, new_token) in enumerate(zip(sequence_ids, next_tokens)):
             update_tokens_frequency(requests[i], new_token)
             outputs = append_text_gen_res(
@@ -369,7 +369,6 @@ def sample_from_logits(
         return outputs
     except RuntimeError:
         # Fallback to per-token sampling in case some logits values are corrupted.
-        outputs = []
         err_msg = (
             "Error from sampling: probability tensor contains either `inf`, `nan`"
             " or element < 0"
