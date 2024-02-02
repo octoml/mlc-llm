@@ -28,10 +28,10 @@ from concurrent.futures import ThreadPoolExecutor
 from .base import ModelArtifactConfig
 from .paged_cache_manager import KVCacheInfo, CacheManager
 from .model_common import (
-    sample,
     prepare_inputs,
     get_num_cache_blocks,
     get_logprob_infos,
+    sample_from_logits,
 )
 
 from ..engine import (
@@ -195,7 +195,6 @@ def generate(
     is_prefill = isinstance(requests[0], PrefillRequest)
 
     all_token_ids = []
-    sampling_params = []
     sequence_ids = []
     prompt_lens = []
     num_sequences = []
@@ -210,7 +209,6 @@ def generate(
             prompt_lens.append(request.prompt_token_counts)
 
         all_token_ids.append(request.token_ids)
-        sampling_params.append(request.sampling_params)
 
     selected_token_indices: List[int] = []
 
@@ -299,35 +297,7 @@ def generate(
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
 
-        next_tokens, logprob_infos = sample(logits, sampling_params, vocab_size)
-
-    outputs = []
-
-    for i, (sequence_id, new_token) in enumerate(zip(sequence_ids, next_tokens)):
-        if not new_token in requests[i].sampling_params.appeared_tokens_freq:
-            requests[i].sampling_params.appeared_tokens_freq[new_token] = 0
-        requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
-        if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
-            for seq_id in range(num_sequences[i]):
-                outputs.append(
-                    TextGenerationResult(
-                        sequence_id=SequenceId(sequence_id.request_id, seq_id),
-                        generated_tokens=[new_token],
-                        error=None,
-                        logprob_info=get_logprob_infos(i, logprob_infos),
-                    )
-                )
-        else:
-            outputs.append(
-                TextGenerationResult(
-                    sequence_id=sequence_id,
-                    generated_tokens=[new_token],
-                    error=None,
-                        logprob_info=get_logprob_infos(i, logprob_infos),
-                )
-            )
-
-    return outputs
+    return sample_from_logits(logits, sequence_ids, requests, vocab_size)
 
 
 class ModelRpcServer(rpyc.Service):
