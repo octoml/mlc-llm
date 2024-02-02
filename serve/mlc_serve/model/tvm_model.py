@@ -13,6 +13,7 @@ from .base import ModelArtifactConfig
 from .paged_cache_manager import KVCacheInfo, CacheManager
 from .model_common import (
     sample_from_logits,
+    sample_loglikelihood_from_logits,
     prepare_inputs,
     prepare_multi_query_decode_inputs,
     get_num_cache_blocks,
@@ -24,6 +25,7 @@ from ..engine import (
 from ..engine.model_module import (
     DraftTokens,
     EvalMultiQueryRequest,
+    LoglikelihoodRequest,
     PrefillRequest,
     DecodeRequest,
     TextGenerator,
@@ -318,7 +320,11 @@ class Model:
         if batch_size == 0:
             return []
 
-        is_prefill = isinstance(requests[0], PrefillRequest)
+        is_prefill = (
+            isinstance(requests[0], PrefillRequest) or
+            isinstance(requests[0], LoglikelihoodRequest)
+        )
+        all_logits = isinstance(requests[0], LoglikelihoodRequest)
         is_multi_query_decode = isinstance(requests[0], EvalMultiQueryRequest)
 
         if is_multi_query_decode:
@@ -338,6 +344,10 @@ class Model:
                 # This is convenient way to filter out paddings
                 # after the vectorized sampling computation
                 # since logit index will be in range of [0,vocab_size)
+                request_past_decode_tokens = [self.vocab_size]
+            elif isinstance(request, LoglikelihoodRequest):
+                seq_id = get_prompt_sequence_id(request.request_id)
+                # TODO(vvchernov): it it needed?
                 request_past_decode_tokens = [self.vocab_size]
             elif isinstance(request, DecodeRequest):
                 seq_id = request.sequence_id
@@ -392,7 +402,23 @@ class Model:
             seq_lens = copy_to_worker_0(self.disco_session, seq_lens)
             slot_mapping = copy_to_worker_0(self.disco_session, slot_mapping)
 
-        if is_prefill:
+        if all_logits:
+            torch.cuda.nvtx.range_push(f"forward loglikelihood prefill {input_shape}")
+
+            if self.sliding_window:
+                # TODO(vchernov): do we need to support this scenario?
+                raise ValueError("Sliding window is not supported for loglikelihood prefill")
+            else:
+                out = self.mod["loglikelihood"](
+                    input_ids,
+                    positions,
+                    seq_lens,
+                    cache.cache_blocks,
+                    slot_mapping,
+                    all_logits,
+                    self.params,
+                )
+        elif is_prefill:
             torch.cuda.nvtx.range_push(f"forward prefill {input_shape}")
 
             if self.sliding_window:
@@ -461,17 +487,23 @@ class Model:
             self.copy_cache_blocks_func(self.cache_blocks, block_mapping)
             cache.pending_copy_from_to = []
 
-        return sample_from_logits(
-            logits,
-            sequence_ids,
-            requests,
-            sampling_metadata,
-            self.vocab_size,
-            self._copy_stream,
-            self.torch_dtype,
-            self.torch_dev,
-            past_decode_tokens,
-        )
+        if all_logits:
+            return sample_loglikelihood_from_logits(
+                logits,
+                sequence_ids,
+            )
+        else:
+            return sample_from_logits(
+                logits,
+                sequence_ids,
+                requests,
+                sampling_metadata,
+                self.vocab_size,
+                self._copy_stream,
+                self.torch_dtype,
+                self.torch_dev,
+                past_decode_tokens,
+            )
 
 
 def init_tvm_model(

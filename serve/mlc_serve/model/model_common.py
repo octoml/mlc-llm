@@ -18,7 +18,7 @@ from ..engine.model_module import (
     RequestType,
     TextGenerationResult,
 )
-from .sampler import sample, adjust_logits, SamplingState, SamplingOutput
+from .sampler import sample, loglikelihood_sample, adjust_logits, SamplingState, SamplingOutput
 
 
 LOG = structlog.stdlib.get_logger(__name__)
@@ -174,6 +174,29 @@ def sample_from_logits(
                 )
 
     return outputs
+
+
+def sample_loglikelihood_from_logits(
+    logits: Union[tvm.nd.NDArray, torch.Tensor],
+    sequence_ids: List[SequenceId],
+) -> List[TextGenerationResult]:
+    # TODO(vvchernov): cut prompt lengths from logits
+    try:
+        logprob_infos = loglikelihood_sample(logits)
+        outputs: List[TextGenerationResult] = []
+        for i, sequence_id in enumerate(sequence_ids):
+            outputs.append(
+                TextGenerationResult(
+                    sequence_id=sequence_id,
+                    generated_tokens=[],
+                    error=None,
+                    logprob_info=logprob_infos[i],
+                )
+            )
+
+        return outputs
+    except RuntimeError:
+        raise RuntimeError("Collection of logprobs info for loglikelihood failed")
 
 
 def prepare_inputs(
