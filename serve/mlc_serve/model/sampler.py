@@ -509,3 +509,52 @@ def sample(
             )
 
     return SamplingOutput(next_tokens, logprob_infos)
+
+
+def get_raw_logprob_info_wo_top(
+    logits: torch.Tensor,
+    token_id: int,
+) -> RawLogprobsInfo:
+    logprobs = torch.log_softmax(logits, dim=-1)
+
+    # Set to raw logprob info
+    return RawLogprobsInfo(
+        current_token_id=token_id,
+        current_logprob=logprobs[token_id],
+        top_token_ids=None,
+        top_logprobs=None,
+    )
+
+
+def get_loglikelihood_logprob_infos(
+    logits: torch.Tensor,
+    token_ids: torch.Tensor,
+) -> List[Optional[RawLogprobsInfo]]:
+    logprob_infos: List[Optional[RawLogprobsInfo]] = []
+    num_seq = logits.shape[0]
+    for index in range(num_seq):
+        logprob_infos.append(
+            get_raw_logprob_info_wo_top(
+                logits[index],
+                token_ids[index],
+            )
+        )
+
+    return logprob_infos
+
+
+def loglikelihood_sample(
+    logits: torch.Tensor,
+) -> List[Optional[RawLogprobsInfo]]:
+    logits = torch.from_dlpack(logits)
+
+    # TODO(vvchernov): we need token_ids from input
+    # It is not neccessary top1
+    res = torch.argmax(logits, -1)
+
+    logprob_infos = get_loglikelihood_logprob_infos(
+        logits,
+        res,
+    )
+
+    return logprob_infos
