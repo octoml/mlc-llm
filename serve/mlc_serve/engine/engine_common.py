@@ -278,15 +278,18 @@ def get_requests_to_process(
                 # TODO(masahi): How to account for token counts in EvalMultiQueryRequest in
                 # Prometheus metric?
             elif not state.is_prefilled:
-                token_ids = state.prompt_token_ids
-                # generated_token_ids is added for the case where the request is
-                # recovering from cache eviction.
-
                 if (
                     state.num_sequences == 1
                     and state.generation_sequences[0].generated_token_ids
                 ):
-                    token_ids += state.generation_sequences[0].generated_token_ids
+                    # generated_token_ids is added for the case where the request is
+                    # recovering from cache eviction.
+                    token_ids = (
+                        state.prompt_token_ids
+                        + state.generation_sequences[0].generated_token_ids
+                    )
+                else:
+                    token_ids = state.prompt_token_ids
 
                 requests.append(
                     PrefillRequest(
@@ -457,7 +460,7 @@ class EngineBase:
                     LOG.warn(
                         f"Cancelling a parallel-sampling request '{request_to_remove.request_id}'"
                         f"since it has generated more than {self.max_num_batched_tokens} tokens in total"
-                         "and currently we do not support preempting such request.",
+                        "and currently we do not support preempting such request.",
                     )
                     continue
 
