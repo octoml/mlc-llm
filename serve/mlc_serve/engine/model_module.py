@@ -33,6 +33,13 @@ class PrefillRequest:
 
 
 @dataclass
+class LoglikelihoodRequest:
+    request_id: RequestId
+    token_ids: List[int]
+    sampling_params: SamplingParams
+
+
+@dataclass
 class DecodeRequest:
     sequence_id: SequenceId
     prompt_token_counts: int
@@ -67,7 +74,7 @@ class EvalMultiQueryRequest:
     sampling_params: SamplingParams
 
 
-RequestType = Union[PrefillRequest, DecodeRequest, EvalMultiQueryRequest]
+RequestType = Union[PrefillRequest, LoglikelihoodRequest, DecodeRequest, EvalMultiQueryRequest]
 
 
 @dataclass
