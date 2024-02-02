@@ -571,6 +571,7 @@ class LlamaForCausalLM(nn.Module):
         seq_lens: relax.Expr,  # (num_seq,)
         kv_caches: Optional[relax.Expr],  # For prefill and decode, not needed for evaluate
         slot_mapping: Optional[relax.Expr],  # (num_query_token,), Not needed for evaluate
+        all_logits: Optional[relax.Expr],  # For prefill (need for loglikelihood calculation)
         block_tables: Optional[relax.Expr],  # (num_seq, max_num_blocks_per_seq), for decode
         indices_within_window: Optional[
             relax.Expr
@@ -617,7 +618,12 @@ class LlamaForCausalLM(nn.Module):
                     ccl.broadcast_from_worker0(permute_indices_after_concat)
                 )
 
+            if all_logits:
+                # TODO(vvchernov): ask somebody to check sharding
+                all_logits = nn.emit(ccl.broadcast_from_worker0(all_logits))
+
         is_prompt = block_tables is None and query_lens is None
+        is_all_logits = all_logits is not None
 
         if query_lens is not None:
             seq_start = create_seq_start(seq_lens)
@@ -630,7 +636,7 @@ class LlamaForCausalLM(nn.Module):
                 past_slot_mapping,
                 permute_indices_after_concat,
             )
-        elif is_prompt:
+        elif is_prompt or is_all_logits:
             seq_start = create_seq_start(seq_lens)
             attn_aux_info = PrefillAttentionInput(seq_start, indices_within_window)
         else:
@@ -651,27 +657,29 @@ class LlamaForCausalLM(nn.Module):
             attn_aux_info,
         )
 
-        if is_prompt:
-            # Extract logits for the last token in each sequence
-
-            def get_logits_last_tokens(x, seq_len_tensor, seq_start):
-                return te.compute(
-                    shape=(seq_len_tensor.shape[0], x.shape[-1]),
-                    fcompute=lambda i, j: x[seq_start[i] + seq_len_tensor[i] - 1, j],
-                    name="get_logits_last_tokens",
-                )
-
-            logits = self.lm_head(
-                nn.emit_te(
-                    get_logits_last_tokens,
-                    hidden_states,
-                    seq_lens,
-                    seq_start,
-                    primfunc_name_hint="get_logits_last_tokens",
-                )
-            )
-        else:
+        if is_all_logits:
             logits = self.lm_head(hidden_states)
+        else:
+            if is_prompt:
+                # Extract logits for the last token in each sequence
+                def get_logits_last_tokens(x, seq_len_tensor, seq_start):
+                    return te.compute(
+                        shape=(seq_len_tensor.shape[0], x.shape[-1]),
+                        fcompute=lambda i, j: x[seq_start[i] + seq_len_tensor[i] - 1, j],
+                        name="get_logits_last_tokens",
+                    )
+
+                logits = self.lm_head(
+                    nn.emit_te(
+                        get_logits_last_tokens,
+                        hidden_states,
+                        seq_lens,
+                        seq_start,
+                        primfunc_name_hint="get_logits_last_tokens",
+                    )
+                )
+            else:
+                logits = self.lm_head(hidden_states)
 
         if logits.struct_info.dtype != "float32":
             logits = nn.emit(relax.op.astype(logits, "float32"))
@@ -786,6 +794,7 @@ def create_evaluate_func(
                 seq_lens,
                 kv_caches=None,
                 slot_mapping=None,
+                all_logits=None,
                 block_tables=None,
                 indices_within_window=None,
                 query_lens=None,
@@ -851,6 +860,82 @@ def create_encoding_func(
                 seq_lens,
                 past_key_values,
                 slot_mapping,
+                None,  # all_logits
+                None,  # block_tables
+            ]
+
+            if config.sliding_window:
+                num_inputs += 1
+                # The value of num_cached_total is between
+                # num_query_token (if seq_len < sliding_window for all seq) and
+                # num_seq * config.sliding_window (if seq_len > sliding_window for all seq)
+                num_cached_total = tvm.tir.Var("num_cached_total", "int64")
+                indices_within_window = nn.Placeholder(
+                    (num_cached_total,), dtype="int32", name="indices_within_window"
+                )
+                inputs.append(indices_within_window)
+                params.append(indices_within_window)
+            else:
+                inputs.append(None)
+
+            inputs += [None, None, None]
+
+            logits, new_kvs = model(*inputs)
+            gv = bb.emit_output((logits, relax.Tuple(new_kvs)))
+
+        bb.emit_func_output(gv, params + model.parameters())
+
+    mod = bb.get()
+    gv = mod.get_global_var(func_name)
+    bb.update_func(gv, mod[gv].with_attr("num_input", num_inputs))
+
+
+def create_loglikelihood_func(
+    bb: relax.BlockBuilder,
+    param_manager: ParamManager,
+    config: LlamaConfig,
+    kv_type: KVCacheType,
+    cpu_dev: VDevice,
+    quant_scheme: QuantizationScheme,
+) -> None:
+    """Batched prefill with vLLM paged KV cache returning logits for all tokens.
+    The batched attention op is intended to be offloaded to CUTLASS or Flash Attention
+    via BYOC.
+    """
+    func_name = "loglikelihood"
+
+    num_query_token = tvm.tir.SizeVar("num_query_token", "int64")
+    num_seq = tvm.tir.SizeVar("num_seq", "int64")
+
+    num_inputs = 6
+
+    with bb.function(func_name):
+        model = LlamaForCausalLM(config, cpu_dev, tvm.tir.SizeVar("vocab_size", "int64"), kv_type, False)
+        param_manager.register_params(model, func_name, quant_scheme, get_param_quant_kind)
+
+        input_ids, positions, seq_lens, past_key_values, slot_mapping, _ = get_inputs(
+            num_query_token, num_seq, config, kv_type, sep_embed=False
+        )
+
+        all_logits = nn.Placeholder((1,), dtype="bool", name="all_logits")
+
+        with bb.dataflow():
+            params = [
+                input_ids,
+                positions,
+                seq_lens,
+                past_key_values,
+                slot_mapping,
+                all_logits,
+            ]
+
+            inputs = [
+                input_ids,
+                positions,
+                seq_lens,
+                past_key_values,
+                slot_mapping,
+                all_logits,
                 None,  # block_tables
             ]
 
@@ -926,6 +1011,7 @@ def create_decoding_func(
                     seq_lens,
                     past_key_values,
                     slot_mapping,
+                    None,  # all_logits
                     block_tables,
                     None,
                     None,
@@ -1000,6 +1086,7 @@ def create_evaluate_multi_query_func(
                 seq_lens,
                 past_key_values,
                 slot_mapping,
+                None,  # all_logits
                 None,  # block_tables
                 None,  # indices_within_window
             ]
@@ -1086,6 +1173,7 @@ def get_model(args, hf_config):
 
     create_evaluate_func(bb, param_manager, config, cpu_dev, args.quantization, sep_embed)
     create_encoding_func(bb, param_manager, config, kv_type, cpu_dev, args.quantization, sep_embed)
+    create_loglikelihood_func(bb, param_manager, config, kv_type, cpu_dev, args.quantization)
     create_decoding_func(bb, param_manager, config, kv_type, cpu_dev, args.quantization)
     create_evaluate_multi_query_func(bb, param_manager, config, kv_type, cpu_dev, args.quantization)
 
