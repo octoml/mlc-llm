@@ -190,7 +190,7 @@ def sample_loglikelihood_from_logits(
                     sequence_id=sequence_id,
                     generated_tokens=[],
                     error=None,
-                    logprob_info=logprob_infos[i],
+                    logprob_info=get_logprob_infos(i, logprob_infos),
                 )
             )
 

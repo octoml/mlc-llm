@@ -413,7 +413,7 @@ class Model:
                     input_ids,
                     positions,
                     seq_lens,
-                    cache.cache_blocks,
+                    self.cache_blocks,
                     slot_mapping,
                     all_logits,
                     self.params,
