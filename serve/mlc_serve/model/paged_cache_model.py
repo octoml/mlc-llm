@@ -10,9 +10,10 @@ from .tvm_model import init_tvm_model
 from ..engine import MLCServeEngineConfig
 from ..engine.model_module import (
     DecodeRequest,
+    EvalMultiQueryRequest,
+    LoglikelihoodRequest,
     ModelModule,
     PrefillRequest,
-    EvalMultiQueryRequest,
     RequestType,
     TextGenerationResult,
     TextGenerator,
@@ -31,6 +32,7 @@ class PagedCacheModelTextGenerator:
         kv_cache,
     ) -> List[TextGenerationResult]:
         prefill_requests = []
+        loglikelihood_requests = []
         decode_requests = []
         multi_query_decode_requests = []
         multi_query_decode_request_ids = set()
@@ -38,6 +40,8 @@ class PagedCacheModelTextGenerator:
         for r in requests:
             if isinstance(r, PrefillRequest):
                 prefill_requests.append(r)
+            if isinstance(r, LoglikelihoodRequest):
+                loglikelihood_requests.append(r)
             elif isinstance(r, DecodeRequest):
                 decode_requests.append(r)
             elif isinstance(r, EvalMultiQueryRequest):
@@ -57,6 +61,9 @@ class PagedCacheModelTextGenerator:
                 for res in prefill_res:
                     if res.sequence_id.request_id not in multi_query_decode_request_ids:
                         out.append(res)
+
+        if loglikelihood_requests:
+            out.extend(self.model.generate(loglikelihood_requests, kv_cache))
 
         if decode_requests:
             out.extend(self.model.generate(decode_requests, kv_cache))
