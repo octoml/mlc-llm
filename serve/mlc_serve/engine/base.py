@@ -19,8 +19,8 @@ RequestId = str
 class RawLogprobsInfo:
     current_token_id: int
     current_logprob: float
-    top_token_ids: Optional[np.array]
-    top_logprobs: Optional[np.array]
+    top_token_ids: Optional[np.ndarray]
+    top_logprobs: Optional[np.ndarray]
 
 RawLogprobsInfos = List[Optional[RawLogprobsInfo]]
 

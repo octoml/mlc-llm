@@ -65,14 +65,14 @@ class AsyncEngineConnector:
                 raise
             finally:
                 self.shutdown_event.set()
+                if isinstance(self.engine, ScopedInferenceEngine):
+                    await asyncio.to_thread(self.engine.stop)
 
         self.engine_loop_task = asyncio.create_task(wait())
 
     async def stop(self):
         self.engine_loop_task.cancel()
         await self.engine_loop_task
-        if isinstance(self.engine, ScopedInferenceEngine):
-            await asyncio.to_thread(self.engine.stop)
 
     async def generate(self, request: Request) -> AsyncIterator[RequestOutput]:
         try:

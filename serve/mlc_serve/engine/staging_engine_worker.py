@@ -386,7 +386,7 @@ def run_generation_loop_worker(
         should_stop = True
 
     handler_thread = Thread(
-        target=handle_command, name="staging-engine-worker-command-handler"
+        target=handle_command, name="staging-engine-worker-command-handler", daemon=True
     )
     handler_thread.start()
 
@@ -411,5 +411,3 @@ def run_generation_loop_worker(
             # result_queue should have size limit and the blocking behavior
             # of queue.put will naturally limits the tokens it generates ahead of time.
             result_queue.put(output)
-
-    handler_thread.join()
