@@ -1,6 +1,6 @@
 import math
 from collections import defaultdict
-from typing import Any, List, Optional
+from typing import List, Optional
 
 from ..engine import (
     RequestId,

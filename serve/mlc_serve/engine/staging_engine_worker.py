@@ -333,6 +333,7 @@ class GenerationLoopWorker(EngineBase):
         )
 
         if is_prompt_batch:
+            # TODO(vvchernov): There are loglikelihood requests, do we need to separate them?
             self.prom_metrics.histogram(BATCHED_PREFILL_TOKENS).observe(token_counts)
         else:
             self.prom_metrics.histogram(BATCHED_DECODE_TOKENS).observe(token_counts)

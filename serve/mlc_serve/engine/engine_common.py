@@ -3,7 +3,7 @@ Common utilites for engine classes.
 """
 
 import time
-from typing import Tuple, Deque, Dict, Optional, Union, Callable, List
+from typing import Tuple, Deque, Dict, Optional, Callable, List
 from collections import deque
 from threading import Condition, Lock
 
@@ -19,13 +19,14 @@ from .base import (
     RawLogprobsInfo,
 )
 from .model_module import (
+    ConversationTemplate,
     DecodeRequest,
-    PrefillRequest,
     EvalMultiQueryRequest,
     EvictedTokens,
-    ConversationTemplate,
     KVCacheManager,
     ModelModule,
+    LoglikelihoodRequest,
+    PrefillRequest,
     RequestType,
     TextGenerator,
     Tokenizer as TokenizerP,
@@ -289,27 +290,37 @@ def get_requests_to_process(
                 # TODO(masahi): How to account for token counts in EvalMultiQueryRequest in
                 # Prometheus metric?
             elif not state.is_prefilled:
-                if (
-                    state.num_sequences == 1
-                    and state.generation_sequences[0].generated_token_ids
-                ):
-                    # generated_token_ids is added for the case where the request is
-                    # recovering from cache eviction.
-                    token_ids = (
-                        state.prompt_token_ids
-                        + state.generation_sequences[0].generated_token_ids
+                if state.sampling_params.loglikelihood:
+                    # TODO(vvchernov): need help from Masahi for eviction case
+                    requests.append(
+                        LoglikelihoodRequest(
+                            request_id=state.request_id,
+                            token_ids=state.prompt_token_ids,
+                            sampling_params=state.sampling_params,
+                        )
                     )
                 else:
-                    token_ids = state.prompt_token_ids
+                    if (
+                        state.num_sequences == 1
+                        and state.generation_sequences[0].generated_token_ids
+                    ):
+                        # generated_token_ids is added for the case where the request is
+                        # recovering from cache eviction.
+                        token_ids = (
+                            state.prompt_token_ids
+                            + state.generation_sequences[0].generated_token_ids
+                        )
+                    else:
+                        token_ids = state.prompt_token_ids
 
-                requests.append(
-                    PrefillRequest(
-                        request_id=state.request_id,
-                        token_ids=token_ids,
-                        num_sequence=state.num_sequences,
-                        sampling_params=state.sampling_params,
+                    requests.append(
+                        PrefillRequest(
+                            request_id=state.request_id,
+                            token_ids=token_ids,
+                            num_sequence=state.num_sequences,
+                            sampling_params=state.sampling_params,
+                        )
                     )
-                )
 
                 token_counts += len(state.prompt_token_ids)
 
