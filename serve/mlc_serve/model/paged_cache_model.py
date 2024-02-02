@@ -1,6 +1,6 @@
 from pathlib import Path
 import structlog
-from typing import List, Union
+from typing import List
 
 from .base import get_model_artifact_config
 from .paged_cache_manager import CacheManager
@@ -13,6 +13,7 @@ from ..engine.model_module import (
     ModelModule,
     PrefillRequest,
     EvalMultiQueryRequest,
+    RequestType,
     TextGenerationResult,
     TextGenerator,
 )
@@ -26,9 +27,9 @@ class PagedCacheModelTextGenerator:
 
     def generate(
         self,
-        requests: list[Union[PrefillRequest, DecodeRequest, EvalMultiQueryRequest]],
+        requests: List[RequestType],
         kv_cache,
-    ) -> list[TextGenerationResult]:
+    ) -> List[TextGenerationResult]:
         prefill_requests = []
         decode_requests = []
         multi_query_decode_requests = []

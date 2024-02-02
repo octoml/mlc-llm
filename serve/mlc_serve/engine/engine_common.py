@@ -27,6 +27,7 @@ from .model_module import (
     ConversationTemplate,
     KVCacheManager,
     ModelModule,
+    RequestType,
     TextGenerator,
     Tokenizer as TokenizerP,
 )
@@ -228,10 +229,8 @@ def update_sequence(
 
 def get_requests_to_process(
     current_states: list[RequestState], cache_manager: KVCacheManager
-) -> Tuple[
-    list[Union[PrefillRequest, DecodeRequest, EvalMultiQueryRequest]], bool, int
-]:
-    requests: list[Union[PrefillRequest, DecodeRequest, EvalMultiQueryRequest]] = []
+) -> Tuple[list[RequestType], bool, int]:
+    requests: list[RequestType] = []
     # TODO: consider having hybrid batch if the underlying attention kernel supports
     # mixing prefill and decode.
     is_prompt_batch = any(not state.is_prefilled for state in current_states)

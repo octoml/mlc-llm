@@ -11,6 +11,7 @@ from mlc_serve.engine.model_module import (
     DecodeRequest,
     KVCache,
     PrefillRequest,
+    RequestType,
     SequenceId,
     TextGenerationResult,
 )
@@ -97,7 +98,7 @@ class DummyCacheManager:
 class DummyTextGenerator:
     def generate(
         self,
-        requests: list[Union[PrefillRequest, DecodeRequest]],
+        requests: list[RequestType],
         kv_cache: DummyCache,
     ) -> list[TextGenerationResult]:
         result = []
