@@ -172,60 +172,50 @@ class CacheManager:
             elif id in self.kv_cache_info.decode_block_tables:
                 decode_block_table = self.kv_cache_info.decode_block_tables[id]
 
-                while len(decode_block_table) < num_needed_block:
+                if len(decode_block_table) < num_needed_block:
                     # Need to allocate a new block for this request
+                    assert len(decode_block_table) + 1 == num_needed_block
                     assert len(self.free_blocks) > 0
                     decode_block_table.append(self.free_blocks.pop())
 
-                prompt_seq_id = get_prompt_sequence_id(id.request_id)
-                allocated_slot_counts = len(
-                    self.kv_cache_info.slot_mappings[prompt_seq_id]
-                ) + len(self.kv_cache_info.slot_mappings[id])
+                pos = size - 1
 
-                for current_size in range(allocated_slot_counts + 1, size + 1):
-                    pos = current_size - 1
+                def get_block_circular_index(token_pos):
+                    assert self.block_sliding_window
+                    return (token_pos // self.block_size) % self.block_sliding_window
 
-                    def get_block_circular_index(token_pos):
-                        assert self.block_sliding_window
-                        return (
-                            token_pos // self.block_size
-                        ) % self.block_sliding_window
-
-                    if (
-                        decode_block_table.prompt_shared
-                        and self.sliding_window
-                        and current_size >= self.sliding_window
+                if (
+                    decode_block_table.prompt_shared
+                    and self.sliding_window
+                    and size >= self.sliding_window
+                ):
+                    # Parallel sampling + SWA case
+                    if decode_block_table.prompt_cursor == get_block_circular_index(
+                        pos
                     ):
-                        # Parallel sampling + SWA case
-                        if (
-                            decode_block_table.prompt_cursor
-                            == get_block_circular_index(pos)
-                        ):
-                            # This sequence is trying to overwrite a prompt block shared with other sequences.
-                            assert (
-                                len(self.free_blocks) > 0
-                            ), "No more free block in the cache."
+                        # This sequence is trying to overwrite a prompt block shared with other sequences.
+                        assert (
+                            len(self.free_blocks) > 0
+                        ), "No more free block in the cache."
 
-                            block_number = self.free_blocks.pop()
-                            # Add a new decode block and advance the prompt cursor
-                            decode_block_table.replace_head_prompt_block_with(
-                                block_number
-                            )
-                        else:
-                            # Write to the decode block allocated above
-                            block_number = decode_block_table[-1]
-
+                        block_number = self.free_blocks.pop()
+                        # Add a new decode block and advance the prompt cursor
+                        decode_block_table.replace_head_prompt_block_with(block_number)
                     else:
-                        if self.block_sliding_window:
-                            index = get_block_circular_index(pos)
-                        else:
-                            index = -1
+                        # Write to the decode block allocated above
+                        block_number = decode_block_table[-1]
 
-                        block_number = decode_block_table[index]
+                else:
+                    if self.block_sliding_window:
+                        index = get_block_circular_index(pos)
+                    else:
+                        index = -1
 
-                    block_offset = pos % self.block_size
-                    slot = block_number * self.block_size + block_offset
-                    self.kv_cache_info.slot_mappings[id].append(slot)
+                    block_number = decode_block_table[index]
+
+                block_offset = pos % self.block_size
+                slot = block_number * self.block_size + block_offset
+                self.kv_cache_info.slot_mappings[id].append(slot)
 
             elif id not in self.kv_cache_info.prompt_block_tables:
                 assert (

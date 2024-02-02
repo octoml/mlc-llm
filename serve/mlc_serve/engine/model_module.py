@@ -35,34 +35,8 @@ class PrefillRequest:
 class DecodeRequest:
     sequence_id: SequenceId
     prompt_token_counts: int
-    # Decoded tokens for this sequence
+    # All tokens for this request, including prompt
     token_ids: List[int]
-    sampling_params: SamplingParams
-
-
-@dataclass
-class DraftTokens:
-    token_ids: List[int]
-
-    @property
-    def num_tokens(self):
-        return len(self.token_ids)
-
-
-@dataclass
-class EvictedTokens:
-    token_ids: List[int]
-
-    @property
-    def num_tokens(self):
-        return len(self.token_ids)
-
-
-@dataclass
-class EvalMultiQueryRequest:
-    sequence_id: SequenceId
-    num_past_tokens: int
-    queries: Union[DraftTokens, EvictedTokens]
     sampling_params: SamplingParams
 
 
@@ -151,7 +125,7 @@ class TextGenerator(Protocol):
 
     def generate(
         self,
-        requests: Sequence[Union[PrefillRequest, DecodeRequest, EvalMultiQueryRequest]],
+        requests: Sequence[Union[PrefillRequest, DecodeRequest]],
         kv_cache,
     ) -> List[TextGenerationResult]:
         """
