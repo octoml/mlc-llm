@@ -71,8 +71,11 @@ def _get_sampling_params(
     if request.logprobs:
         sampling_params.top_logprobs = request.top_logprobs
         sampling_params.logprobs = request.logprobs
+    if request.loglikelihood:
+        sampling_params.loglikelihood = request.loglikelihood
 
     sampling_params.vocab_size = model_artifact_config.vocab_size
+
     return sampling_params
 
 
@@ -121,6 +124,11 @@ async def request_completion(
             issues with sampling parameters
             """
         )
+
+    # If loglikelihood True we need all logprobs from prefill step only
+    if request.loglikelihood:
+        request.max_tokens = 0
+
     # TODO(amalyshe): need to verify quantity, according to OpenAI API:
     # <<Up to 4 sequences where the API will stop generating further tokens.>>
     # The behavior in case of bigger number of stop sequences is unknown - need to shrink

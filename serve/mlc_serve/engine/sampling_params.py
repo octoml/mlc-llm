@@ -69,6 +69,7 @@ class SamplingParams:
     logit_bias_value: list[float] = None
     logprobs: bool = False
     top_logprobs: int = 0
+    loglikelihood: bool = False
     # TODO(@team): This info comes from the model config.
     # Currently, it is unclear what is the best way to fetch this info and
     # check in `_verify_args` without this field. Follow-up when we have a better idea.

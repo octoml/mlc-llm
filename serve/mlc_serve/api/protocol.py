@@ -75,6 +75,7 @@ class ChatCompletionRequest(BaseModel):
     ignore_eos: Optional[bool] = False
     logprobs: bool = False
     top_logprobs: int = 0
+    loglikelihood: bool = False
 
 
 class ChatCompletionResponseChoice(BaseModel):
