@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple, Union, Sequence
+from typing import List, Optional, Tuple, Union
 
 import structlog
 import numpy as np
@@ -11,16 +11,16 @@ from ..engine import (
     SamplingParams,
     get_prompt_sequence_id,
     LOGPROB_TOP_K_MAX,
-    RawLogprobsInfo,
-    RawLogprobsInfos,
     PROMPT_SEQEUNCE_INDEX,
+    RawLogprobsInfo,
     RawLogprobsInfos,
     SequenceId,
 )
 from ..engine.model_module import (
-    DecodeRequest,
     PrefillRequest,
     EvalMultiQueryRequest,
+    RequestType,
+    RequestsType,
     TextGenerationResult,
 )
 
@@ -302,10 +302,50 @@ def sample(
     return res, check_logprob_infos(logprob_infos)
 
 
+def update_tokens_frequency(
+    request: RequestType,
+    new_token: int
+):
+    if not new_token in request.sampling_params.appeared_tokens_freq:
+        request.sampling_params.appeared_tokens_freq[new_token] = 0
+    request.sampling_params.appeared_tokens_freq[new_token] += 1
+
+
+def append_text_gen_res(
+    outputs: List[TextGenerationResult],
+    request: RequestType,
+    new_token: List[int],
+    sequence_id: SequenceId,
+    logprob_info: Optional[RawLogprobsInfos],
+    err_msg: Optional[str]=None,
+) -> List[TextGenerationResult]:
+    if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
+        assert isinstance(request, PrefillRequest)
+        for seq_id in range(request.num_sequence):  # type: ignore
+            outputs.append(
+                TextGenerationResult(
+                    sequence_id=SequenceId(sequence_id.request_id, seq_id),
+                    generated_tokens=new_token,
+                    error=err_msg,
+                    logprob_info=logprob_info,
+                )
+            )
+    else:
+        outputs.append(
+            TextGenerationResult(
+                sequence_id=sequence_id,
+                generated_tokens=new_token,
+                error=err_msg,
+                logprob_info=logprob_info,
+            )
+        )
+    return outputs
+
+
 def sample_from_logits(
     logits: Union[tvm.nd.NDArray, torch.Tensor],
     sequence_ids: List[SequenceId],
-    requests: Sequence[Union[PrefillRequest, DecodeRequest, EvalMultiQueryRequest]],
+    requests: RequestsType,
     vocab_size,
 ) -> List[TextGenerationResult]:
     assert logits.shape[0] == len(requests)
@@ -317,29 +357,14 @@ def sample_from_logits(
         assert next_tokens is not None
         outputs = []
         for i, (sequence_id, new_token) in enumerate(zip(sequence_ids, next_tokens)):
-            if not new_token in sampling_params[i].appeared_tokens_freq:
-                requests[i].sampling_params.appeared_tokens_freq[new_token] = 0
-            requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
-            if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
-                assert isinstance(requests[i], PrefillRequest)
-                for seq_id in range(requests[i].num_sequence):  # type: ignore
-                    outputs.append(
-                        TextGenerationResult(
-                            sequence_id=SequenceId(sequence_id.request_id, seq_id),
-                            generated_tokens=[new_token],
-                            error=None,
-                            logprob_info=get_logprob_infos(i, logprob_infos),
-                        )
-                    )
-            else:
-                outputs.append(
-                    TextGenerationResult(
-                        sequence_id=sequence_id,
-                        generated_tokens=[new_token],
-                        error=None,
-                        logprob_info=get_logprob_infos(i, logprob_infos),
-                    )
-                )
+            update_tokens_frequency(requests[i], new_token)
+            outputs = append_text_gen_res(
+                outputs,
+                requests[i],
+                [new_token],
+                sequence_id,
+                get_logprob_infos(i, logprob_infos),
+            )
 
         return outputs
     except RuntimeError:
@@ -362,50 +387,23 @@ def sample_from_logits(
 
             if maybe_new_token is not None:
                 new_token = maybe_new_token[0]
-                if not new_token in requests[i].sampling_params.appeared_tokens_freq:
-                    requests[i].sampling_params.appeared_tokens_freq[new_token] = 0
-                requests[i].sampling_params.appeared_tokens_freq[new_token] += 1
-                if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
-                    assert isinstance(requests[i], PrefillRequest)
-                    for seq_id in range(requests[i].num_sequence):  # type: ignore
-                        outputs.append(
-                            TextGenerationResult(
-                                sequence_id=SequenceId(sequence_id.request_id, seq_id),
-                                generated_tokens=[new_token],  # type: ignore
-                                error=None,
-                                logprob_info=get_logprob_infos(0, logprob_infos),
-                            )
-                        )
-                else:
-                    outputs.append(
-                        TextGenerationResult(
-                            sequence_id=sequence_id,
-                            generated_tokens=[new_token],  # type: ignore
-                            error=None,
-                            logprob_info=get_logprob_infos(0, logprob_infos),
-                        )
-                    )
+                update_tokens_frequency(requests[i], new_token)
+                outputs = append_text_gen_res(
+                    outputs,
+                    requests[i],
+                    [new_token],
+                    sequence_id,
+                    get_logprob_infos(0, logprob_infos),
+                )
             else:
-                if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
-                    assert isinstance(requests[i], PrefillRequest)
-                    for seq_id in range(requests[i].num_sequence):  # type: ignore
-                        outputs.append(
-                            TextGenerationResult(
-                                sequence_id=SequenceId(sequence_id.request_id, seq_id),
-                                generated_tokens=[],
-                                error=err_msg,
-                                logprob_info=get_logprob_infos(0, logprob_infos),
-                            )
-                        )
-                else:
-                    outputs.append(
-                        TextGenerationResult(
-                            sequence_id=sequence_id,
-                            generated_tokens=[],
-                            error=err_msg,
-                            logprob_info=get_logprob_infos(0, logprob_infos),
-                        )
-                    )
+                outputs = append_text_gen_res(
+                    outputs,
+                    requests[i],
+                    [],  # new_token
+                    sequence_id,
+                    get_logprob_infos(0, logprob_infos),
+                    err_msg,
+                )
 
         return outputs
 
