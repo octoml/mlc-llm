@@ -9,8 +9,6 @@ from typing import Union, Dict, List
 
 import numpy as np
 
-import safetensors
-
 import tvm
 
 # Safetensor names are defined by their enum name in the Rust

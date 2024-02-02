@@ -781,6 +781,8 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
         mod_deploy, f"{args.model}_{args.quantization.name}".replace("-", "_"), args
     )
 
+    mod_deploy = relax.transform.LegalizeOps()(mod_deploy)
+
     if target_kind != "cpu":
         dispatch_target = (
             args.target
@@ -810,7 +812,17 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
 
     use_cuda_graph = args.use_cuda_graph and target_kind == "cuda"
 
-    with tvm.transform.PassContext(config={"relax.backend.use_cuda_graph": use_cuda_graph}):
+    from lunderberg_tvm_instrument import PrintTransformSequence
+
+    with tvm.transform.PassContext(
+        config={"relax.backend.use_cuda_graph": use_cuda_graph},
+        # instruments=[
+        #     PrintTransformSequence(
+        #         print_before_after="KillAfterLastUse",
+        #         max_blacken_length=None,
+        #     )
+        # ],
+    ):
         # The num_input attribute is needed to capture transformed weights passed as input
         # into a cuda graph.
         # NOTE: CUDA graph for batching is not enabled and is left as a TODO item.
@@ -1180,11 +1192,12 @@ def generate_mod_transform(model_generators, args, config):
     from lunderberg_tvm_instrument import PrintTransformSequence
 
     with tvm.transform.PassContext(
-        instruments=[
-            PrintTransformSequence(
-                max_blacken_length=None,
-            )
-        ]
+        # instruments=[
+        #     PrintTransformSequence(
+        #         print_before_after=["ReorderTransformFunc", "ParameterTransformOptimizations"],
+        #         max_blacken_length=None,
+        #     )
+        # ]
     ):
         mod_transform = tvm.ir.transform.Sequential(
             seq,
@@ -1192,7 +1205,77 @@ def generate_mod_transform(model_generators, args, config):
         )(mod_transform)
 
     args.build_model_only = cached_flag
+
     return mod_transform
+
+
+def validate_transform_params(mod):
+    transformation_output_sinfo = mod["transform_params"].ret_struct_info
+    transformation_output_vars = [
+        relax.Var(f"transform_param_{i}", sinfo)
+        for i, sinfo in enumerate(transformation_output_sinfo.fields)
+    ]
+
+    for func_name in ["prefill", "decode"]:
+        if func_name in mod:
+            func = mod[func_name]
+            if func.attrs is not None and "num_input" in func.attrs:
+                num_input = func.attrs["num_input"].value
+            else:
+                num_input = 0
+
+            assert num_input + len(transformation_output_vars) == len(func.params)
+            symbolic_var_map = relax.analysis.infer_symbolic_var_map(
+                {
+                    param: output_var
+                    for param, output_var in zip(
+                        func.params[num_input:], transformation_output_vars
+                    )
+                }
+            )
+
+            func = func.bind_symbolic_vars(symbolic_var_map)
+            inference_input = relax.TupleStructInfo(
+                [param.struct_info for param in func.params[num_input:]]
+            )
+
+            # tvm.ir.assert_structural_equal(
+            #     transformation_output_sinfo,
+            #     inference_input,
+            #     map_free_vars=True,
+            # )
+
+            if not tvm.ir.structural_equal(transformation_output_sinfo, inference_input):
+                table = []
+
+                table.append(["Param #", "Param Name", "Produced", "Requires"])
+
+                for i, (transformed_sinfo, inference_arg) in enumerate(
+                    zip(transformation_output_sinfo.fields, func.params[num_input:])
+                ):
+                    if not tvm.ir.structural_equal(transformed_sinfo, inference_arg.struct_info):
+                        table.append(
+                            [
+                                f"{i}",
+                                inference_arg.name_hint,
+                                f"{transformed_sinfo}",
+                                f"{inference_arg.struct_info}",
+                            ]
+                        )
+
+                column_widths = [max(len(entry) for entry in column) for column in zip(*table)]
+
+                for i_row, row in enumerate(table):
+                    if (i_row - 1) % 5 == 0:
+                        print("+".join("-" * (width + 2) for width in column_widths))
+                    print(
+                        "|".join(
+                            entry.rjust(width + 1).ljust(width + 2)
+                            for entry, width in zip(row, column_widths)
+                        )
+                    )
+
+                tvm.ir.assert_structural_equal(transformation_output_sinfo, inference_input)
 
 
 @tvm.transform.module_pass(opt_level=0)
@@ -1312,7 +1395,17 @@ def build_model_from_args(args: argparse.Namespace):
 
         # Update the IRModule to include the `transform_params` function.
         mod_transform = generate_mod_transform(model_generators, args, config)
-        mod.update(mod_transform)
+        mod.show(
+            name="ModTransform",
+            show_all_struct_info=False,
+            black_format=True,
+        )
+        # The `transform_params` function is not compatible with the
+        # `mlc.transform.Fuse*` passes used in
+        # `optimize_mod_pipeline`.  Long-term, these should be
+        # implemented to apply before `relax.pipeline.get_pipeline()`, since the transform
+        #
+        # mod.update(mod_transform)
 
         # At this point, the IRModule contains all functions required to
         # either transform the parameters or to run inference using the
@@ -1320,12 +1413,14 @@ def build_model_from_args(args: argparse.Namespace):
         # should be optional, such as re-ordering parameter access based
         # on the *.bin that contains each parameter.
 
-        mod.show(
-            name="WithTransformParams",
-            show_all_struct_info=False,
-            black_format=True,
-        )
-        tvm.tir.analysis.verify_well_formed(mod)
+        # mod.show(
+        #     name="WithTransformParams",
+        #     show_all_struct_info=False,
+        #     black_format=True,
+        # )
+        # tvm.tir.analysis.verify_well_formed(mod)
+
+        # validate_transform_params(mod)
 
         transform_seq = []
 
@@ -1344,6 +1439,25 @@ def build_model_from_args(args: argparse.Namespace):
             )
 
         transform_seq.append(optimize_mod_pipeline(args, model_config))
+
+        mod = tvm.ir.transform.Sequential(transform_seq, name="OptimizeMLCModel")(mod)
+        transform_seq = []
+
+        mod.show(
+            name="AfterInferenceOnlyOptimization",
+            show_all_struct_info=False,
+            black_format=True,
+        )
+
+        mod.update(mod_transform)
+        mod.show(
+            name="WithTransformParams",
+            show_all_struct_info=False,
+            black_format=True,
+        )
+        tvm.tir.analysis.verify_well_formed(mod)
+
+        validate_transform_params(mod)
 
         if args.lora is not None:
             transform_seq.append(bundle_lora_params)
@@ -1386,7 +1500,13 @@ def build_model_from_args(args: argparse.Namespace):
 
         from lunderberg_tvm_instrument import PrintTransformSequence
 
-        with tvm.transform.PassContext(instruments=[PrintTransformSequence()]):
+        with tvm.transform.PassContext(
+            instruments=[
+                PrintTransformSequence(
+                    # only_show_functions="transform_params",
+                )
+            ]
+        ):
             mod = tvm.ir.transform.Sequential(transform_seq, name="OptimizeMLCModel")(mod)
 
         mod.show(

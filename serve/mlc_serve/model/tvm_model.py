@@ -67,7 +67,10 @@ def load_disco_weights_through_transform_params(sess, orig_param_path, lib_path)
     )
 
     module = sess.load_vm_module(lib_path.as_posix())
-    params = module["transform_params"](worker_id)
+    from time_utils import Timer
+
+    with Timer("Telling workers to load parameters"):
+        params = module["transform_params"](worker_id)
     return module, params
 
 
@@ -301,10 +304,20 @@ class Model:
 
         self.cache_blocks = None
 
-    def get_used_memory(self):
+    def get_param_nbytes(self):
+        """Get the total size of the parameters"""
         if self.disco_session:
             params = self.params.debug_get_from_remote(0)
+        else:
+            params = self.params
 
+        return sum(
+            math.prod(param.shape) * np.dtype(param.dtype).itemsize for param in params
+        )
+
+    def get_used_memory(self):
+        """Get the total memory allocated by the VM"""
+        if self.disco_session:
             get_used_memory_func = self.disco_session.get_global_func(
                 "vm.memory_manager.get_used_memory"
             )
@@ -317,18 +330,12 @@ class Model:
             for i in range(1, self.num_shards):
                 get_used_memory_func(tvm.device("cuda", i)).debug_get_from_remote(i)
         else:
-            params = self.params
-
             get_used_memory_func = tvm.get_global_func(
                 "vm.memory_manager.get_used_memory"
             )
             peak_memory = get_used_memory_func(self.dev)
 
-        param_bytes = sum(
-            math.prod(param.shape) * np.dtype(param.dtype).itemsize for param in params
-        )
-
-        return peak_memory + param_bytes
+        return peak_memory
 
     def profile_memory_usage(self, seq_lens):
         input_ids = [0] * sum(seq_lens)
@@ -336,6 +343,8 @@ class Model:
 
         for s in seq_lens:
             positions += range(s)
+
+        vm_alloc_before = self.get_used_memory()
 
         input_ids = tvm.nd.array(np.array(input_ids, dtype="int32"), self.dev)
         positions = tvm.nd.array(np.array(positions, dtype="int32"), self.dev)
@@ -348,7 +357,9 @@ class Model:
 
         self.mod["evaluate"](input_ids, positions, seq_lens, self.params)
 
-        return self.get_used_memory()
+        vm_alloc_after = self.get_used_memory()
+
+        return self.get_param_nbytes() + (vm_alloc_after - vm_alloc_before)
 
     def generate(
         self,
@@ -582,7 +593,10 @@ def init_tvm_model(
     model = Model(model_artifact_config, dev)
 
     if model_artifact_config.num_shards > 1:
-        model.disco_session.sync_worker_0()
+        from time_utils import Timer
+
+        with Timer("Syncing with worker 0"):
+            model.disco_session.sync_worker_0()
 
     num_kv_heads = (
         model_artifact_config.num_key_value_heads // model_artifact_config.num_shards
