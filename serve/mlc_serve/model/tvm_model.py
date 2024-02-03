@@ -300,7 +300,6 @@ class Model:
         all_token_ids = []
         sequence_ids = []
         prompt_lens = []
-        num_sequences = []
         # TODO(masahi, yelite): Update this when a new request type for speculative decoding
         # is implemented.
         num_decode_query_tokens = 1
