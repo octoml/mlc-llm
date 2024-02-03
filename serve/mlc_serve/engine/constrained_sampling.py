@@ -26,6 +26,7 @@ class RegexLogitsProcessor:
         fsm = RegexFSM(regex_string, tokenizer)
         self.fsm = fsm
         self.fsm_state: DefaultDict[SequenceId, int] = defaultdict(int)
+        self.mask_map = dict()
 
     def __call__(
         self, seq_id: SequenceId, input_ids: List[int], scores: torch.Tensor
@@ -42,8 +43,11 @@ class RegexLogitsProcessor:
 
         allowed_tokens = self.fsm.allowed_token_ids(self.fsm_state[seq_id])
 
-        mask = torch.full((scores.shape[-1],), -math.inf, device=scores.device)
-        mask[allowed_tokens] = 0
+        mask = self.mask_map.get(self.fsm_state[seq_id])
+        if mask is None:
+            mask = torch.full((scores.shape[-1],), -math.inf, device=scores.device)
+            mask[allowed_tokens] = 0
+            self.mask_map[self.fsm_state[seq_id]] = mask
         biased_scores = scores + mask
 
         return biased_scores
