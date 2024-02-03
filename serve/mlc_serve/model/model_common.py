@@ -9,10 +9,21 @@ from .paged_cache_manager import CacheManager
 from ..engine import (
     SamplingType,
     SamplingParams,
+    get_prompt_sequence_id,
     LOGPROB_TOP_K_MAX,
+    PROMPT_SEQEUNCE_INDEX,
     RawLogprobsInfo,
     RawLogprobsInfos,
+    SequenceId,
 )
+from ..engine.model_module import (
+    PrefillRequest,
+    EvalMultiQueryRequest,
+    RequestType,
+    RequestsType,
+    TextGenerationResult,
+)
+
 
 LOG = structlog.stdlib.get_logger(__name__)
 
@@ -65,8 +76,8 @@ def get_raw_logprob_info(
         top_logprobs, top_tokens = torch.topk(
             logprobs, k=top_logprobs_num, dim=-1, largest=True, sorted=True
         )
-        top_tokens=top_tokens.cpu().numpy()
-        top_logprobs=top_logprobs.cpu().numpy()
+        top_tokens = top_tokens.cpu().numpy()
+        top_logprobs = top_logprobs.cpu().numpy()
 
     # Set to raw logprob info
     return RawLogprobsInfo(
@@ -106,7 +117,7 @@ def get_raw_logprob_infos(
     logits: torch.Tensor,
     token_ids: torch.Tensor,
 ) -> RawLogprobsInfos:
-    for (i, ind, top_logprobs) in indices:
+    for i, ind, top_logprobs in indices:
         logprob_infos[i] = get_raw_logprob_info(
             logits[ind],
             token_ids[ind],
@@ -292,6 +303,111 @@ def sample(
     return res, check_logprob_infos(logprob_infos)
 
 
+def update_tokens_frequency(
+    request: RequestType,
+    new_token: int
+):
+    if not new_token in request.sampling_params.appeared_tokens_freq:
+        request.sampling_params.appeared_tokens_freq[new_token] = 0
+    request.sampling_params.appeared_tokens_freq[new_token] += 1
+
+
+def append_text_gen_res(
+    outputs: List[TextGenerationResult],
+    request: RequestType,
+    new_token: List[int],
+    sequence_id: SequenceId,
+    logprob_info: Optional[RawLogprobsInfos],
+    err_msg: Optional[str]=None,
+) -> List[TextGenerationResult]:
+    if sequence_id.sequence_index == PROMPT_SEQEUNCE_INDEX:
+        assert isinstance(request, PrefillRequest)
+        for seq_id in range(request.num_sequence):  # type: ignore
+            outputs.append(
+                TextGenerationResult(
+                    sequence_id=SequenceId(sequence_id.request_id, seq_id),
+                    generated_tokens=new_token,
+                    error=err_msg,
+                    logprob_info=logprob_info,
+                )
+            )
+    else:
+        outputs.append(
+            TextGenerationResult(
+                sequence_id=sequence_id,
+                generated_tokens=new_token,
+                error=err_msg,
+                logprob_info=logprob_info,
+            )
+        )
+    return outputs
+
+
+def sample_from_logits(
+    logits: Union[tvm.nd.NDArray, torch.Tensor],
+    sequence_ids: List[SequenceId],
+    requests: RequestsType,
+    vocab_size,
+) -> List[TextGenerationResult]:
+    assert logits.shape[0] == len(requests)
+
+    sampling_params = [req.sampling_params for req in requests]
+    outputs: List[TextGenerationResult] = []
+
+    try:
+        next_tokens, logprob_infos = sample(logits, sampling_params, vocab_size)
+        assert next_tokens is not None
+        for i, (sequence_id, new_token) in enumerate(zip(sequence_ids, next_tokens)):
+            update_tokens_frequency(requests[i], new_token)
+            outputs = append_text_gen_res(
+                outputs,
+                requests[i],
+                [new_token],
+                sequence_id,
+                get_logprob_infos(i, logprob_infos),
+            )
+
+        return outputs
+    except RuntimeError:
+        # Fallback to per-token sampling in case some logits values are corrupted.
+        err_msg = (
+            "Error from sampling: probability tensor contains either `inf`, `nan`"
+            " or element < 0"
+        )
+
+        for i, (sequence_id, logits_per_token, sampling_param) in enumerate(
+            zip(sequence_ids, torch.from_dlpack(logits), sampling_params)
+        ):
+            maybe_new_token, logprob_infos = sample(
+                torch.unsqueeze(logits_per_token, 0),
+                [sampling_param],
+                vocab_size,
+                check_safety=True,
+            )
+
+            if maybe_new_token is not None:
+                new_token = maybe_new_token[0]
+                update_tokens_frequency(requests[i], new_token)
+                outputs = append_text_gen_res(
+                    outputs,
+                    requests[i],
+                    [new_token],
+                    sequence_id,
+                    get_logprob_infos(0, logprob_infos),
+                )
+            else:
+                outputs = append_text_gen_res(
+                    outputs,
+                    requests[i],
+                    [],  # new_token
+                    sequence_id,
+                    get_logprob_infos(0, logprob_infos),
+                    err_msg,
+                )
+
+        return outputs
+
+
 def prepare_inputs(
     sequence_ids,
     all_token_ids,
@@ -377,4 +493,93 @@ def prepare_inputs(
         slot_mapping,
         indices_within_window,
         block_tables,
+    )
+
+
+def prepare_multi_query_decode_inputs(
+    requests: List[EvalMultiQueryRequest],
+    all_slot_mappings,
+    sliding_window,
+    dev,
+):
+    seq_lens = []
+    query_lens = []
+    input_ids = []
+    slot_mapping = []
+    past_slot_mapping = []
+    positions = []
+    permute_map = []
+
+    query_offset = sum([request.num_past_tokens for request in requests])
+    past_offset = 0
+
+    for request in requests:
+        num_queries = request.queries.num_tokens
+        query_lens.append(num_queries)
+        input_ids += request.queries.token_ids
+        positions += [request.num_past_tokens + i for i in range(num_queries)]
+
+        prompt_seq_id = get_prompt_sequence_id(request.sequence_id.request_id)
+        prompt_slot_mappings = all_slot_mappings[prompt_seq_id]
+
+        if sliding_window and request.num_past_tokens + num_queries >= sliding_window:
+            seq_lens.append(sliding_window)
+            prompt_and_decode_slot_mappings = (
+                prompt_slot_mappings + all_slot_mappings[request.sequence_id]
+            )
+            past_slot_mapping += prompt_and_decode_slot_mappings[
+                request.num_past_tokens
+                - (sliding_window - num_queries) : request.num_past_tokens
+            ]
+            slot_mapping += prompt_and_decode_slot_mappings[
+                request.num_past_tokens : request.num_past_tokens + num_queries
+            ]
+        else:
+            seq_lens.append(request.num_past_tokens + num_queries)
+
+            if request.num_past_tokens < len(prompt_slot_mappings):
+                raise RuntimeError(
+                    "For EvalMultiQueryRequest, the number of past tokens"
+                    "smaller than the prompt length is not supported for now."
+                )
+            elif request.num_past_tokens == len(prompt_slot_mappings):
+                # The case for restoring an evicted parallel-sampling request
+                past_slot_mapping += prompt_slot_mappings
+                slot_mapping += all_slot_mappings[request.sequence_id][:num_queries]
+            else:
+                query_begin_offset = request.num_past_tokens - len(prompt_slot_mappings)
+                past_slot_mapping += (
+                    prompt_slot_mappings
+                    + all_slot_mappings[request.sequence_id][:query_begin_offset]
+                )
+                slot_mapping += all_slot_mappings[request.sequence_id][
+                    query_begin_offset : query_begin_offset + num_queries
+                ]
+
+        permute_map += list(
+            range(past_offset, past_offset + request.num_past_tokens)
+        ) + list(range(query_offset, query_offset + num_queries))
+
+        query_offset += num_queries
+        past_offset += request.num_past_tokens
+
+    input_ids = tvm.nd.array(np.array(input_ids, dtype="int32"), dev)
+    positions = tvm.nd.array(np.array(positions, dtype="int32"), dev)
+    seq_lens = tvm.nd.array(np.array(seq_lens, dtype="int32"), dev)
+    slot_mapping = tvm.nd.array(np.array(slot_mapping, dtype="int32"), dev)
+
+    query_lens = tvm.nd.array(np.array(query_lens, dtype="int32"), dev)
+    # TODO(masahi): These inputs need to be replaced by block_table when a proper attention kernel
+    # becomes available.
+    past_slot_mapping = tvm.nd.array(np.array(past_slot_mapping, dtype="int32"), dev)
+    permute_map = tvm.nd.array(np.array(permute_map, dtype="int32"), dev)
+
+    return (
+        input_ids,
+        positions,
+        seq_lens,
+        slot_mapping,
+        query_lens,
+        past_slot_mapping,
+        permute_map,
     )

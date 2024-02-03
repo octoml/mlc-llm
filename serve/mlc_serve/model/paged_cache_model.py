@@ -1,6 +1,6 @@
 from pathlib import Path
 import structlog
-from typing import List, Union
+from typing import List
 
 from .base import get_model_artifact_config
 from .paged_cache_manager import CacheManager
@@ -12,6 +12,8 @@ from ..engine.model_module import (
     DecodeRequest,
     ModelModule,
     PrefillRequest,
+    EvalMultiQueryRequest,
+    RequestType,
     TextGenerationResult,
     TextGenerator,
 )
@@ -24,16 +26,43 @@ class PagedCacheModelTextGenerator:
         self.model = model
 
     def generate(
-        self, requests: List[Union[PrefillRequest, DecodeRequest]], kv_cache
+        self,
+        requests: List[RequestType],
+        kv_cache,
     ) -> List[TextGenerationResult]:
-        prefill_requests = [r for r in requests if isinstance(r, PrefillRequest)]
-        decode_requests = [r for r in requests if isinstance(r, DecodeRequest)]
+        prefill_requests = []
+        decode_requests = []
+        multi_query_decode_requests = []
+        multi_query_decode_request_ids = set()
+
+        for r in requests:
+            if isinstance(r, PrefillRequest):
+                prefill_requests.append(r)
+            elif isinstance(r, DecodeRequest):
+                decode_requests.append(r)
+            elif isinstance(r, EvalMultiQueryRequest):
+                multi_query_decode_requests.append(r)
+                multi_query_decode_request_ids.add(r.sequence_id.request_id)
 
         out = []
+
         if prefill_requests:
-            out.extend(self.model.generate(prefill_requests, kv_cache))
+            prefill_res = self.model.generate(prefill_requests, kv_cache)
+
+            if not multi_query_decode_requests:
+                out.extend(prefill_res)
+            else:
+                # Prefill requests from restoration of evicted parallel-sampling requests
+                # must not return outputs.
+                for res in prefill_res:
+                    if res.sequence_id.request_id not in multi_query_decode_request_ids:
+                        out.append(res)
+
         if decode_requests:
             out.extend(self.model.generate(decode_requests, kv_cache))
+
+        if multi_query_decode_requests:
+            out.extend(self.model.generate(multi_query_decode_requests, kv_cache))
 
         return out
 
