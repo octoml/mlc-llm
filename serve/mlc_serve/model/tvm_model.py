@@ -67,10 +67,7 @@ def load_disco_weights_through_transform_params(sess, orig_param_path, lib_path)
     )
 
     module = sess.load_vm_module(lib_path.as_posix())
-    from time_utils import Timer
-
-    with Timer("Telling workers to load parameters"):
-        params = module["transform_params"](worker_id)
+    params = module["transform_params"](worker_id)
     return module, params
 
 
@@ -200,10 +197,7 @@ def preprocess_weights(
 
     param_names.extend(vm["get_original_param_names"]())
 
-    from time_utils import Timer
-
-    with Timer("Loading/transforming parameters"):
-        params = vm["transform_params"]()
+    params = vm["transform_params"]()
 
     return params
 
@@ -593,10 +587,7 @@ def init_tvm_model(
     model = Model(model_artifact_config, dev)
 
     if model_artifact_config.num_shards > 1:
-        from time_utils import Timer
-
-        with Timer("Syncing with worker 0"):
-            model.disco_session.sync_worker_0()
+        model.disco_session.sync_worker_0()
 
     num_kv_heads = (
         model_artifact_config.num_key_value_heads // model_artifact_config.num_shards
