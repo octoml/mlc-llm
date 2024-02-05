@@ -812,17 +812,7 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
 
     use_cuda_graph = args.use_cuda_graph and target_kind == "cuda"
 
-    from lunderberg_tvm_instrument import PrintTransformSequence
-
-    with tvm.transform.PassContext(
-        config={"relax.backend.use_cuda_graph": use_cuda_graph},
-        # instruments=[
-        #     PrintTransformSequence(
-        #         print_before_after="KillAfterLastUse",
-        #         max_blacken_length=None,
-        #     )
-        # ],
-    ):
+    with tvm.transform.PassContext(config={"relax.backend.use_cuda_graph": use_cuda_graph}):
         # The num_input attribute is needed to capture transformed weights passed as input
         # into a cuda graph.
         # NOTE: CUDA graph for batching is not enabled and is left as a TODO item.
@@ -1189,20 +1179,10 @@ def generate_mod_transform(model_generators, args, config):
         ),
     ]
 
-    from lunderberg_tvm_instrument import PrintTransformSequence
-
-    with tvm.transform.PassContext(
-        # instruments=[
-        #     PrintTransformSequence(
-        #         print_before_after=["ReorderTransformFunc", "ParameterTransformOptimizations"],
-        #         max_blacken_length=None,
-        #     )
-        # ]
-    ):
-        mod_transform = tvm.ir.transform.Sequential(
-            seq,
-            name="ParameterTransformOptimizations",
-        )(mod_transform)
+    mod_transform = tvm.ir.transform.Sequential(
+        seq,
+        name="ParameterTransformOptimizations",
+    )(mod_transform)
 
     args.build_model_only = cached_flag
 
@@ -1498,16 +1478,7 @@ def build_model_from_args(args: argparse.Namespace):
             # and landed.
             transform_seq.append(auto_generate_decode_func)
 
-        from lunderberg_tvm_instrument import PrintTransformSequence
-
-        with tvm.transform.PassContext(
-            instruments=[
-                PrintTransformSequence(
-                    # only_show_functions="transform_params",
-                )
-            ]
-        ):
-            mod = tvm.ir.transform.Sequential(transform_seq, name="OptimizeMLCModel")(mod)
+        mod = tvm.ir.transform.Sequential(transform_seq, name="OptimizeMLCModel")(mod)
 
         mod.show(
             name="Optimized",
