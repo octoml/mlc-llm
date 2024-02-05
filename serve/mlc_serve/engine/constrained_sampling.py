@@ -9,6 +9,9 @@ from outlines.fsm.fsm import RegexFSM
 from outlines.fsm.json_schema import build_regex_from_object
 from .base import SequenceId
 
+import outlines
+outlines.disable_cache()
+
 class RegexLogitsProcessor:
     def __init__(self, regex_string, tokenizer):
         """Compile the FSM that drives the regex-guided generation.
