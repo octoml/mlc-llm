@@ -1,5 +1,6 @@
 import time
 import os
+import tempfile
 import socket
 from typing import List, Union, Sequence, Tuple
 from pathlib import Path
@@ -25,6 +26,8 @@ from rpyc.utils.classic import obtain
 from rpyc.utils.server import ThreadedServer
 from rpyc.core.service import VoidService
 from rpyc.core.stream import SocketStream
+from rpyc.utils.factory import unix_connect
+
 from concurrent.futures import ThreadPoolExecutor
 
 from .base import ModelArtifactConfig
@@ -372,10 +375,10 @@ class ModelRpcServer(rpyc.Service):
         )
 
 
-def _init_service(port):
+def _init_service(socket_path):
     t = ThreadedServer(
         ModelRpcServer(),
-        port=port,
+        socket_path=socket_path,
         protocol_config={"allow_pickle": True, "sync_request_timeout": 600},
     )
     t.start()
@@ -386,24 +389,24 @@ def connect_rpyc(host, port, config={}):
     return rpyc.connect_stream(s, VoidService, config)
 
 
-def start_model_process(port):
-    proc = multiprocessing.Process(target=_init_service, args=(port,))
+def start_model_process(socket_path):
+    proc = multiprocessing.Process(target=_init_service, args=(socket_path,))
     proc.start()
 
     time.sleep(1)
 
     repeat_count = 0
+
     while repeat_count < 20:
         try:
-            con = connect_rpyc(
-                "localhost",
-                port,
-                config={"allow_pickle": True, "sync_request_timeout": 600},
+            con = unix_connect(
+                socket_path, config={"allow_pickle": True, "sync_request_timeout": 600}
             )
             break
-        except ConnectionRefusedError:
+        except FileNotFoundError:
             time.sleep(1)
         repeat_count += 1
+
     if repeat_count == 20:
         raise RuntimeError("init rpc env error!")
 
@@ -423,11 +426,11 @@ class ModelRpcClient:
 
         self.num_shards = engine_config.num_shards
 
-        rpc_ports = ports[: self.num_shards]
         master_port = ports[-1]
         self.executor = ThreadPoolExecutor(self.num_shards)
+        self.socket_paths = [tempfile.mktemp() for _ in range(self.num_shards)]
 
-        rets = self.executor.map(start_model_process, rpc_ports)
+        rets = self.executor.map(start_model_process, self.socket_paths)
 
         self.model_servers = [x[0] for x in rets]
         self.procs = [x[1] for x in rets]
