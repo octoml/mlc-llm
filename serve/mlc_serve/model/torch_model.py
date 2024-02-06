@@ -389,10 +389,11 @@ def start_model_process(socket_path):
     time.sleep(1)
 
     repeat_count = 0
+    conn = None
 
     while repeat_count < 20:
         try:
-            con = unix_connect(
+            conn = unix_connect(
                 socket_path, config={"allow_pickle": True, "sync_request_timeout": 600}
             )
             break
@@ -404,7 +405,7 @@ def start_model_process(socket_path):
         raise RuntimeError("init rpc env error!")
 
     assert proc.is_alive()
-    return con.root, proc
+    return conn, proc
 
 
 class ModelRpcClient:
@@ -423,10 +424,14 @@ class ModelRpcClient:
         self.executor = ThreadPoolExecutor(self.num_shards)
         self.socket_paths = [tempfile.mktemp() for _ in range(self.num_shards)]
 
-        rets = self.executor.map(start_model_process, self.socket_paths)
+        self.model_servers = []
+        self.connections = []
+        self.procs = []
 
-        self.model_servers = [x[0] for x in rets]
-        self.procs = [x[1] for x in rets]
+        for conn, proc in self.executor.map(start_model_process, self.socket_paths):
+            self.model_servers.append(conn.root)
+            self.connections.append(conn)
+            self.procs.append(proc)
 
         def init_model(i):
             return self.model_servers[i].init_model(
@@ -443,6 +448,13 @@ class ModelRpcClient:
 
     def __del__(self):
         self.executor.shutdown()
+
+        for conn in self.connections:
+            conn.close()
+
+        for proc in self.procs:
+            proc.terminate()
+            proc.join()
 
     def generate(
         self,
@@ -510,6 +522,9 @@ class Model:
 
         self.vocab_size = hf_config.vocab_size
         self.sliding_window = hf_config.sliding_window
+
+    def __del__(self):
+        del self.model_rpc
 
     def generate(
         self,

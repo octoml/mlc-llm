@@ -371,6 +371,7 @@ def run_generation_loop_worker(
         while True:
             cmd = command_queue.get()
             if isinstance(cmd, ShutdownCommand):
+                del worker.text_generator
                 break
             elif isinstance(cmd, AddRequestsCommand):
                 worker.add(cmd.request_states)
