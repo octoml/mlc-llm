@@ -836,6 +836,103 @@ def generate_mod_transform(model_generators, args, config):
     manager_transform = param_manager.create_parameter_transformation(
         optimize_parameter_order=False
     )
+
+    # MLC does not have any quantization option that uses bfloat16.
+    # While the entire model could be computed in bfloat16, not all
+    # operators support it.  For now, reproducing the ParamManager's
+    # conversion of bfloat16 to float16.
+    if config["torch_dtype"] != model_config.dtype:
+        assert config["torch_dtype"] == "bfloat16"
+        assert model_config.dtype == "float16"
+
+        bb = relax.BlockBuilder()
+
+        from tvm.script import tir as T, relax as R
+
+        # TODO(Lunderberg): Instead of a hard-coded PrimFunc for
+        # `is_bfloat16_dtype`, make a relax operator `R.is_dtype(A,
+        # R.dtype("bfloat16"))` that legalizes into the PrimFunc
+        # definition.
+        @T.prim_func(private=True)
+        def is_bfloat16_dtype(tensor: T.handle) -> T.bool:
+            T.func_attr({"tir.is_scheduled": True, "tir.is_host_func": True})
+
+            # From #include <tvm/tir/builtin.h>
+            kArrTypeCode = T.meta_var(5)
+            kArrTypeBits = T.meta_var(6)
+            kArrTypeLanes = T.meta_var(7)
+
+            # From #include <dlpack/dlpack.h>
+            kDLBfloat = T.meta_var(4)
+
+            type_code = T.tvm_struct_get(tensor, 0, kArrTypeCode, dtype="uint8")
+            type_bits = T.tvm_struct_get(tensor, 0, kArrTypeBits, dtype="uint8")
+            type_lanes = T.tvm_struct_get(tensor, 0, kArrTypeLanes, dtype="uint16")
+
+            is_bfloat16: T.bool = (
+                (type_code == kDLBfloat) and (type_bits == 16) and (type_lanes == 1)
+            )
+            T.ret(is_bfloat16)
+
+        is_bfloat16_dtype = bb.add_func(is_bfloat16_dtype, "is_bfloat16_dtype")
+
+        @R.function(private=True)
+        def as_float16_1d(A: R.Tensor(["n"])) -> R.Tensor(["n"], "float16"):
+            n = T.int64()
+
+            is_bfloat16 = is_bfloat16_dtype(A)
+
+            if is_bfloat16:
+                A = R.match_cast(A, R.Tensor([n], "bfloat16"))
+                B = A.astype("float16")
+            else:
+                B = R.match_cast(A, R.Tensor([n], "float16"))
+            return B
+
+        as_float16_1d = bb.add_func(as_float16_1d, "as_float16_1d")
+
+        @R.function(private=True)
+        def as_float16_2d(A: R.Tensor(["m", "n"])) -> R.Tensor(["m", "n"], "float16"):
+            m = T.int64()
+            n = T.int64()
+
+            is_bfloat16 = is_bfloat16_dtype(A)
+
+            if is_bfloat16:
+                A = R.match_cast(A, R.Tensor([m, n], "bfloat16"))
+                B = A.astype("float16")
+            else:
+                B = R.match_cast(A, R.Tensor([m, n], "float16"))
+            return B
+
+        as_float16_2d = bb.add_func(as_float16_2d, "as_float16_2d")
+
+        float16_params = manager_transform["transform_params"].params
+        either_float16_params = [
+            relax.Var(
+                param.name_hint,
+                relax.TensorStructInfo(param.struct_info.shape, param.struct_info.vdevice),
+            )
+            for param in float16_params
+        ]
+
+        with bb.function("transform_params", either_float16_params, attrs={"num_input": 0}):
+            with bb.dataflow():
+                float16_exprs = []
+                for input_param in either_float16_params:
+                    if input_param.struct_info.ndim == 1:
+                        float16_expr = as_float16_1d(input_param)
+                    else:
+                        float16_expr = as_float16_2d(input_param)
+
+                    float16_expr = bb.emit(float16_expr, input_param.name_hint + ".float16")
+                    float16_exprs.append(float16_expr)
+                bb.emit_output(float16_exprs)
+
+            bb.emit_func_output(float16_exprs)
+
+        parameter_transforms.append(bb.get())
+
     # If the model provided constants, bind them to the transform_params.
     # This ensures that the generated function can reproduce the same
     # output parameters even when executed outside of the `build.py`
