@@ -23,6 +23,8 @@ import torch.multiprocessing as multiprocessing
 import rpyc
 from rpyc.utils.classic import obtain
 from rpyc.utils.server import ThreadedServer
+from rpyc.core.service import VoidService
+from rpyc.core.stream import SocketStream
 from concurrent.futures import ThreadPoolExecutor
 
 from .base import ModelArtifactConfig
@@ -379,6 +381,11 @@ def _init_service(port):
     t.start()
 
 
+def connect_rpyc(host, port, config={}):
+    s = SocketStream.connect(host, port, ipv6=False, keepalive=False, nodelay=True)
+    return rpyc.connect_stream(s, VoidService, config)
+
+
 def start_model_process(port):
     proc = multiprocessing.Process(target=_init_service, args=(port,))
     proc.start()
@@ -388,7 +395,7 @@ def start_model_process(port):
     repeat_count = 0
     while repeat_count < 20:
         try:
-            con = rpyc.connect(
+            con = connect_rpyc(
                 "localhost",
                 port,
                 config={"allow_pickle": True, "sync_request_timeout": 600},
