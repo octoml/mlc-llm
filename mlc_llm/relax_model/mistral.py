@@ -996,7 +996,8 @@ def get_model(args, hf_config):
     config = MistralConfig(
         **hf_config,
         dtype=dtype,
-        combine_matmul=True,
+        # combine_matmul=True,
+        combine_matmul=False,
         num_shards=args.num_shards,
         build_model_only=args.build_model_only,
     )
