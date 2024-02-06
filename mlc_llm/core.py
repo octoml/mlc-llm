@@ -1271,6 +1271,8 @@ def build_model_from_args(args: argparse.Namespace):
             with open(mlc_model_config_path, "w", encoding="utf-8") as outfile:
                 json.dump(mlc_model_config, outfile, indent=4)
 
+        utils.symlink_original_params(args.artifact_path, args.model_path)
+
         if args.model_category != "minigpt":
             utils.copy_tokenizer(args)
 
