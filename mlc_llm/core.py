@@ -1459,6 +1459,8 @@ def build_model_from_args(args: argparse.Namespace):
             args, config
         )
 
+        tvm.tir.analysis.verify_well_formed(mod)
+
         if args.model_category == "mistral":
             args.sliding_window = model_config.sliding_window
             # This line is introduced by the merge with upstream
@@ -1483,6 +1485,8 @@ def build_model_from_args(args: argparse.Namespace):
         # transformed parameters.  Further use of the `param_manager`
         # should be optional, such as re-ordering parameter access based
         # on the *.bin that contains each parameter.
+
+        tvm.tir.analysis.verify_well_formed(mod)
 
         transform_seq = []
 
@@ -1536,6 +1540,8 @@ def build_model_from_args(args: argparse.Namespace):
             transform_seq.append(auto_generate_decode_func)
 
         mod = tvm.ir.transform.Sequential(transform_seq, name="OptimizeMLCModel")(mod)
+
+        tvm.tir.analysis.verify_well_formed(mod)
 
         utils.debug_dump_script(mod, "mod_deploy.py", args)
 
