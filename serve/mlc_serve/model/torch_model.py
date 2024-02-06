@@ -2,7 +2,7 @@ import time
 import os
 import tempfile
 import socket
-from typing import List, Union, Sequence, Tuple
+from typing import List, Tuple
 from pathlib import Path
 
 import structlog
@@ -45,6 +45,7 @@ from ..engine.model_module import (
     PrefillRequest,
     TextGenerationResult,
     TextGenerator,
+    RequestsType,
 )
 
 LOG = structlog.stdlib.get_logger(__name__)
@@ -182,7 +183,7 @@ def load_model(hf_config, model_path):
 
 
 def generate(
-    requests: Sequence[Union[PrefillRequest, DecodeRequest]],
+    requests: RequestsType,
     cache_info: KVCacheInfo,
     pt_model,
     cache_blocks,
@@ -204,9 +205,11 @@ def generate(
             sequence_ids.append(get_prompt_sequence_id(request.request_id))
             num_sequences.append(request.num_sequence)
             prompt_lens.append(len(request.token_ids))
-        else:
+        elif isinstance(request, DecodeRequest):
             sequence_ids.append(request.sequence_id)
             prompt_lens.append(request.prompt_token_counts)
+        else:
+            raise RuntimeError(f"Unsupported request type {request}")
 
         all_token_ids.append(request.token_ids)
 
@@ -353,7 +356,7 @@ class ModelRpcServer(rpyc.Service):
 
     def exposed_generate(
         self,
-        requests: Sequence[Union[PrefillRequest, DecodeRequest]],
+        requests: RequestsType,
         cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
         # TODO(masahi): Currently, obtaining inputs is the bottleneck.
@@ -458,7 +461,7 @@ class ModelRpcClient:
 
     def generate(
         self,
-        requests: Sequence[Union[PrefillRequest, DecodeRequest]],
+        requests: RequestsType,
         cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
         def _generate(i):
@@ -528,7 +531,7 @@ class Model:
 
     def generate(
         self,
-        requests: Sequence[Union[PrefillRequest, DecodeRequest]],
+        requests: RequestsType,
         cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
         if self.model_rpc is None:
