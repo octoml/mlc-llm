@@ -819,6 +819,45 @@ def generate_mod_transform(model_generators, args, config):
     manager_transform = param_manager.create_parameter_transformation(
         optimize_parameter_order=False
     )
+
+    # MLC does not have any quantization option that uses bfloat16.
+    # While the entire model could be computed in bfloat16, not all
+    # operators support it.  For now, reproducing the ParamManager's
+    # conversion of bfloat16 to float16.
+    if config["torch_dtype"] != model_config.dtype:
+        assert config["torch_dtype"] == "bfloat16"
+        assert model_config.dtype == "float16"
+
+        float16_params = manager_transform["transform_params"].params
+        bfloat16_params = [
+            relax.Var(
+                param.name_hint,
+                relax.TensorStructInfo(
+                    param.struct_info.shape, "bfloat16", param.struct_info.vdevice
+                ),
+            )
+            for param in float16_params
+        ]
+
+        bb = relax.BlockBuilder()
+        with bb.function("transform_params", bfloat16_params, attrs={"num_input": 0}):
+            # TODO(Lunderberg): Make a relax.op.cast operator
+            with bb.dataflow():
+                float16_exprs = [
+                    bb.emit_te(
+                        tvm.topi.cast,
+                        bfloat16_param,
+                        "float16",
+                        primfunc_name_hint="cast_model_param",
+                    )
+                    for bfloat16_param in bfloat16_params
+                ]
+                bb.emit_output(float16_exprs)
+
+            bb.emit_func_output(float16_exprs)
+
+        parameter_transforms.append(bb.get())
+
     # If the model provided constants, bind them to the transform_params.
     # This ensures that the generated function can reproduce the same
     # output parameters even when executed outside of the `build.py`
