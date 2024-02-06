@@ -24,8 +24,6 @@ import torch.multiprocessing as multiprocessing
 import rpyc
 from rpyc.utils.classic import obtain
 from rpyc.utils.server import ThreadedServer
-from rpyc.core.service import VoidService
-from rpyc.core.stream import SocketStream
 from rpyc.utils.factory import unix_connect
 
 from concurrent.futures import ThreadPoolExecutor
@@ -35,13 +33,10 @@ from .paged_cache_manager import KVCacheInfo, CacheManager
 from .model_common import (
     prepare_inputs,
     get_num_cache_blocks,
-    get_logprob_infos,
     sample_from_logits,
 )
 
 from ..engine import (
-    SequenceId,
-    PROMPT_SEQEUNCE_INDEX,
     get_prompt_sequence_id,
     MLCServeEngineConfig,
 )
@@ -361,6 +356,9 @@ class ModelRpcServer(rpyc.Service):
         requests: Sequence[Union[PrefillRequest, DecodeRequest]],
         cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
+        # TODO(masahi): Currently, obtaining inputs is the bottleneck.
+        # We should switch to the architecture used by Disco and vLLM as of
+        # https://github.com/vllm-project/vllm/pull/2221
         torch.cuda.nvtx.range_push(f"Obtain input")
         requests = obtain(requests)
         cache = obtain(cache)
@@ -382,11 +380,6 @@ def _init_service(socket_path):
         protocol_config={"allow_pickle": True, "sync_request_timeout": 600},
     )
     t.start()
-
-
-def connect_rpyc(host, port, config={}):
-    s = SocketStream.connect(host, port, ipv6=False, keepalive=False, nodelay=True)
-    return rpyc.connect_stream(s, VoidService, config)
 
 
 def start_model_process(socket_path):
@@ -489,7 +482,7 @@ class Model:
         engine_config: MLCServeEngineConfig,
     ):
         if engine_config.num_shards and engine_config.num_shards > 1:
-            num_needed_ports = engine_config.num_shards + 1
+            num_needed_ports = 1  # For torch distributed master port
             ports = alloc_usable_network_port(num_needed_ports)
             assert len(ports) == num_needed_ports, "Not enough ports available."
             self.model_rpc = ModelRpcClient(model_path, hf_config, engine_config, ports)
