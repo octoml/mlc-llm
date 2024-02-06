@@ -1525,7 +1525,8 @@ def get_model(args, hf_config):
             **hf_config,
             dtype=dtype,
             position_embedding_base=position_embedding_base,
-            combine_matmul=True,
+            # TODO: Re-enable with CombineParallelMatmul
+            combine_matmul=False,
             num_shards=args.num_shards,
             build_model_only=args.build_model_only,
         )
@@ -1535,7 +1536,8 @@ def get_model(args, hf_config):
             dtype=dtype,
             max_sequence_length=hf_config["max_position_embeddings"],
             position_embedding_base=position_embedding_base,
-            combine_matmul=True,
+            # TODO: Re-enable with CombineParallelMatmul
+            combine_matmul=False,
             num_shards=args.num_shards,
             build_model_only=args.build_model_only,
         )
