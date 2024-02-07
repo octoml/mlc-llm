@@ -420,13 +420,19 @@ def init_tvm_model(
 
     if engine_config.max_num_batched_tokens > 0:
         LOG.info("Running memory profiling.")
-        num_blocks = get_num_cache_blocks(
-            model,
-            [1] * engine_config.max_num_batched_tokens,
-            model_artifact_config.num_hidden_layers,
-            num_kv_heads,
-            head_size,
-        )
+        try:
+            num_blocks = get_num_cache_blocks(
+                model,
+                [1] * engine_config.max_num_batched_tokens,
+                model_artifact_config.num_hidden_layers,
+                num_kv_heads,
+                head_size,
+            )
+        except tvm.error.InternalError:
+            raise RuntimeError(
+                f"Memory profiling failed with max_num_batched_tokens = "
+                 "{engine_config.max_num_batched_tokens}."
+            )
     else:
         num_blocks = 500
 
@@ -450,13 +456,16 @@ def init_tvm_model(
     else:
         init_cache_func = tvm.get_global_func("tvm.contrib.vllm.allocate_kv_cache")
 
-    model.cache_blocks = init_cache_func(
-        head_size,
-        model_artifact_config.num_hidden_layers,
-        num_kv_heads,
-        CacheManager.block_size,
-        num_blocks,
-    )
+    try:
+        model.cache_blocks = init_cache_func(
+            head_size,
+            model_artifact_config.num_hidden_layers,
+            num_kv_heads,
+            CacheManager.block_size,
+            num_blocks,
+        )
+    except tvm.error.InternalError:
+        raise RuntimeError(f"Failed to allocate {num_blocks} cache blocks.")
 
     cache_manager = CacheManager(
         num_blocks,
