@@ -1054,9 +1054,13 @@ def build_model_from_args(args: argparse.Namespace):
         # Update the IRModule to accept the quantized parameters as input.
         mod = param_manager.transform_dequantize()(mod)
 
-        # Update the IRModule to include the `transform_params` function.
-        mod_transform = generate_mod_transform(model_generators, args, config)
-        mod.update(mod_transform)
+        # The `transform_params` function is not compatible with the
+        # `mlc.transform.Fuse*` passes used in
+        # `optimize_mod_pipeline`.  Long-term, these should be
+        # implemented to apply before `relax.pipeline.get_pipeline()`, since the transform
+        #
+        # # Update the IRModule to include the `transform_params` function.
+        # mod.update(generate_mod_transform(model_generators, args, config))
 
         # At this point, the IRModule contains all functions required to
         # either transform the parameters or to run inference using the
@@ -1067,6 +1071,13 @@ def build_model_from_args(args: argparse.Namespace):
         transform_seq = []
 
         transform_seq.append(optimize_mod_pipeline(args, model_config))
+
+        mod = tvm.ir.transform.Sequential(transform_seq, name="OptimizeMLCModel")(mod)
+        transform_seq = []
+        mod.update(generate_mod_transform(model_generators, args, config))
+        tvm.tir.analysis.verify_well_formed(mod)
+
+        validate_transform_params(mod)
 
         transform_seq.append(
             tvm.ir.transform.ApplyPassToFunction(
