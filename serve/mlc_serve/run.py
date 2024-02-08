@@ -41,11 +41,10 @@ def create_engine(
         }
     )
 
-    # TODO(yelite, masahi): Protocol subtyping is not working
     if args.use_staging_engine:
         return StagingInferenceEngine(
             tokenizer_module=HfTokenizerModule(args.model_artifact_path),
-            model_module_loader=PagedCacheModelModule,  # type: ignore
+            model_module_loader=PagedCacheModelModule,
             model_module_loader_kwargs={
                 "model_artifact_path": args.model_artifact_path,
                 "engine_config": engine_config,
@@ -56,7 +55,7 @@ def create_engine(
             PagedCacheModelModule(
                 model_artifact_path=args.model_artifact_path,
                 engine_config=engine_config,
-            )  # type: ignore
+            )
         )
 
 

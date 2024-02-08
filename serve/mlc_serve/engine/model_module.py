@@ -2,12 +2,12 @@
 Required interfaces for the actual inference capability in InferenceEngine.
 """
 from dataclasses import dataclass
-from typing import Optional, Protocol, Union, List, Sequence
+from typing import Optional, Protocol, Union, List, Sequence, Any
 
 from .base import (
     ChatMessage,
     MLCServeEngineConfig,
-    RawLogprobsInfos,
+    RawLogprobsInfo,
     RequestId,
     RequestState,
     SequenceId,
@@ -19,6 +19,7 @@ from .sampling_params import SamplingParams
 @dataclass
 class PrefillRequest:
     request_id: RequestId
+    # `token_ids` contains prompt token ids
     token_ids: List[int]
     # Number of sequences to generate
     num_sequence: int
@@ -67,7 +68,6 @@ class EvalMultiQueryRequest:
 
 
 RequestType = Union[PrefillRequest, DecodeRequest, EvalMultiQueryRequest]
-RequestsType = Sequence[RequestType]
 
 
 @dataclass
@@ -81,7 +81,7 @@ class TextGenerationResult:
     # making this a list of token ids to leave room for speculative decoding
     generated_tokens: List[int]
     error: Optional[str]
-    logprob_info: Optional[RawLogprobsInfos]
+    logprob_info: Optional[List[Optional[RawLogprobsInfo]]]
 
 
 class KVCache(Protocol):
@@ -155,7 +155,7 @@ class TextGenerator(Protocol):
 
     def generate(
         self,
-        requests: Sequence[Union[PrefillRequest, DecodeRequest, EvalMultiQueryRequest]],
+        requests: Sequence[RequestType],
         kv_cache,
     ) -> List[TextGenerationResult]:
         """
@@ -168,6 +168,7 @@ class TextGenerator(Protocol):
 
 
 class Tokenizer(Protocol):
+    _tokenizer: Any
     eos_token_id: int
     skip_special_tokens: bool
     all_special_ids: List[int]
@@ -219,6 +220,6 @@ class TokenizerModule(Protocol):
         ...
 
 
-class ModelModule(TextTokenGeneratorModule, TokenizerModule):
+class ModelModule(TextTokenGeneratorModule, TokenizerModule, Protocol):
     model_artifact_config: ModelArtifactConfig
     engine_config: MLCServeEngineConfig

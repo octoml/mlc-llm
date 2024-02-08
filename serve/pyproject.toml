@@ -9,11 +9,14 @@ python = ">=3.9"
 fastapi = ">=0.103.1"
 pydantic = ">=1.8.0"
 prometheus-client = ">=0.18.0"
+outlines = "0.0.23"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.2"
 httpx_sse = "^0.3.1"
 pytest-timeout = "^2.2.0"
+cuda-python = "12.3.0"
+pandas = "2.2.0"
 
 [tool.setuptools]
 packages = ["mlc_serve"]

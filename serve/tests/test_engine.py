@@ -74,12 +74,13 @@ def _test(args: argparse.Namespace):
         ]
 
     for i, prompt in enumerate(prompts):
+        sampling_param = random.choice(sampling_params_choices)
         engine.add(
             [
                 Request(
                     request_id=str(i),
                     messages=[ChatMessage(role="user", content=prompt)],
-                    sampling_params=random.choice(sampling_params_choices),
+                    sampling_params=sampling_param,
                     stopping_criteria=StoppingCriteria(
                         max_tokens=args.max_output_len, stop_sequences=None
                     ),

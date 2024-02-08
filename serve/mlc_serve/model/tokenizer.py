@@ -49,6 +49,7 @@ class HfTokenizerModule:
     def __init__(self, model_artifact_path: Path):
         hf_tokenizer = AutoTokenizer.from_pretrained(
             model_artifact_path.joinpath("model"),
+            revision=None, tokenizer_revision=None,
             trust_remote_code=False,
         )
         self.tokenizer = Tokenizer(hf_tokenizer)

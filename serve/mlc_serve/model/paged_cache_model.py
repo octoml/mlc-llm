@@ -1,6 +1,6 @@
 from pathlib import Path
 import structlog
-from typing import List
+from typing import Sequence, List
 
 from .base import get_model_artifact_config
 from .paged_cache_manager import CacheManager
@@ -27,7 +27,7 @@ class PagedCacheModelTextGenerator:
 
     def generate(
         self,
-        requests: List[RequestType],
+        requests: Sequence[RequestType],
         kv_cache,
     ) -> List[TextGenerationResult]:
         prefill_requests = []
@@ -94,4 +94,4 @@ class PagedCacheModelModule:
         self.conversation_template = tokenizer_module.conversation_template
 
     def _check_implements_model_module(self) -> ModelModule:
-        return self  # type: ignore
+        return self

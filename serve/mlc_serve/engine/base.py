@@ -1,15 +1,16 @@
 from __future__ import annotations
 import structlog
+import torch
 from dataclasses import dataclass, field
 from enum import Enum
 from abc import ABC, abstractmethod
 
 from typing import List, Callable, Any, Optional, Dict
 import inspect
-import numpy as np
 
 from .sampling_params import SamplingParams, SamplingType
 from ..openai_logprob_protocol import LogprobsContent
+from ..model.base import ModelArtifactConfig
 
 LOG = structlog.stdlib.get_logger(__name__)
 RequestId = str
@@ -19,10 +20,8 @@ RequestId = str
 class RawLogprobsInfo:
     current_token_id: int
     current_logprob: float
-    top_token_ids: Optional[np.ndarray]
-    top_logprobs: Optional[np.ndarray]
-
-RawLogprobsInfos = List[Optional[RawLogprobsInfo]]
+    top_token_ids: Optional[torch.Tensor]
+    top_logprobs: Optional[torch.Tensor]
 
 
 # TODO(@sunggg): consider transition to something like Pydantic
@@ -201,6 +200,12 @@ class InferenceStepResult:
 
 
 class InferenceEngine(ABC):
+    """
+    Expose the model config to the high-level APIs.
+    """
+
+    model_artifact_config: ModelArtifactConfig
+
     @abstractmethod
     def add(self, requests: list[Request]) -> None:
         """

@@ -1,6 +1,6 @@
 import math
 import os
-from typing import List, Tuple
+from typing import List, Tuple, Sequence
 
 import structlog
 import numpy as np
@@ -17,20 +17,20 @@ from .model_common import (
     prepare_multi_query_decode_inputs,
     get_num_cache_blocks,
 )
-
 from ..engine import (
     get_prompt_sequence_id,
     MLCServeEngineConfig,
 )
 from ..engine.model_module import (
-    DecodeRequest,
     DraftTokens,
     EvalMultiQueryRequest,
     PrefillRequest,
-    RequestsType,
-    TextGenerationResult,
+    DecodeRequest,
     TextGenerator,
+    TextGenerationResult,
+    RequestType,
 )
+from .sampler import SamplingState
 
 LOG = structlog.stdlib.get_logger(__name__)
 
@@ -147,6 +147,17 @@ class Model:
         self.sliding_window = config.sliding_window
         self.num_shards = config.num_shards
 
+        # TODO(@sunggg): Find a better way
+        if config.model_type == "llama":
+            self.torch_dtype = torch.float32
+        elif config.model_type == "mistral" or config.model_type == "mixtral":
+            self.torch_dtype = torch.float32
+        else:
+            assert 0, f"{config.model_type} is NOT supported yet"
+
+        self._copy_stream: torch.cuda.Stream = torch.cuda.Stream()
+        self.torch_dev: str = "cuda"
+
         if self.sliding_window:
             self.block_sliding_window = self.sliding_window // block_size
         else:
@@ -219,16 +230,31 @@ class Model:
     ) -> List[TextGenerationResult]:
         sequence_ids = []
         last_query_offsets: List[int] = []
+        sampling_params = []
+        past_decode_tokens = []
         for request in requests:
             assert not isinstance(request.queries, DraftTokens)
             sequence_ids.append(request.sequence_id)
-
             if len(last_query_offsets) == 0:
                 last_query_offsets.append(request.queries.num_tokens - 1)
             else:
                 last_query_offsets.append(
                     last_query_offsets[-1] + request.queries.num_tokens
                 )
+            sampling_params.append(request.sampling_params)
+            # Use `vocab_size` as a padding
+            past_decode_tokens.append([self.vocab_size, *request.queries.token_ids])
+
+        # Prepare sampling tensors in another stream to overlap
+        # CPU<->GPU data transfer with GPU computation in forward pass.
+        with torch.cuda.stream(self._copy_stream):
+            sampling_metadata = SamplingState.from_sampling_params(
+                sampling_params,
+                past_decode_tokens,
+                self.torch_dtype,
+                self.torch_dev,
+                self.vocab_size,
+            )
 
         (
             input_ids,
@@ -277,17 +303,26 @@ class Model:
         torch.cuda.nvtx.range_pop()
 
         last_query_logits = torch.from_dlpack(logits)[last_query_offsets]
-
         return sample_from_logits(
-            last_query_logits, sequence_ids, requests, self.vocab_size
+            last_query_logits,
+            sequence_ids,
+            requests,
+            sampling_metadata,
+            self.vocab_size,
+            self._copy_stream,
+            self.torch_dtype,
+            self.torch_dev,
+            past_decode_tokens,
         )
 
     def generate(
         self,
-        requests: RequestsType,
+        requests: Sequence[RequestType],
         cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
-        if len(requests) == 0:
+        batch_size = len(requests)
+        LOG.debug(f"Generation batch size: f{batch_size}.", batch_size=batch_size)
+        if batch_size == 0:
             return []
 
         is_prefill = isinstance(requests[0], PrefillRequest)
@@ -303,16 +338,45 @@ class Model:
         # TODO(masahi, yelite): Update this when a new request type for speculative decoding
         # is implemented.
         num_decode_query_tokens = 1
+        sampling_params = []
+        past_decode_tokens = []
 
         for request in requests:
             if isinstance(request, PrefillRequest):
-                sequence_ids.append(get_prompt_sequence_id(request.request_id))
+                seq_id = get_prompt_sequence_id(request.request_id)
+                # Use `vocab_size` as a padding.
+                # This is convenient way to filter out paddings
+                # after the vectorized sampling computation
+                # since logit index will be in range of [0,vocab_size)
+                request_past_decode_tokens = [self.vocab_size]
             elif isinstance(request, DecodeRequest):
-                sequence_ids.append(request.sequence_id)
+                seq_id = request.sequence_id
                 prompt_lens.append(request.prompt_token_counts)
+                # Use `vocab_size` as a padding
+                # This is convenient way to filter out paddings
+                # after the vectorized sampling computation
+                # since logit index will be in range of [0,vocab_size)
+                request_past_decode_tokens = [self.vocab_size, *request.token_ids]
+            else:
+                raise Exception("`EvalMultiQueryRequest` should not reach here.")
+
+            past_decode_tokens.append(request_past_decode_tokens)
+            sequence_ids.append(seq_id)
 
             assert not isinstance(request, EvalMultiQueryRequest)
             all_token_ids.append(request.token_ids)
+            sampling_params.append(request.sampling_params)
+
+        # Prepare sampling tensors in another stream to overlap
+        # CPU<->GPU data transfer with GPU computation in forward pass.
+        with torch.cuda.stream(self._copy_stream):
+            sampling_metadata = SamplingState.from_sampling_params(
+                sampling_params,
+                past_decode_tokens,
+                self.torch_dtype,
+                self.torch_dev,
+                self.vocab_size,
+            )
 
         (
             input_ids,
@@ -333,7 +397,6 @@ class Model:
         )
 
         input_shape = input_ids.shape
-
         if self.disco_session:
             input_ids = copy_to_worker_0(self.disco_session, input_ids)
             positions = copy_to_worker_0(self.disco_session, positions)
@@ -424,7 +487,17 @@ class Model:
             # TODO(masahi, yelite): Proper logic for handling multi-query logits (speculative decoding).
             return []
 
-        return sample_from_logits(logits, sequence_ids, requests, self.vocab_size)
+        return sample_from_logits(
+            logits,
+            sequence_ids,
+            requests,
+            sampling_metadata,
+            self.vocab_size,
+            self._copy_stream,
+            self.torch_dtype,
+            self.torch_dev,
+            past_decode_tokens,
+        )
 
 
 def init_tvm_model(
@@ -461,14 +534,19 @@ def init_tvm_model(
 
     if engine_config.max_num_batched_tokens > 0:
         LOG.info("Running memory profiling.")
-        num_blocks = get_num_cache_blocks(
-            model,
-            block_size,
-            [1] * engine_config.max_num_batched_tokens,
-            model_artifact_config.num_hidden_layers,
-            num_kv_heads,
-            head_size,
-        )
+        try:
+            num_blocks = get_num_cache_blocks(
+                model,
+                [1] * engine_config.max_num_batched_tokens,
+                model_artifact_config.num_hidden_layers,
+                num_kv_heads,
+                head_size,
+            )
+        except tvm.error.InternalError:
+            raise RuntimeError(
+                f"Memory profiling failed with max_num_batched_tokens = "
+                "{engine_config.max_num_batched_tokens}."
+            )
     else:
         num_blocks = 500
 
@@ -490,13 +568,16 @@ def init_tvm_model(
     else:
         init_cache_func = tvm.get_global_func(allocate_func_name)
 
-    model.cache_blocks = init_cache_func(
-        head_size,
-        model_artifact_config.num_hidden_layers,
-        num_kv_heads,
-        block_size,
-        num_blocks,
-    )
+    try:
+        model.cache_blocks = init_cache_func(
+            head_size,
+            model_artifact_config.num_hidden_layers,
+            num_kv_heads,
+            CacheManager.block_size,
+            num_blocks,
+        )
+    except tvm.error.InternalError:
+        raise RuntimeError(f"Failed to allocate {num_blocks} cache blocks.")
 
     cache_manager = CacheManager(
         num_blocks,

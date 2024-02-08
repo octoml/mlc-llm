@@ -108,9 +108,8 @@ class KVCacheInfo:
     ):
         self.block_size = block_size
 
-        # SequenceId -> list[int]
-        self.prompt_block_tables = defaultdict(list)  # type: ignore
-        self.slot_mappings = defaultdict(list)  # type: ignore
+        self.prompt_block_tables = defaultdict[SequenceId, List[int]](list)
+        self.slot_mappings = defaultdict[SequenceId, List[int]](list)
 
         # The core data structure
         self.decode_block_tables: dict = dict[SequenceId, DecodeBlockTable]()

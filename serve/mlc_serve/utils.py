@@ -6,7 +6,7 @@ import torch
 import random
 import argparse
 
-from mlc_serve.engine import get_engine_config
+from mlc_serve.engine import get_engine_config, InferenceEngine
 from mlc_serve.logging_utils import configure_logging
 from mlc_serve.engine.staging_engine import StagingInferenceEngine
 from mlc_serve.engine.sync_engine import SynchronousInferenceEngine
@@ -46,7 +46,7 @@ def postproc_mlc_serve_args(args):
     random.seed(args.seed)
 
 
-def create_mlc_engine(args: argparse.Namespace):
+def create_mlc_engine(args: argparse.Namespace) -> InferenceEngine:
     engine_config = get_engine_config(
         {
             "use_staging_engine": args.use_staging_engine,
@@ -56,11 +56,12 @@ def create_mlc_engine(args: argparse.Namespace):
         }
     )
 
-    # TODO(@team): There is a type mismatch in the definition. Let's fix this when have time.
+    engine: InferenceEngine
+
     if args.use_staging_engine:
-        engine = StagingInferenceEngine(  # type: ignore
+        engine = StagingInferenceEngine(
             tokenizer_module=HfTokenizerModule(args.model_artifact_path),
-            model_module_loader=PagedCacheModelModule,  # type: ignore
+            model_module_loader=PagedCacheModelModule,
             model_module_loader_kwargs={
                 "model_artifact_path": args.model_artifact_path,
                 "engine_config": engine_config,
@@ -68,8 +69,8 @@ def create_mlc_engine(args: argparse.Namespace):
         )
         engine.start()
     else:
-        engine = SynchronousInferenceEngine(  # type: ignore
-            PagedCacheModelModule(  # type: ignore
+        engine = SynchronousInferenceEngine(
+            PagedCacheModelModule(
                 model_artifact_path=args.model_artifact_path,
                 engine_config=engine_config,
             )

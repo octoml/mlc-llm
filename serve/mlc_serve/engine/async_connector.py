@@ -18,6 +18,7 @@ LOG = structlog.stdlib.get_logger(__name__)
 
 ResultQueue = asyncio.Queue[RequestOutput]
 
+
 class AsyncEngineConnector:
     def __init__(self, engine: InferenceEngine, engine_wait_timeout=1):
         self.engine = engine
@@ -32,7 +33,10 @@ class AsyncEngineConnector:
         """
         Needs to be called in the thread with event loop
         """
-        LOG.info("Starting AsyncEngineConnector.", engine_wait_timeout=self.engine_wait_timeout)
+        LOG.info(
+            "Starting AsyncEngineConnector.",
+            engine_wait_timeout=self.engine_wait_timeout,
+        )
         if self.engine_loop_task is not None:
             return
 
@@ -78,7 +82,7 @@ class AsyncEngineConnector:
         try:
             queue = await self._add_request(request)
             while True:
-                # TODO(jknight): Should make sure we are catching cancellations 
+                # TODO(jknight): Should make sure we are catching cancellations
                 # correctly inside this _get_queue...(...) awaitable object too
                 output = await self._get_queue_item_until_stopped(queue)
                 if output.error is not None:
@@ -87,21 +91,32 @@ class AsyncEngineConnector:
                 if output.is_finished:
                     return
         except asyncio.CancelledError:
-            LOG.info("AsyncEngineConnector.generate iterator cancelled.", request_id=request.request_id)
+            LOG.info(
+                "AsyncEngineConnector.generate iterator cancelled.",
+                request_id=request.request_id,
+            )
             # Running this sync because `await` inside of cancellation events is problematic
             self.engine.cancel(request.request_id)
-            LOG.info("AsyncEngineConnector.generate request sucessfully cancelled.", request_id=request.request_id)
+            LOG.info(
+                "AsyncEngineConnector.generate request sucessfully cancelled.",
+                request_id=request.request_id,
+            )
             self.recent_cancelled_requests.appendleft(request.request_id)
             # Always re-raise CancellationErrors unless you know what you're doing.
             raise
         finally:
-            LOG.info("AsyncEngineConnector.generate removing request from result queue.", request_id=request.request_id)
+            LOG.info(
+                "AsyncEngineConnector.generate removing request from result queue.",
+                request_id=request.request_id,
+            )
             self.result_queues.pop(request.request_id, None)
 
     async def _get_queue_item_until_stopped(self, queue: ResultQueue) -> RequestOutput:
         try:
             get_queue_task = asyncio.create_task(queue.get(), name="get_queue_task")
-            wait_shutdown_task = asyncio.create_task(self.shutdown_event.wait(), name="wait_shutdown_task")
+            wait_shutdown_task = asyncio.create_task(
+                self.shutdown_event.wait(), name="wait_shutdown_task"
+            )
 
             await asyncio.wait(
                 (get_queue_task, wait_shutdown_task),
@@ -110,7 +125,9 @@ class AsyncEngineConnector:
 
             if wait_shutdown_task.done():
                 if self.engine_loop_exception is not None:
-                    raise EngineException("raised while handling previous engine loop exception") from self.engine_loop_exception
+                    raise EngineException(
+                        "raised while handling previous engine loop exception"
+                    ) from self.engine_loop_exception
                 else:
                     raise EngineException("stopped with no exception")
 
@@ -147,8 +164,6 @@ class AsyncEngineConnector:
             elif request_id not in self.recent_cancelled_requests:
                 # if request is not in result_queues, and not cancelled recently,
                 # something goes wrong and we want to be aware of it.
-                LOG.warn(
-                    f"Unknown request id when dispatching result: {request_id}"
-                )
+                LOG.warn(f"Unknown request id when dispatching result: {request_id}")
 
         await asyncio.gather(*coroutines)
