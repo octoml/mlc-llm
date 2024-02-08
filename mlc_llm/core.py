@@ -752,6 +752,8 @@ def build(mod_deploy: tvm.IRModule, args: argparse.Namespace) -> None:
         mod_deploy, f"{args.model}_{args.quantization.name}".replace("-", "_"), args
     )
 
+    mod_deploy = relax.transform.LegalizeOps()(mod_deploy)
+
     if target_kind != "cpu":
         dispatch_target = (
             args.target
