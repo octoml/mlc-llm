@@ -17,7 +17,7 @@ from .model_common import (
     prepare_inputs,
     get_num_cache_blocks,
 )
-from .lazy_safetensor import LazySafetensorDir
+from .lazy_safetensor import LazySafetensorDir, get_free_memory
 
 from ..engine import (
     SequenceId,
@@ -304,7 +304,22 @@ class Model:
         config,
         dev,
     ):
+        free_bytes, total_bytes = get_free_memory()
+        LOG.info(
+            "Before loading TVM model",
+            free_bytes=free_bytes,
+            total_bytes=total_bytes,
+        )
+
         self.mod, self.params, self.disco_session = get_tvm_model(config, dev)
+
+        free_bytes, total_bytes = get_free_memory()
+        LOG.info(
+            "After loading TVM model",
+            free_bytes=free_bytes,
+            total_bytes=total_bytes,
+        )
+
         self.dev = dev
         self.vocab_size = config.vocab_size
         self.sliding_window = config.sliding_window
