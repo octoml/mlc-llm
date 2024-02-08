@@ -36,6 +36,14 @@ LOG = structlog.stdlib.get_logger(__name__)
 
 
 def load_disco_weights_through_shard_loader(sess, param_path, lib_path):
+    # TODO(Lunderberg): Use a callback for get_item/set_item so these
+    # only need to be defined on the transform_params path.
+    worker_device = sess.get_global_func("runtime.disco.device")()
+    sess.import_python_module("mlc_serve.model.lazy_safetensor")
+    sess.get_global_func("mlc_serve.model.define_safetensors_get_item")(
+        ".", "", worker_device
+    )
+
     metadata_path = param_path.joinpath("ndarray-cache.json")
     module = sess.load_vm_module(lib_path.as_posix())
 
@@ -87,10 +95,12 @@ def load_disco_module(
     orig_param_path = artifact_path.joinpath("original_params")
 
     if param_path.exists():
+        LOG.info("Loading multi-GPU pre-processed weights", path=param_path)
         module, params = load_disco_weights_through_shard_loader(
             sess, param_path, lib_path
         )
     elif orig_param_path.exists():
+        LOG.info("Loading multi-GPU weights through transform_params", path=param_path)
         module, params = load_disco_weights_through_transform_params(
             sess, orig_param_path, lib_path
         )
@@ -208,25 +218,43 @@ def get_tvm_model(config, dev):
     artifact_path = pathlib.Path(config.model_artifact_path)
     lib_path = artifact_path.joinpath(config.library_name)
 
-    if config.num_shards == 1:
-        ex = tvm.runtime.load_module(lib_path.as_posix())
+    if config.num_shards != 1:
+        LOG.info(
+            "Loading multi-GPU model, based on `num_shards` from config",
+            num_shards=config.num_shards,
+        )
+        return load_disco_module(artifact_path, lib_path, config.num_shards)
 
-        param_path = artifact_path.joinpath("params")
-        orig_param_path = artifact_path.joinpath("original_params")
-        if param_path.exists():
-            params = load_tvm_weights(param_path, dev)
-        elif orig_param_path.exists():
-            params = preprocess_weights(orig_param_path, ex, dev)
-        else:
-            raise RuntimeError(
-                f"The artifact path {artifact_path} contains neither a 'params' directory, "
-                f"nor an 'original_params' directory."
-            )
+    LOG.info(
+        "Loading single-GPU model, based on `num_shards` from config",
+        num_shards=config.num_shards,
+    )
 
-        vm = relax.VirtualMachine(ex, dev)
-        return vm.module, params, None
+    ex = tvm.runtime.load_module(lib_path.as_posix())
 
-    return load_disco_module(artifact_path, lib_path, config.num_shards)
+    param_path = artifact_path.joinpath("params")
+    orig_param_path = artifact_path.joinpath("original_params")
+    if param_path.exists():
+        LOG.info("Loading single-GPU pre-processed weights", path=param_path)
+
+        # TODO(Lunderberg): Use a callback for get_item/set_item so these
+        # only need to be defined on the transform_params path.
+        @tvm.register_func("get_item", override=True)
+        def _unused_get_item():
+            pass
+
+        params = load_tvm_weights(param_path, dev)
+    elif orig_param_path.exists():
+        LOG.info("Loading single-GPU weights through transform_params", path=param_path)
+        params = preprocess_weights(orig_param_path, ex, dev)
+    else:
+        raise RuntimeError(
+            f"The artifact path {artifact_path} contains neither a 'params' directory, "
+            f"nor an 'original_params' directory."
+        )
+
+    vm = relax.VirtualMachine(ex, dev)
+    return vm.module, params, None
 
 
 def _prepare_inputs(
