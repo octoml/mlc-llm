@@ -832,10 +832,24 @@ def generate_mod_transform(model_generators, args, config):
 
     parameter_transforms = []
 
-    parameter_transforms.append(
-        # Disable optimized param ordering, since it will be re-run later
-        param_manager.create_parameter_transformation(optimize_parameter_order=False)
+    # Disable optimized param ordering, since it will be re-run later
+    manager_transform = param_manager.create_parameter_transformation(
+        optimize_parameter_order=False
     )
+    # If the model provided constants, bind them to the transform_params.
+    # This ensures that the generated function can reproduce the same
+    # output parameters even when executed outside of the `build.py`
+    # context.
+    if params is not None:
+        param_bindings = {
+            var: param
+            for var, param in zip(manager_transform["transform_params"].params, params)
+            if param is not None
+        }
+        manager_transform["transform_params"] = manager_transform["transform_params"].bind_params(
+            param_bindings
+        )
+    parameter_transforms.append(manager_transform)
 
     # Run pre-sharding if required
     if args.num_shards > 1 and args.use_presharded_weights:
