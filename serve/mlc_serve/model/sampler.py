@@ -546,8 +546,6 @@ def get_loglikelihood_logprob_infos(
 def loglikelihood_sample(
     logits: torch.Tensor,
 ) -> List[Optional[RawLogprobsInfo]]:
-    logits = torch.from_dlpack(logits)
-
     # TODO(vvchernov): we need token_ids from input
     # It is not neccessary top1
     res = torch.argmax(logits, -1)

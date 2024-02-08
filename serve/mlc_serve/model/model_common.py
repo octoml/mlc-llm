@@ -176,10 +176,23 @@ def sample_from_logits(
     return outputs
 
 
+def get_logprob_infos(
+        i: int,
+        logprob_infos: Optional[List[Optional[RawLogprobsInfo]]],
+    ) -> Optional[List[Optional[RawLogprobsInfo]]]:
+        if logprob_infos is None or logprob_infos[i] is None:
+            return None
+        return [logprob_infos[i]]
+
+
 def sample_loglikelihood_from_logits(
     logits: Union[tvm.nd.NDArray, torch.Tensor],
     sequence_ids: List[SequenceId],
 ) -> List[TextGenerationResult]:
+    # Convert to torch tensors if logits are in tvm ndarray
+    if isinstance(logits, tvm.nd.NDArray):
+        logits = torch.from_dlpack(logits)
+
     # TODO(vvchernov): cut prompt lengths from logits
     try:
         logprob_infos = loglikelihood_sample(logits)

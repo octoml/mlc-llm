@@ -347,7 +347,7 @@ class Model:
                 request_past_decode_tokens = [self.vocab_size]
             elif isinstance(request, LoglikelihoodRequest):
                 seq_id = get_prompt_sequence_id(request.request_id)
-                # TODO(vvchernov): it it needed?
+                # TODO(vvchernov): is it needed?
                 request_past_decode_tokens = [self.vocab_size]
             elif isinstance(request, DecodeRequest):
                 seq_id = request.sequence_id
