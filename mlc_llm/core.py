@@ -880,6 +880,245 @@ def extract_lora_ranks(
     return lora_ranks
 
 
+def lora_optimization_pipeline(
+    prefill_params: List[relax.Var], lora_safetensor_path: Union[str, pathlib.Path]
+):
+    def RemoveFunction(to_remove: Union[str, tvm.ir.GlobalVar]) -> tvm.ir.transform.Pass:
+        """Remove a function from the IRModule
+
+        Parameters
+        ----------
+        to_remove: Union[str, tvm.ir.GlobalVar]
+
+            The function to remove, specified either by name or by
+            GlobalVar.
+
+        Return
+        ------
+        tvm.ir.transform.Pass
+
+            The IRModule transform which removes the function from the
+            module.
+        """
+
+        @tvm.ir.transform.module_pass(opt_level=0, name="RemoveFunc")
+        def transform(mod: tvm.IRModule, _pass_context) -> tvm.IRModule:
+            new_module = {}
+            for gvar, func in mod.functions.items():
+                if isinstance(to_remove, tvm.ir.GlobalVar):
+                    remove_func = gvar.same_as(to_remove)
+                else:
+                    remove_func = gvar.name_hint == to_remove
+
+                if not remove_func:
+                    new_module[gvar] = func
+
+            return tvm.IRModule(
+                new_module,
+                type_definitions=mod.type_definitions,
+                attrs=mod.attrs,
+                global_infos=mod.global_infos,
+            )
+
+        return transform
+
+    def expand_activations(var):
+        if var.name_hint == "x":
+            sinfo = var.struct_info
+            batch_size, dim = sinfo.shape
+            return relax.TensorStructInfo([batch_size, 1, dim], sinfo.dtype)
+
+    @tvm.transform.module_pass(opt_level=0)
+    def add_batch_to_lora(mod, _context):
+        batch_size = None
+        for _, func in mod.functions.items():
+            if isinstance(func, relax.Function):
+                batch_size = func.params[0].struct_info.shape[0]
+                break
+
+        def update_sinfo(var):
+            if var.name_hint.endswith("_LA") or var.name_hint.endswith("_LB"):
+                sinfo = var.struct_info
+                return relax.TensorStructInfo([batch_size, *sinfo.shape], sinfo.dtype)
+
+        transform = relax.transform.UpdateParamStructInfo(update_sinfo)
+        return transform(mod)
+
+    lora_ranks = extract_lora_ranks(prefill_params, lora_safetensor_path)
+    params_to_apply_lora = list(lora_ranks)
+
+    pipeline = tvm.transform.Sequential(
+        [
+            # Update activate struct info from `[batch_size, infeatures]`
+            # to `[batch_size, 1, infeatures]`.  This plays nicer with
+            # shape inference later on, because it avoids the implicit
+            # expansion of 1-d vectors to 2-d matrices in `R.matmul`.
+            #
+            # relax.transform.UpdateParamStructInfo(expand_activations),
+            #
+            # Lift out and remove the parameter transformation function.
+            # The `R.permute_dims` produces from `nn.Linear` reverses all
+            # dimensions, whereas we'd need it to only swap the last two
+            # dimensions.
+            #
+            # relax.transform.LiftTransformParams(),
+            #
+            # RemoveFunction("forward_transform_params"),
+            #
+            # Update all parameters matching the regex from `weights` to
+            # `(base, LA, LB)`, with `weights = base + LB*LA` computed
+            # within the function.
+            #
+            relax.transform.InjectLora(
+                params_to_apply_lora, lora_param_order="end_of_runtime_params"
+            ),
+            #
+            # Append a `batch_size` dimension to the lora weights
+            #
+            # add_batch_to_lora,
+            #
+            # Replace each LoRA parameter with `lora_param =
+            # R.take(lora_table, indices)`.  If the original `lora_param`
+            # has shape `[batch_size, *shape]`, the `lora_table` has shape
+            # `[num_loras, *shape]`, and the `indices` has shape
+            # `[batch_size]`.
+            #
+            # relax.transform.InjectRoutingTable(r".*_L(A|B)"),
+            #
+            # Expand `x*(W + LB*LA)` to `x*W + x*(LB*LA)`.
+            relax.transform.ExpandMatmulOfSum(),
+            #
+            # Reorder `x*(LB*LA)` to `(x*LB)*LA`.
+            relax.transform.AdjustMatmulOrder(),
+            #
+            # Reorder `R.matmul(x, R.take(lora_table, indices))` into
+            # `R.take(R.matmul(x, lora_table), indices)`
+            relax.transform.ReorderTakeAfterMatmul(),
+            #
+            # Combine the parallel steps of `R.matmul(x, lora_table)` and
+            # `R.matmul(x, base_weights)`.
+            relax.transform.CombineParallelMatmul(),
+            #
+            # Reorder from `R.concat(R.permute_dims(A),
+            # R.permute_dims(B))` to `R.permute_dims(R.concat(A,B))`.
+            # This allows the concatenations produced by
+            # `CombineParallelMatmul` to be lifted out, and optimized
+            # `nn.Linear` kernels to find the `R.matmul(x,
+            # R.permute_dims(weights))` patterns they are looking for.
+            relax.transform.ReorderPermuteDimsAfterConcat(),
+            relax.transform.DeadCodeElimination(),
+        ],
+        name="lora_optimization_pipeline",
+    )
+    return pipeline
+
+
+@tvm.transform.module_pass(opt_level=0)
+def bundle_lora_params(mod, _context):
+    def _is_lora_param(param: relax.Var) -> bool:
+        return "lora" in param.name_hint
+
+    lora_func_names = [
+        gvar.name_hint
+        for gvar, func in mod.functions.items()
+        if isinstance(func, relax.Function) and any(_is_lora_param(param) for param in func.params)
+    ]
+    assert len(lora_func_names) <= 1, (
+        f"The bundle_lora_params transform assumes that only a single function "
+        f"has been tuned with loras.  "
+        f"However, {lora_func_names} all accept LoRA parameters."
+    )
+    if len(lora_func_names) == 0:
+        return mod
+    lora_func_name = lora_func_names[0]
+
+    mod = mod.clone()
+
+    func = mod[lora_func_name]
+    num_lora_params = sum(1 for param in func.params if _is_lora_param(param))
+
+    num_input_attr = func.attrs["num_input"]
+    num_runtime_params = sum(
+        1 for i, param in enumerate(func.params) if i < num_input_attr and not _is_lora_param(param)
+    )
+    # num_base_model_params = sum(1 for i,param in enumerate(func.params)
+    #                          if i >=num_input_attr and not _is_lora_param(param))
+
+    mod[lora_func_name] = func.with_reordered_parameters(
+        sorted(func.params, key=lambda param: "lora" in param.name_hint)
+    ).with_attr("num_input", len(func.params) - num_lora_params)
+
+    mod = relax.transform.LiftTransformParams()(mod)
+    mod["lora_transform_params"] = (
+        mod[f"{lora_func_name}_transform_params"]
+        .with_attr("global_symbol", "lora_transform_params")
+        .without_attr("num_input")
+    )
+    del mod[f"{lora_func_name}_transform_params"]
+
+    mod = tvm.ir.transform.ApplyPassToFunction(
+        relax.transform.BundleModelParams("lora_params"), lora_func_name
+    )(mod)
+
+    func = mod[lora_func_name]
+    mod[lora_func_name] = func.with_reordered_parameters(
+        [
+            *func.params[:num_runtime_params],
+            func.params[-1],
+            *func.params[num_runtime_params:-1],
+        ]
+    ).with_attr("num_input", num_runtime_params + 1)
+
+    return mod
+
+
+@tvm.transform.module_pass(opt_level=0)
+def remove_decode_func(mod, _context):
+    prefill_name = "prefill" if "prefill" in mod else "prefill_with_embed"
+    decode_name = prefill_name.replace("prefill", "decode")
+
+    if decode_name in mod:
+        mod = mod.clone()
+        del mod[decode_name]
+    return mod
+
+
+@tvm.transform.module_pass(opt_level=0)
+def auto_generate_decode_func(mod, _context):
+    prefill_name = "prefill" if "prefill" in mod else "prefill_with_embed"
+    decode_name = prefill_name.replace("prefill", "decode")
+
+    assert decode_name not in mod
+
+    mod = mod.clone()
+
+    mod[decode_name] = relax.utils.copy_with_new_vars(
+        mod[prefill_name]
+        .bind_symbolic_vars({"num_tokens_excluding_cache": 1})
+        .with_attr("global_symbol", decode_name)
+    )
+
+    return mod
+
+
+@tvm.transform.module_pass(opt_level=0)
+def reorder_lora_params_after_base_model_params(mod, _context):
+    prefill_name = "prefill" if "prefill" in mod else "prefill_with_embed"
+
+    mod = mod.clone()
+
+    func = mod[prefill_name]
+    mod[prefill_name] = func.with_reordered_parameters(
+        [
+            *func.params[:-2],
+            func.params[-1],
+            func.params[-2],
+        ]
+    )
+
+    return mod
+
+
 def generate_mod_transform(model_generators, args, config):
     # Sharded models are currently implemented by adjusting parameter
     # sizes based on `self.num_shards`, whenever `build_model_only` is
