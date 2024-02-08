@@ -1541,6 +1541,12 @@ def build_model_from_args(args: argparse.Namespace):
 
         mod = tvm.ir.transform.Sequential(transform_seq, name="OptimizeMLCModel")(mod)
 
+        mod.show(
+            name="Optimized",
+            show_all_struct_info=False,
+            black_format=True,
+        )
+
         tvm.tir.analysis.verify_well_formed(mod)
 
         utils.debug_dump_script(mod, "mod_deploy.py", args)
