@@ -1501,7 +1501,24 @@ def build_model_from_args(args: argparse.Namespace):
 
         transform_seq = []
 
+        if args.lora is not None:
+            prefill_name = "prefill" if "prefill" in mod else "prefill_with_embed"
+            transform_seq.extend(
+                [
+                    remove_decode_func,
+                    relax.transform.DeadCodeElimination(),
+                    # TODO: Shouldn't assume that we know which parameters
+                    # should be lora-tuned at this stage.  Maybe start with
+                    # everything being lora-ized, then make specialized
+                    # versions with BindParams for common cases?
+                    lora_optimization_pipeline(mod[prefill_name].params, args.lora),
+                ]
+            )
+
         transform_seq.append(optimize_mod_pipeline(args, model_config))
+
+        if args.lora is not None:
+            transform_seq.append(bundle_lora_params)
 
         transform_seq.append(
             tvm.ir.transform.ApplyPassToFunction(
@@ -1509,6 +1526,9 @@ def build_model_from_args(args: argparse.Namespace):
                 "(?!transform_params).*",
             )
         )
+
+        if args.lora is not None:
+            transform_seq.append(reorder_lora_params_after_base_model_params)
 
         transform_seq.append(
             tvm.ir.transform.ApplyPassToFunction(
@@ -1522,6 +1542,13 @@ def build_model_from_args(args: argparse.Namespace):
                 ".*transform_params",
             )
         )
+
+        if args.lora is not None:
+            # TODO(Lunderberg): Replace this with
+            # transform.CheckForSpecialCase once
+            # https://github.com/apache/tvm/pull/16457 is fully implemented
+            # and landed.
+            transform_seq.append(auto_generate_decode_func)
 
         mod = tvm.ir.transform.Sequential(transform_seq, name="OptimizeMLCModel")(mod)
 
