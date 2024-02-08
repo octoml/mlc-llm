@@ -575,7 +575,7 @@ def create_evaluate_func(
     num_seq = tvm.tir.SizeVar("batch_size", "int64")
 
     with bb.function(func_name):
-        model = LlamaForCausalLM(config, cpu_dev, tvm.tir.Var("vocab_size", "int64"), sep_embed)
+        model = LlamaForCausalLM(config, cpu_dev, tvm.tir.SizeVar("vocab_size", "int64"), sep_embed)
         param_manager.register_params(model, func_name, quant_scheme, get_param_quant_kind)
 
         inputs, positions, seq_lens, _, _, _ = get_inputs(
@@ -747,7 +747,7 @@ def create_evaluate_multi_query_func(
     num_inputs = 8
 
     with bb.function(func_name):
-        model = LlamaForCausalLM(config, cpu_dev, tvm.tir.Var("vocab_size", "int64"), False)
+        model = LlamaForCausalLM(config, cpu_dev, tvm.tir.SizeVar("vocab_size", "int64"), False)
         param_manager.register_params(model, func_name, quant_scheme, get_param_quant_kind)
 
         input_ids, positions, seq_lens, past_key_values, slot_mapping, _ = get_inputs(
