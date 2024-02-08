@@ -83,7 +83,7 @@ def sample_from_logits(
     logits: Union[tvm.nd.NDArray, torch.Tensor],
     sequence_ids: List[SequenceId],
     requests: Sequence[RequestType],
-    sampling_metadata: SamplingState,
+    sampling_state: SamplingState,
     vocab_size: int,
     copy_stream: torch.cuda.Stream,
     torch_dtype: torch.dtype,
@@ -110,13 +110,13 @@ def sample_from_logits(
                 sequence_id, cs_input_ids, logits[i]
             )
 
-    logits = adjust_logits(logits, sampling_metadata, vocab_size)
+    logits = adjust_logits(logits, sampling_state, vocab_size)
     outputs: List[TextGenerationResult] = []
 
     try:
         sampling_output: Optional[SamplingOutput] = sample(
             logits,
-            sampling_metadata,
+            sampling_state,
         )
 
         for i, (new_token, logprob_info) in enumerate(
@@ -142,13 +142,13 @@ def sample_from_logits(
         for i in range(batch_size):
             sequence_id = sequence_ids[i]
             logits_per_token = logits[i]
-            sampling_param = sampling_metadata.sampling_params[i]
+            sampling_param = sampling_state.sampling_params[i]
             past_decode_tokens_per_request = past_decode_tokens[i]
             # NOTE: Rerun the preparation for simplicity.
             # Assume this code path is taken rarely and the recomputation overhead is
             # marginal.
             with torch.cuda.stream(copy_stream):
-                new_sampling_metadata = SamplingState.from_sampling_params(
+                new_sampling_state = SamplingState.from_sampling_params(
                     [sampling_param],
                     [past_decode_tokens_per_request],
                     torch_dtype,
@@ -158,7 +158,7 @@ def sample_from_logits(
             torch.cuda.current_stream().wait_stream(copy_stream)
             maybe_sampling_output: Optional[SamplingOutput] = sample(
                 torch.unsqueeze(logits_per_token, 0),
-                new_sampling_metadata,
+                new_sampling_state,
                 check_safety=True,
             )
 

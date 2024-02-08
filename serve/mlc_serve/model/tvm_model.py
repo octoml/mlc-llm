@@ -259,7 +259,7 @@ class Model:
         # Prepare sampling tensors in another stream to overlap
         # CPU<->GPU data transfer with GPU computation in forward pass.
         with torch.cuda.stream(self._copy_stream):
-            sampling_metadata = SamplingState.from_sampling_params(
+            sampling_state = SamplingState.from_sampling_params(
                 sampling_params,
                 past_decode_tokens,
                 self.torch_dtype,
@@ -318,7 +318,7 @@ class Model:
             last_query_logits,
             sequence_ids,
             requests,
-            sampling_metadata,
+            sampling_state,
             self.vocab_size,
             self._copy_stream,
             self.torch_dtype,
@@ -381,7 +381,7 @@ class Model:
         # Prepare sampling tensors in another stream to overlap
         # CPU<->GPU data transfer with GPU computation in forward pass.
         with torch.cuda.stream(self._copy_stream):
-            sampling_metadata = SamplingState.from_sampling_params(
+            sampling_state = SamplingState.from_sampling_params(
                 sampling_params,
                 past_decode_tokens,
                 self.torch_dtype,
@@ -502,7 +502,7 @@ class Model:
             logits,
             sequence_ids,
             requests,
-            sampling_metadata,
+            sampling_state,
             self.vocab_size,
             self._copy_stream,
             self.torch_dtype,
