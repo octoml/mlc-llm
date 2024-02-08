@@ -1010,6 +1010,69 @@ def generate_mod_transform(model_generators, args, config):
     return mod_transform
 
 
+def validate_transform_params(mod):
+    transformation_output_sinfo = mod["transform_params"].ret_struct_info
+    transformation_output_vars = [
+        relax.Var(f"transform_param_{i}", sinfo)
+        for i, sinfo in enumerate(transformation_output_sinfo.fields)
+    ]
+
+    for func_name in ["prefill", "decode"]:
+        if func_name in mod:
+            func = mod[func_name]
+            if func.attrs is not None and "num_input" in func.attrs:
+                num_input = func.attrs["num_input"].value
+            else:
+                num_input = 0
+
+            assert num_input + len(transformation_output_vars) == len(func.params)
+            symbolic_var_map = relax.analysis.infer_symbolic_var_map(
+                {
+                    param: output_var
+                    for param, output_var in zip(
+                        func.params[num_input:], transformation_output_vars
+                    )
+                }
+            )
+
+            func = func.bind_symbolic_vars(symbolic_var_map)
+            inference_input = relax.TupleStructInfo(
+                [param.struct_info for param in func.params[num_input:]]
+            )
+
+            if not tvm.ir.structural_equal(transformation_output_sinfo, inference_input):
+                table = []
+
+                table.append(["Param #", "Param Name", "Produced", "Requires"])
+
+                for i, (transformed_sinfo, inference_arg) in enumerate(
+                    zip(transformation_output_sinfo.fields, func.params[num_input:])
+                ):
+                    if not tvm.ir.structural_equal(transformed_sinfo, inference_arg.struct_info):
+                        table.append(
+                            [
+                                f"{i}",
+                                inference_arg.name_hint,
+                                f"{transformed_sinfo}",
+                                f"{inference_arg.struct_info}",
+                            ]
+                        )
+
+                column_widths = [max(len(entry) for entry in column) for column in zip(*table)]
+
+                for i_row, row in enumerate(table):
+                    if (i_row - 1) % 5 == 0:
+                        print("+".join("-" * (width + 2) for width in column_widths))
+                    print(
+                        "|".join(
+                            entry.rjust(width + 1).ljust(width + 2)
+                            for entry, width in zip(row, column_widths)
+                        )
+                    )
+
+                tvm.ir.assert_structural_equal(transformation_output_sinfo, inference_input)
+
+
 @tvm.transform.module_pass(opt_level=0)
 def generate_orig_param_names(mod, _context):
     if "transform_params" not in mod:
