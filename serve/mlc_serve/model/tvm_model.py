@@ -537,6 +537,7 @@ def init_tvm_model(
         try:
             num_blocks = get_num_cache_blocks(
                 model,
+                block_size,
                 [1] * engine_config.max_num_batched_tokens,
                 model_artifact_config.num_hidden_layers,
                 num_kv_heads,
@@ -573,7 +574,7 @@ def init_tvm_model(
             head_size,
             model_artifact_config.num_hidden_layers,
             num_kv_heads,
-            CacheManager.block_size,
+            block_size,
             num_blocks,
         )
     except tvm.error.InternalError:
