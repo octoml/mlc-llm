@@ -25,18 +25,27 @@ def get_sampling_metadata(sampling_params, past_output_tokens=None):
     return sampling_metadata
 
 
-def _test_temperature(temp=0, batch_size=1):
-    shape = (batch_size, vocab_size)
+def _test_temperature():
+    # temperature must be in [0, 2]
+    shape = (1, vocab_size)
     logits = torch.rand(shape, dtype=dtype, device=dev)
-    sampling_param = SamplingParams(
-        temperature=temp,
-    )
 
-    sampling_metadata = get_sampling_metadata([sampling_param])
+    with pytest.raises(ValueError):
+        temperature = -0.1
+        sampling_param = SamplingParams(temperature=temperature)
+        get_sampling_metadata([sampling_param])
 
-    expected = logits / temp if abs(temp) > SAMPLING_EPS else logits
-    new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
-    assert torch.allclose(expected, new_logits)
+    with pytest.raises(ValueError):
+        temperature = 2.1
+        sampling_param = SamplingParams(temperature=temperature)
+        get_sampling_metadata([sampling_param])
+
+    for temperature in [0, 1.0, 2.0]:
+        sampling_param = SamplingParams(temperature=temperature)
+        sampling_metadata = get_sampling_metadata([sampling_param])
+        expected = logits / temperature if abs(temperature) > SAMPLING_EPS else logits
+        new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
+        assert torch.allclose(expected, new_logits)
 
 
 def _test_logit_bias_checker():
