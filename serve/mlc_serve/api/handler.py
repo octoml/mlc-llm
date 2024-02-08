@@ -73,7 +73,6 @@ def _get_sampling_params(
         sampling_params.logprobs = request.logprobs
     if request.response_format and request.response_format.type == "json_object":
         sampling_params.json_schema = request.response_format.response_schema
-
     sampling_params.vocab_size = model_artifact_config.vocab_size
     return sampling_params
 

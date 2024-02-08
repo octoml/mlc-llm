@@ -14,6 +14,7 @@ from ..engine import (
 )
 from ..engine.model_module import (
     PrefillRequest,
+    DecodeRequest,
     EvalMultiQueryRequest,
     RequestType,
     TextGenerationResult,
@@ -97,6 +98,17 @@ def sample_from_logits(
     # synchronization point for sampling tensors
     # wait until all the tensors are loaded on GPU
     torch.cuda.current_stream().wait_stream(copy_stream)
+
+    # Logit processing for constraint sampling e.g., JSON Mode
+    for i, (sequence_id, request) in enumerate(zip(sequence_ids, requests)):
+        if request.sampling_params.logits_processor is not None:
+            cs_input_ids = (
+                request.token_ids if isinstance(request, DecodeRequest) else []
+            )
+            logits[i] = request.sampling_params.logits_processor(
+                sequence_id, cs_input_ids, logits[i]
+            )
+
     logits = adjust_logits(logits, sampling_metadata, vocab_size)
     outputs: List[TextGenerationResult] = []
 

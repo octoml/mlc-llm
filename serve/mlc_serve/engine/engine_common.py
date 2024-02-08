@@ -263,14 +263,7 @@ def get_requests_to_process(
 
     if is_prompt_batch:
         for state in current_states:
-<<<<<<< HEAD
             if is_evicted_parallel_sampling_request(state):
-=======
-            if not state.is_prefilled:
-                # `JSONLogitsProcessor` needs to be created only once.
-                if state.sampling_params.json_schema is not None:
-                    state.sampling_params.logits_processor = JSONLogitsProcessor(state.sampling_params.json_schema, tokenizer._tokenizer)
->>>>>>> works
                 requests.append(
                     PrefillRequest(
                         request_id=state.request_id,
@@ -299,6 +292,12 @@ def get_requests_to_process(
                 # TODO(masahi): How to account for token counts in EvalMultiQueryRequest in
                 # Prometheus metric?
             elif not state.is_prefilled:
+                # `JSONLogitsProcessor` needs to be created only once.
+                if state.sampling_params.json_schema is not None:
+                    state.sampling_params.logits_processor = JSONLogitsProcessor(
+                        state.sampling_params.json_schema, tokenizer._tokenizer
+                    )
+
                 if (
                     state.num_sequences == 1
                     and state.generation_sequences[0].generated_token_ids
@@ -317,14 +316,7 @@ def get_requests_to_process(
                         request_id=state.request_id,
                         token_ids=token_ids,
                         num_sequence=state.num_sequences,
-<<<<<<< HEAD
                         sampling_params=state.sampling_params,
-                        logit_processor=JSONLogitsProcessor(
-                            state.sampling_params.json_schema, tokenizer._tokenizer
-                        ),
-=======
-                        sampling_params=state.sampling_params
->>>>>>> works
                     )
                 )
 
@@ -346,12 +338,6 @@ def get_requests_to_process(
                             prompt_token_counts=prompt_counts,
                             token_ids=gen_seq.generated_token_ids,
                             sampling_params=state.sampling_params,
-<<<<<<< HEAD
-                            logit_processor=JSONLogitsProcessor(
-                                state.sampling_params.json_schema, tokenizer._tokenizer
-                            ),
-=======
->>>>>>> works
                         )
                     )
                     cache_manager.extend(
