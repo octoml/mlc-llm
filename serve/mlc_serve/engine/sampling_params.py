@@ -132,6 +132,10 @@ class SamplingParams:
                 raise ValueError(
                     f"top_logprobs must be between 0 and {LOGPROB_TOP_K_MAX}, got {self.top_logprobs}."
                 )
+            if not isinstance(self.top_logprobs, int):
+                raise ValueError(
+                    "top_logprobs muse be integer"
+                )
 
     def _verify_greedy_sampling(self) -> None:
         if self.top_p < 1.0 - _SAMPLING_EPS:

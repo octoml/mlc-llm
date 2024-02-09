@@ -1,6 +1,10 @@
 import torch
 import pytest
-from mlc_serve.model.sampler import SamplingState, adjust_logits
+from mlc_serve.model.sampler import (
+    adjust_logits, 
+    sample, 
+    SamplingOutput
+)
 from mlc_serve.engine import SamplingParams, SAMPLING_EPS
 
 dtype = torch.float32
@@ -339,6 +343,72 @@ def _test_top_p_top_k():
     expected = get_expected_result(expected, top_pks)
     assert torch.allclose(expected, new_logits)
 
+def _test_logprobs_checker():
+    get_sampling_metadata([SamplingParams(logprobs=False)])
+    get_sampling_metadata([SamplingParams(logprobs=True)])
+    get_sampling_metadata([SamplingParams(logprobs=True, top_logprobs=0)])
+    get_sampling_metadata([SamplingParams(logprobs=True, top_logprobs=5)])
+
+    # TODO: Shouldn't ValueError be raised when logprobs is False but top_logprobs is also set?
+    # with pytest.raises(ValueError):
+    #     get_sampling_metadata([SamplingParams(logprobs=False, top_logprobs=0)])
+
+    # with pytest.raises(ValueError):
+    #     get_sampling_metadata([SamplingParams(logprobs=False, top_logprobs=5)])
+
+    # with pytest.raises(ValueError):
+    #     get_sampling_metadata([SamplingParams(logprobs=False, top_logprobs=-1)])
+
+    with pytest.raises(ValueError):
+        get_sampling_metadata([SamplingParams(logprobs=True, top_logprobs=-1)])
+
+    with pytest.raises(ValueError):
+        get_sampling_metadata([SamplingParams(logprobs=True, top_logprobs=6)])
+
+    with pytest.raises(ValueError):
+        get_sampling_metadata([SamplingParams(logprobs=True, top_logprobs=2.5)])
+
+
+def _test_logprobs():
+    for batch_size in [1, 4, 8]:
+        shape = (batch_size, vocab_size)
+        logits = torch.rand(shape, dtype=dtype, device=dev)
+
+        # No logprobs
+        sampling_params = [
+            SamplingParams(logprobs=False) for _ in range(batch_size)
+        ]
+        sampling_metadata = get_sampling_metadata(sampling_params)
+        output: SamplingOutput = sample(logits, sampling_metadata)
+        assert all([logprob_response is None for logprob_response in output.logprob_infos])
+
+        # Logprob only of a current token
+        sampling_params = [
+            SamplingParams(logprobs=True) for _ in range(batch_size)
+        ]
+        sampling_metadata = get_sampling_metadata(sampling_params)
+        output: SamplingOutput = sample(logits, sampling_metadata)
+        assert len(output.logprob_infos) == batch_size
+        for idx in range(batch_size):
+            assert output.logprob_infos[idx].current_token_id is not None
+            assert output.logprob_infos[idx].current_logprob is not None 
+            assert output.logprob_infos[idx].top_token_ids is None
+            assert output.logprob_infos[idx].top_logprobs is None
+
+        # Top-5 logprobs
+        sampling_params = [
+            SamplingParams(logprobs=True, top_logprobs=5) for _ in range(batch_size)
+        ]
+        sampling_metadata = get_sampling_metadata(sampling_params)
+        output: SamplingOutput = sample(logits, sampling_metadata)
+        assert len(output.logprob_infos) == batch_size
+        for idx in range(batch_size):
+            assert output.logprob_infos[idx].current_token_id is not None
+            assert output.logprob_infos[idx].current_logprob is not None
+            assert output.logprob_infos[idx].top_token_ids is not None
+            assert len(output.logprob_infos[idx].top_token_ids) == 5
+            assert output.logprob_infos[idx].top_logprobs is not None
+            assert len(output.logprob_infos[idx].top_logprobs) == 5
 
 if __name__ == "__main__":
     _test_temperature()
@@ -348,3 +418,5 @@ if __name__ == "__main__":
     _test_penalties()
     _test_top_p_top_k_checker()
     _test_top_p_top_k()
+    _test_logprobs_checker()
+    _test_logprobs()
