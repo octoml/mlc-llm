@@ -452,46 +452,31 @@ class ParamManager:
 
                 # Get the quantization function of this parameter.
                 f_quantize = param.quant_spec.get_quantize_func(param_info)
-                if f_quantize is None:
-                    # If the parameter does not have a quantization function, either it
-                    # does not need quantization or it is pre-quantized.
+
+                # Apply the quantization function.
+                quantized_data = bb.normalize(f_quantize(bb, provided_tensor_vars))
+                if isinstance(quantized_data.struct_info, relax.TupleStructInfo):
+                    fields = quantized_data.struct_info.fields
+                    n_tensor = len(fields)
+                    assert n_tensor > 1
+                    # Record the range of quantized tensors of this parameter.
                     self.param2qrange[param] = range(
                         len(quantized_params),
-                        len(quantized_params) + len(provided_tensor_vars),
+                        len(quantized_params) + n_tensor,
                     )
-                    quantized_params.extend(provided_tensor_vars)
+                    # Collect the quantized tensors to return.
+                    quantized_params.extend(
+                        relax.Var(f"{name}.{field.dtype}.{i}", field)
+                        for i, field in enumerate(fields)
+                    )
+
                 else:
-                    # If the parameter has a quantization function, it is not expected
-                    # to be pre-quantized.
-                    assert len(provided_tensor_vars) == 1, (
-                        "A parameter with quantization function is not expected "
-                        "to be pre-quantized."
+                    field = quantized_data.struct_info
+                    assert isinstance(field, relax.TensorStructInfo)
+                    self.param2qrange[param] = range(
+                        len(quantized_params), len(quantized_params) + 1
                     )
-
-                    # Apply the quantization function.
-                    quantized_data = bb.normalize(f_quantize(bb, provided_tensor_vars))
-                    if isinstance(quantized_data.struct_info, relax.TupleStructInfo):
-                        fields = quantized_data.struct_info.fields
-                        n_tensor = len(fields)
-                        assert n_tensor > 1
-                        # Record the range of quantized tensors of this parameter.
-                        self.param2qrange[param] = range(
-                            len(quantized_params),
-                            len(quantized_params) + n_tensor,
-                        )
-                        # Collect the quantized tensors to return.
-                        quantized_params.extend(
-                            relax.Var(f"{name}.{field.dtype}.{i}", field)
-                            for i, field in enumerate(fields)
-                        )
-
-                    else:
-                        field = quantized_data.struct_info
-                        assert isinstance(field, relax.TensorStructInfo)
-                        self.param2qrange[param] = range(
-                            len(quantized_params), len(quantized_params) + 1
-                        )
-                        quantized_params.append(relax.Var(f"{name}.{field.dtype}", field))
+                    quantized_params.append(relax.Var(f"{name}.{field.dtype}", field))
             bb.emit_func_output(relax.const(0, "int64"))
 
         return quantized_params
@@ -784,17 +769,7 @@ class ParamManager:
             param_info=param.param_info_dict[func_name],
             qparam_info=[qparam.struct_info for qparam in qparams],
         )
-        if f_dequantize is None:
-            # If the parameter does not have a dequantization function, its "quantized
-            # data" is expected to have only one element.
-            assert len(qparams) == 1, (
-                "A parameter without dequantization function is expected not to have "
-                'more than one "quantized data".'
-            )
-            return qparams[0]
-        else:
-            # Apply the dequantization function.
-            return bb.emit(f_dequantize(bb, qparams))
+        return f_dequantize(bb, qparams)
 
     def create_parameter_transformation(self, optimize_parameter_order: bool = True):
         """Produce an IRModule that can transform the parameters
@@ -1028,43 +1003,26 @@ def _create_quantize_func(param_manager: ParamManager) -> tvm.IRModule:
                     for loaded_tensor_idx in loaded_tensor_ranges[pidx]
                 ]
 
-                # Get the quantization function of this parameter.
                 f_quantize = param.quant_spec.get_quantize_func(param.param_info)
-                if f_quantize is None:
-                    # If the parameter does not have a quantization function, either it
-                    # does not need quantization or it is pre-quantized.
-                    param2qrange[param] = range(
-                        len(quantized_params),
-                        len(quantized_params) + len(param_vars),
-                    )
-                    quantized_params += param_vars
+                quantized_data = bb.emit(f_quantize(bb, param_vars))
+
+                if isinstance(quantized_data.struct_info, relax.TupleStructInfo):
+                    new_params = [
+                        bb.emit(relax.TupleGetItem(quantized_data, i))
+                        for i, _ in enumerate(quantized_data.struct_info.fields)
+                    ]
+                elif isinstance(quantized_data.struct_info, relax.TensorStructInfo):
+                    new_params = [quantized_data]
                 else:
-                    # If the parameter has a quantization function, it is not expected
-                    # to be pre-quantized.
-                    assert len(param_vars) == 1, (
-                        "A parameter with quantization function is not expected "
-                        "to be pre-quantized."
+                    raise TypeError(
+                        f"f_quantize must return Tuple or Tensor, but returned {quantized_data.struct_info}"
                     )
 
-                    # Apply the quantization function.
-                    quantized_data = bb.emit(f_quantize(bb, param_vars))
-
-                    if isinstance(quantized_data.struct_info, relax.TupleStructInfo):
-                        n_tensor = len(quantized_data.struct_info.fields)
-                        assert n_tensor > 1
-                        # Record the range of quantized tensors of this parameter.
-                        param2qrange[param] = range(
-                            len(quantized_params), len(quantized_params) + n_tensor
-                        )
-                        # Collect the quantized tensors to return.
-                        for i in range(n_tensor):
-                            quantized_params.append(bb.emit(relax.TupleGetItem(quantized_data, i)))
-                    else:
-                        assert isinstance(quantized_data.struct_info, relax.TensorStructInfo)
-                        param2qrange[param] = range(
-                            len(quantized_params), len(quantized_params) + 1
-                        )
-                        quantized_params.append(quantized_data)
+                # Record the range of quantized tensors of this parameter.
+                param2qrange[param] = range(
+                    len(quantized_params), len(quantized_params) + len(new_params)
+                )
+                quantized_params.extend(new_params)
 
             output = bb.emit_output(relax.Tuple(quantized_params))
         bb.emit_func_output(output)

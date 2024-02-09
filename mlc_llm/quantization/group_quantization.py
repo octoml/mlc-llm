@@ -22,7 +22,7 @@ class GroupQuantizationSpec(QuantizationSpec):
     group_size: int
     transpose: bool
 
-    def get_quantize_func(self, param_info: relax.TensorStructInfo) -> Optional[FQuantize]:
+    def get_quantize_func(self, param_info: relax.TensorStructInfo) -> FQuantize:
         return convert_TE_func(
             encoding_func(
                 sym=self.sym,
@@ -40,7 +40,7 @@ class GroupQuantizationSpec(QuantizationSpec):
         self,
         param_info: relax.TensorStructInfo,
         qparam_info: List[relax.TensorStructInfo],
-    ) -> Optional[FQuantize]:
+    ) -> FQuantize:
         return convert_TE_func(
             decoding_func(
                 sym=self.sym,

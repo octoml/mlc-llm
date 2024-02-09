@@ -6,7 +6,7 @@ import tvm
 from tvm import relax, te
 from tvm.relax.expr_functor import PyExprVisitor, visitor
 
-FQuantize = Callable[[relax.BlockBuilder, List[relax.Expr]], relax.Var]
+FQuantize = Callable[[relax.BlockBuilder, List[relax.Expr]], relax.Expr]
 FTEQuantize = Callable[[te.Tensor], List[te.Tensor]]
 FTEDequantize = Callable[[List[te.Tensor]], te.Tensor]
 
@@ -48,7 +48,7 @@ class QuantizationSpec:
         """
         return [pname], [param_info]
 
-    def get_quantize_func(self, param_info: relax.TensorStructInfo) -> Optional[FQuantize]:
+    def get_quantize_func(self, param_info: relax.TensorStructInfo) -> FQuantize:
         """Returns the function which computes quantization.
         Returning `None` means the parameter does not need quantization or is
         pre-quantized.
@@ -66,7 +66,7 @@ class QuantizationSpec:
         self,
         param_info: relax.TensorStructInfo,
         qparam_info: List[relax.TensorStructInfo],
-    ) -> Optional[FQuantize]:
+    ) -> FQuantize:
         """Returns the function which computes dequantization.
         Returning `None` means the parameter does not need dequantization.
 
@@ -84,15 +84,22 @@ class QuantizationSpec:
 class NoQuantizationSpec(QuantizationSpec):
     """The quantization specification that describes doing no quantization."""
 
-    def get_quantize_func(self, param_info: relax.TensorStructInfo) -> Optional[FQuantize]:
-        return None
+    @staticmethod
+    def no_op(bb: relax.BlockBuilder, inputs: List[relax.Expr]) -> relax.Expr:
+        assert (
+            len(inputs) == 1
+        ), "Using NoQuantizationSpec maps each argument to itself, and takes exactly one input"
+        return inputs[0]
+
+    def get_quantize_func(self, param_info: relax.TensorStructInfo) -> FQuantize:
+        return self.no_op
 
     def get_dequantize_func(
         self,
         param_info: relax.TensorStructInfo,
         qparam_info: List[relax.TensorStructInfo],
-    ) -> Optional[FQuantize]:
-        return None
+    ) -> FQuantize:
+        return self.no_op
 
 
 class ParamQuantKind(enum.IntEnum):

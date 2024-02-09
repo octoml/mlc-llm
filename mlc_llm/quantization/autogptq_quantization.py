@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Any, List, Literal, Optional, Tuple
 from tvm import relax, te, tir, topi
 from . import tir_utils
-from .quantization import QuantizationSpec
+from .quantization import QuantizationSpec, NoQuantizationSpec
 from .quantization import FQuantize, FTEDequantize, convert_TE_func
 
 
@@ -106,14 +106,14 @@ class AutogptqQuantizationSpec(QuantizationSpec):
         tokenizer.save_pretrained(quantized_model_path)
         return quantized_model_path
 
-    def get_quantize_func(self, param_info: relax.TensorStructInfo) -> Optional[FQuantize]:
-        return None
+    def get_quantize_func(self, param_info: relax.TensorStructInfo) -> FQuantize:
+        return NoQuantizationSpec.no_op
 
     def get_dequantize_func(
         self,
         param_info: relax.TensorStructInfo,
         qparam_info: List[relax.TensorStructInfo],
-    ) -> Optional[FQuantize]:
+    ) -> FQuantize:
         return convert_TE_func(
             decoding_func(
                 sym=self.sym,
