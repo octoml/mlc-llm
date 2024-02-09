@@ -198,14 +198,7 @@ def _test_penalties_checker():
 
 
 def _test_penalties():
-    batch_size = 1
-    shape = (batch_size, vocab_size)
-    logits = torch.rand(shape, dtype=dtype, device=dev)
-    presence_penalties = [0.8]
-    frequency_penalties = [0.3]
-    past_output_tokens = [[2, 2, 2, 3]]
-
-    def prepare_metadata(past_output_tokens):
+    def _prepare_metadata(past_output_tokens):
         count_map = []
         for past_output_tokens_per_req in past_output_tokens:
             # TODO: Check if this is the right range
@@ -218,9 +211,7 @@ def _test_penalties():
         mask_tensor = count_tensor > 0
         return count_tensor, mask_tensor
 
-    count_map, mask = prepare_metadata(past_output_tokens)
-
-    def get_expected_result(
+    def _get_expected_result(
         logits, count_map, mask, frequency_penalties, presence_penalties
     ):
         expected = torch.clone(logits)
@@ -232,83 +223,72 @@ def _test_penalties():
             )
         return expected
 
-    expected = get_expected_result(
-        logits, count_map, mask, frequency_penalties, presence_penalties
-    )
-
-    sampling_param = [
-        SamplingParams(
-            presence_penalty=presence_penalties[0],
-            frequency_penalty=frequency_penalties[0],
-        )
-    ]
-    sampling_metadata = get_sampling_metadata(
-        sampling_param, past_output_tokens=past_output_tokens
-    )
-    new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
-    assert torch.allclose(expected, new_logits)
-
-    batch_size = 3
-    shape = (batch_size, vocab_size)
-    logits = torch.rand(shape, dtype=dtype, device=dev)
-    presence_penalties = [0.8, 0.7, -0.8]
-    frequency_penalties = [-0.3, 2.0, 1.2]
-    past_output_tokens = [[2, 2, 2, 3, 5], [3, 1, 2, 4], [3, 3, 1]]
-
-    count_map, mask = prepare_metadata(past_output_tokens)
-    expected = get_expected_result(
-        logits, count_map, mask, frequency_penalties, presence_penalties
-    )
-
-    sampling_params = [
-        SamplingParams(
-            presence_penalty=presence_penalties[i],
-            frequency_penalty=frequency_penalties[i],
-        )
-        for i in range(batch_size)
-    ]
-    sampling_metadata = get_sampling_metadata(
-        sampling_params, past_output_tokens=past_output_tokens
-    )
-    new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
-    assert torch.allclose(expected, new_logits)
-
     for batch_size in [1, 4, 8]:
         shape = (batch_size, vocab_size)
         logits = torch.rand(shape, dtype=dtype, device=dev)
-        for temperature in [0,  0.5, 1.0, 1.5, 2.0]:
-            for repetition_penalty in [0.1, 1.0, 1.8]:
-                # use same temperature and repetition_penalty for each request
+        past_output_tokens = [[2, 2, 2, 3, 5]] * batch_size
+        count_map, mask = _prepare_metadata(past_output_tokens)
+
+        # presence_penalty
+        presence_penalties = [-2.0, -1.4, -0.8, 0.0, 0.5, 1.0, 1.5, 2.0]
+        for idx in range(len(presence_penalties)):
+            sampling_params = [
+                SamplingParams(
+                    presence_penalty=presence_penalties[i % len(presence_penalties)]
+                ) for i in range(idx, batch_size + idx)
+            ]
+            expected = _get_expected_result(
+                logits, 
+                count_map, 
+                mask, 
+                [0] * batch_size, 
+                (2 * presence_penalties)[idx : batch_size + idx]
+            )
+            sampling_metadata = get_sampling_metadata(
+                sampling_params, past_output_tokens=past_output_tokens
+            )
+            new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
+            assert torch.allclose(expected, new_logits)
+
+        # frequency_penalty
+        frequency_penalties = [-2.0, -1.4, -0.8, 0.0, 0.5, 1.0, 1.5, 2.0]
+        for idx in range(len(frequency_penalties)):
+            sampling_params = [
+                SamplingParams(
+                    frequency_penalty=frequency_penalties[i % len(frequency_penalties)]
+                ) for i in range(idx, batch_size + idx)
+            ]
+            expected = _get_expected_result(
+                logits, 
+                count_map, 
+                mask, 
+                (2 * frequency_penalties)[idx : batch_size + idx],
+                [0] * batch_size
+            )
+            sampling_metadata = get_sampling_metadata(
+                sampling_params, past_output_tokens=past_output_tokens
+            )
+            new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
+            assert torch.allclose(expected, new_logits)
+
+        # repetition_penalty
+        for temperature in [0.0, 0.5, 1.0, 1.5, 2.0]:
+            repetition_penalties = [0.1, 0.6, 1.0, 1.5, 1.8, 2.1, 2.5, 3.0]
+            for idx in range(len(repetition_penalties)):
                 sampling_params = [
                     SamplingParams(
                         temperature=temperature, 
-                        repetition_penalty=repetition_penalty
-                    ) for _ in range(batch_size)
+                        repetition_penalty=repetition_penalties[i % len(repetition_penalties)]
+                    ) for i in range(idx, batch_size + idx)
                 ]
-                expected = logits / (temperature * repetition_penalty) \
-                           if abs(temperature) > SAMPLING_EPS else logits
+                expected = torch.clone(logits)
+                for i in range(batch_size):
+                    expected[i] = logits[i] / (temperature * repetition_penalties[(idx + i) % len(repetition_penalties)]) \
+                            if abs(temperature) > SAMPLING_EPS else logits[i] / repetition_penalties[(idx + i) % len(repetition_penalties)]
                 sampling_metadata = get_sampling_metadata(sampling_params)
                 new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
-                for idx, response in enumerate(new_logits):
-                    assert torch.allclose(expected[idx], response)
-
-        # use different temperature and repetition_penalty
-        if batch_size > 1:
-            temperature = [i % 3 for i in range(batch_size)]
-            repetition_penalty = [i % 3 + 0.1 * (i % 3 + 1) for i in range(batch_size)]
-            sampling_params = [
-                SamplingParams(
-                    temperature=temperature_val, 
-                    repetition_penalty=rep_penalty
-                ) for (temperature_val, rep_penalty) in zip(temperature, repetition_penalty)
-            ]
-            for idx, (temperature_val, rep_penalty) in enumerate(zip(temperature, repetition_penalty)):
-                expected[idx] = logits[idx] / (temperature_val * rep_penalty) if abs(temperature_val) > SAMPLING_EPS else logits[idx]
-            sampling_metadata = get_sampling_metadata(sampling_params)
-            new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
-            for idx, response in enumerate(new_logits):
-                assert torch.allclose(expected[idx], response)
-
+                for batch_idx, response in enumerate(new_logits):
+                    assert torch.allclose(expected[batch_idx], response)
 
 def _test_top_p_top_k_checker():
     get_sampling_metadata([SamplingParams(top_p=0.8)])
