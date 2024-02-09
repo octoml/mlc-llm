@@ -1,6 +1,7 @@
 import torch
 import pytest
 from mlc_serve.model.sampler import (
+    SamplingState,
     adjust_logits, 
     sample, 
     SamplingOutput
@@ -395,20 +396,21 @@ def _test_logprobs():
             assert output.logprob_infos[idx].top_token_ids is None
             assert output.logprob_infos[idx].top_logprobs is None
 
-        # Top-5 logprobs
-        sampling_params = [
-            SamplingParams(logprobs=True, top_logprobs=5) for _ in range(batch_size)
-        ]
-        sampling_metadata = get_sampling_metadata(sampling_params)
-        output: SamplingOutput = sample(logits, sampling_metadata)
-        assert len(output.logprob_infos) == batch_size
-        for idx in range(batch_size):
-            assert output.logprob_infos[idx].current_token_id is not None
-            assert output.logprob_infos[idx].current_logprob is not None
-            assert output.logprob_infos[idx].top_token_ids is not None
-            assert len(output.logprob_infos[idx].top_token_ids) == 5
-            assert output.logprob_infos[idx].top_logprobs is not None
-            assert len(output.logprob_infos[idx].top_logprobs) == 5
+        # Top-k logprobs
+        for top_logprobs in [1, 3, 5]:
+            sampling_params = [
+                SamplingParams(logprobs=True, top_logprobs=top_logprobs) for _ in range(batch_size)
+            ]
+            sampling_metadata = get_sampling_metadata(sampling_params)
+            output: SamplingOutput = sample(logits, sampling_metadata)
+            assert len(output.logprob_infos) == batch_size
+            for idx in range(batch_size):
+                assert output.logprob_infos[idx].current_token_id is not None
+                assert output.logprob_infos[idx].current_logprob is not None
+                assert output.logprob_infos[idx].top_token_ids is not None
+                assert len(output.logprob_infos[idx].top_token_ids) == top_logprobs
+                assert output.logprob_infos[idx].top_logprobs is not None
+                assert len(output.logprob_infos[idx].top_logprobs) == top_logprobs
 
 if __name__ == "__main__":
     _test_temperature()
