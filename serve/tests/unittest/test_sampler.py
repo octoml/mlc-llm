@@ -51,6 +51,7 @@ def _test_temperature():
     for batch_size in [1, 4, 8]:
         shape = (batch_size, vocab_size)
         logits = torch.rand(shape, dtype=dtype, device=dev)
+
         for temperature in [0, 0.5, 1.0, 1.5, 2.0]:
             # use same temperature
             sampling_params = [SamplingParams(temperature=temperature) for _ in range(batch_size)]
@@ -59,6 +60,7 @@ def _test_temperature():
             new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
             for idx, response in enumerate(new_logits):
                 assert torch.allclose(expected[idx], response)
+
         # use different temperature
         if batch_size > 1:
             temperature = [i % 3 for i in range(batch_size)]
@@ -142,9 +144,12 @@ def _test_logit_bias():
 
 
 def _test_penalties_checker():
-    get_sampling_metadata([SamplingParams(presence_penalty=-1.0)])
-    get_sampling_metadata([SamplingParams(frequency_penalty=-1.0)])
-    get_sampling_metadata([SamplingParams(repetition_penalty=0.7)])
+    get_sampling_metadata([SamplingParams(presence_penalty=-2.0)])
+    get_sampling_metadata([SamplingParams(frequency_penalty=-2.0)])
+    get_sampling_metadata([SamplingParams(repetition_penalty=0.1)])
+    get_sampling_metadata([SamplingParams(presence_penalty=2.0)])
+    get_sampling_metadata([SamplingParams(frequency_penalty=2.0)])
+    get_sampling_metadata([SamplingParams(repetition_penalty=2.0)])
 
     with pytest.raises(ValueError):
         get_sampling_metadata([SamplingParams(presence_penalty=-2.1)])
@@ -153,7 +158,7 @@ def _test_penalties_checker():
         get_sampling_metadata([SamplingParams(frequency_penalty=-2.1)])
 
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(repetition_penalty=-2.1)])
+        get_sampling_metadata([SamplingParams(repetition_penalty=0.0)])
 
     with pytest.raises(ValueError):
         get_sampling_metadata([SamplingParams(presence_penalty=2.1)])
@@ -164,16 +169,35 @@ def _test_penalties_checker():
     with pytest.raises(ValueError):
         get_sampling_metadata(
             [
-                SamplingParams(frequency_penalty=1.1),
-                SamplingParams(repetition_penalty=2.1),
+                SamplingParams(frequency_penalty=2.1),
+                SamplingParams(repetition_penalty=1.1),
                 SamplingParams(presence_penalty=1.1),
-                SamplingParams(presence_penalty=3.1),
+                SamplingParams(frequency_penalties=1.1)
+            ]
+        )
+
+    with pytest.raises(ValueError):
+        get_sampling_metadata(
+            [
+                SamplingParams(frequency_penalty=1.1),
+                SamplingParams(repetition_penalty=1.1),
+                SamplingParams(presence_penalty=1.1),
+                SamplingParams(repetition_penalty=0.0),
+            ]
+        )
+
+    with pytest.raises(ValueError):
+        get_sampling_metadata(
+            [
+                SamplingParams(frequency_penalty=1.1),
+                SamplingParams(repetition_penalty=1.1),
+                SamplingParams(presence_penalty=1.1),
+                SamplingParams(presence_penalty=2.1),
             ]
         )
 
 
 def _test_penalties():
-    # TODO(vvchernov): Add test for repetition penalty
     batch_size = 1
     shape = (batch_size, vocab_size)
     logits = torch.rand(shape, dtype=dtype, device=dev)
@@ -248,6 +272,42 @@ def _test_penalties():
     )
     new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
     assert torch.allclose(expected, new_logits)
+
+    for batch_size in [1, 4, 8]:
+        shape = (batch_size, vocab_size)
+        logits = torch.rand(shape, dtype=dtype, device=dev)
+        for temperature in [0,  0.5, 1.0, 1.5, 2.0]:
+            for repetition_penalty in [0.1, 1.0, 1.8]:
+                # use same temperature and repetition_penalty for each request
+                sampling_params = [
+                    SamplingParams(
+                        temperature=temperature, 
+                        repetition_penalty=repetition_penalty
+                    ) for _ in range(batch_size)
+                ]
+                expected = logits / (temperature * repetition_penalty) \
+                           if abs(temperature) > SAMPLING_EPS else logits
+                sampling_metadata = get_sampling_metadata(sampling_params)
+                new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
+                for idx, response in enumerate(new_logits):
+                    assert torch.allclose(expected[idx], response)
+
+        # use different temperature and repetition_penalty
+        if batch_size > 1:
+            temperature = [i % 3 for i in range(batch_size)]
+            repetition_penalty = [i % 3 + 0.1 * (i % 3 + 1) for i in range(batch_size)]
+            sampling_params = [
+                SamplingParams(
+                    temperature=temperature_val, 
+                    repetition_penalty=rep_penalty
+                ) for (temperature_val, rep_penalty) in zip(temperature, repetition_penalty)
+            ]
+            for idx, (temperature_val, rep_penalty) in enumerate(zip(temperature, repetition_penalty)):
+                expected[idx] = logits[idx] / (temperature_val * rep_penalty) if abs(temperature_val) > SAMPLING_EPS else logits[idx]
+            sampling_metadata = get_sampling_metadata(sampling_params)
+            new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
+            for idx, response in enumerate(new_logits):
+                assert torch.allclose(expected[idx], response)
 
 
 def _test_top_p_top_k_checker():
