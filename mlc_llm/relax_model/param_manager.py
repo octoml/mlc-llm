@@ -402,13 +402,8 @@ class ParamManager:
                         gv.name_hint
                     )
 
-            # Cache mapping to avoid duplicate dequantization.
-            dequantized_cache: Dict[relax.Var, relax.Var] = {}
-
             # Define a var replacement function for applying dequantization.
             def f_replace(var: relax.Var, bb: relax.BlockBuilder) -> relax.Var:
-                if var in dequantized_cache:
-                    return dequantized_cache[var]
                 assert var in self.func_raw_param_map
 
                 func_name, param = self.func_raw_param_map[var]
@@ -417,7 +412,6 @@ class ParamManager:
 
                 dequantized = self._dequantize(param, relevant_quantized_params, bb, func_name)
 
-                dequantized_cache[var] = dequantized
                 return dequantized
 
             # Create the function mutator for applying dequantization.
