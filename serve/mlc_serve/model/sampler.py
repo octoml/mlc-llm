@@ -415,9 +415,11 @@ def adjust_logits(
     # in the right order.
     if apply_penalty:
         repetition_penalties_t = repetition_penalties_t[:, None].repeat(1, vocab_size)
-        logits = torch.where(
-            logits > 0, logits / repetition_penalties_t, logits * repetition_penalties_t
-        )
+        # RepetitionPenaltyLogitsProcessor approach from HF TGI API is used
+        # https://github.com/huggingface/transformers/blob/de11e654c962d5b23eb53a4387cd637b01987491/src/transformers/generation/logits_process.py#L332C1-L339C22
+        # where score is logits
+        # https://github.com/huggingface/transformers/blob/de11e654c962d5b23eb53a4387cd637b01987491/src/transformers/generation/logits_process.py#L76C1-L78C92
+        logits = logits / repetition_penalties_t
         bin_counts = torch.zeros(
             (batch_size, vocab_size + 1), dtype=torch.long, device=logits.device
         )
