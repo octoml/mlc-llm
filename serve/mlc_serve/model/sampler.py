@@ -53,6 +53,9 @@ class SamplingTensors:
         mask_top_logprob: torch.Tensor
             Mask for requests with top_logprob.
             shape: (LOGPROB_TOP_K_MAX) + 1, batch_size,)
+        mask_prompt: torch.Tensor
+            Mask for request with repetition penalty (prompt part)
+            shape: (batch_size, vocab_size)
         temperatures: torch.Tensor
             Tensor for temperature values
             shape: (batch_size, )
@@ -85,6 +88,7 @@ class SamplingTensors:
     mask_random: torch.Tensor
     mask_greedy: torch.Tensor
     mask_top_logprob: torch.Tensor
+    mask_prompt: torch.Tensor
     temperatures: torch.Tensor
     top_ps: torch.Tensor
     top_ks: torch.Tensor
@@ -102,6 +106,7 @@ class SamplingTensors:
         dev,
         list_mask_random: List[bool],
         list_mask_top_logprob: List[List[bool]],
+        list_mask_prompt: List[torch.Tensor],
         list_temperatures: List[float],
         list_top_ps: List[float],
         list_top_ks: List[int],
@@ -124,6 +129,7 @@ class SamplingTensors:
         )
         # `mask_top_logprob` will be on cpu
         mask_top_logprob = torch.from_numpy(list_mask_top_logprob)
+        mask_prompt = torch.stack(list_mask_prompt)
         temp = torch.tensor(
             list_temperatures,
             dtype=dtype,
@@ -185,6 +191,7 @@ class SamplingTensors:
             mask_random,
             mask_greedy,
             mask_top_logprob,
+            mask_prompt,
             temp.to(device=dev, non_blocking=True),
             top_ps.to(device=dev, non_blocking=True),
             top_ks.to(device=dev, non_blocking=True),
@@ -250,6 +257,7 @@ class SamplingState:
         vocab_size: int,
     ):
         list_mask_random = []
+        list_mask_prompt = []
         list_temperatures = []
         list_top_ps = []
         list_top_ks = []
@@ -307,6 +315,7 @@ class SamplingState:
             list_frequency_penalties.append(param.frequency_penalty)
             list_presence_penalties.append(param.presence_penalty)
             list_repetition_penalties.append(param.repetition_penalty)
+            list_mask_prompt.append(param.mask_prompt)
 
             if param.logit_bias_index:
                 assert param.logit_bias_value
@@ -348,6 +357,7 @@ class SamplingState:
             dev,
             list_mask_random,
             list_mask_top_logprob,
+            list_mask_prompt,
             list_temperatures,
             list_top_ps,
             list_top_ks,
@@ -404,6 +414,7 @@ def adjust_logits(
         sampling_state.sampling_tensors,
     )
     (
+        prompt_mask,
         temp_t,
         top_ps_t,
         top_ks_t,
@@ -414,6 +425,7 @@ def adjust_logits(
         logit_bias_indices_t,
         logit_bias_values_t,
     ) = (
+        sampling_tensors.mask_prompt,
         sampling_tensors.temperatures,
         sampling_tensors.top_ps,
         sampling_tensors.top_ks,
@@ -431,12 +443,6 @@ def adjust_logits(
     if apply_penalty:
         bin_counts, output_mask = get_bin_counts_and_mask(
             past_output_tokens_t,
-            vocab_size,
-            batch_size,
-        )
-
-        _, prompt_mask = get_bin_counts_and_mask(
-            prompt_tokens_t,
             vocab_size,
             batch_size,
         )
