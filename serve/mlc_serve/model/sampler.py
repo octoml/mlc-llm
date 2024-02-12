@@ -372,6 +372,21 @@ class SamplingState:
         )
 
 
+def get_bin_counts_and_mask(
+    tokens: torch.Tensor,
+    vocab_size: int,
+    num_seqs: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    bin_counts = torch.zeros((num_seqs, vocab_size + 1),
+                             dtype=torch.long,
+                             device=tokens.device)
+    bin_counts.scatter_add_(1, tokens, torch.ones_like(tokens))
+    bin_counts = bin_counts[:, :vocab_size]
+    mask = bin_counts > 0
+
+    return bin_counts, mask
+
+
 def adjust_logits(
         logits: torch.Tensor,
         sampling_state: SamplingState,
@@ -414,22 +429,31 @@ def adjust_logits(
     # (e.g., repetition penalty, frequency/presence penalty, logit bias, temperature...)
     # in the right order.
     if apply_penalty:
-        repetition_penalties_t = repetition_penalties_t[:, None].repeat(1, vocab_size)
-        # RepetitionPenaltyLogitsProcessor approach from HF TGI API is used
+        bin_counts, output_mask = get_bin_counts_and_mask(
+            past_output_tokens_t,
+            vocab_size,
+            batch_size,
+        )
+
+        _, prompt_mask = get_bin_counts_and_mask(
+            prompt_tokens_t,
+            vocab_size,
+            batch_size,
+        )
+
+        # Calculate repetition penalty use vLLM approach
+        # https://github.com/vllm-project/vllm/blob/0580aab02ffe60fee50bddc80b787828eb233c44/vllm/model_executor/layers/sampler.py#L177
+        # and RepetitionPenaltyLogitsProcessor approach from HF TGI API
         # https://github.com/huggingface/transformers/blob/de11e654c962d5b23eb53a4387cd637b01987491/src/transformers/generation/logits_process.py#L332C1-L339C22
         # where score is logits
         # https://github.com/huggingface/transformers/blob/de11e654c962d5b23eb53a4387cd637b01987491/src/transformers/generation/logits_process.py#L76C1-L78C92
-        logits = logits / repetition_penalties_t
-        bin_counts = torch.zeros(
-            (batch_size, vocab_size + 1), dtype=torch.long, device=logits.device
-        )
-        bin_counts.scatter_add_(
-            1, past_output_tokens_t, torch.ones_like(past_output_tokens_t)
-        )
-        bin_counts = bin_counts[:, :vocab_size]
-        mask = bin_counts > 0
+        repetition_penalties_t = repetition_penalties_t[:, None].repeat(1, vocab_size)
+        repetition_penalties_t[~(prompt_mask | output_mask)] = 1.0
+        logits /= repetition_penalties_t
+
+        # Calculate frequency and presence penalties
         logits -= frequency_penalties_t.unsqueeze_(dim=1) * bin_counts
-        logits -= presence_penalties_t.unsqueeze_(dim=1) * mask
+        logits -= presence_penalties_t.unsqueeze_(dim=1) * output_mask
 
     # Adjust temperature
     logits.div_(temp_t.unsqueeze(dim=1))
