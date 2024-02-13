@@ -392,6 +392,16 @@ class BuildArgs:
             "action": "store_true",
         },
     )
+    use_vllm_attention: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "(DEPREPCATED) Use vLLM paged KV cache and attention kernel, only relevant"
+                "when  enable_batching=True."
+            ),
+            "action": "store_true",
+        },
+    )
     paged_kv_cache_type: str = field(
         default="",
         metadata={"help": "The type of paged KV cache, either vllm or flash-decoding"},
@@ -450,6 +460,10 @@ def _parse_args(parsed) -> argparse.Namespace:
 
     utils.parse_target(parsed)
     utils.argparse_postproc_common(parsed)
+
+    if parsed.use_vllm_attention:
+        print("WARNING: --use-vllm-attention is deprecated. Use --paged-kv-cache-type vllm instead.")
+        parsed.paged_kv_cache_type = "vllm"
 
     if parsed.paged_kv_cache_type in ["vllm", "flash-decoding"]:
         assert parsed.enable_batching, "--enable_batching is required for using vLLM or Flash-Decoding."
