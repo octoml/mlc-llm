@@ -33,6 +33,8 @@ from .model_module import (
 from ..model.base import ModelArtifactConfig
 from ..openai_logprob_protocol import LogprobsContent, TopLogprobs
 from .constrained_sampling import JSONLogitsProcessor
+from .constrained.fsm_cache import FSMCache
+from .constrained import build_regex_from_object
 
 LOG = structlog.stdlib.get_logger(__name__)
 
@@ -243,6 +245,7 @@ def prepare_output(
 def get_requests_to_process(
     current_states: list[RequestState],
     cache_manager: KVCacheManager,
+    regex_fsm_cache: FSMCache,
     tokenizer: TokenizerP,
 ) -> Tuple[list[RequestType], bool, int]:
     requests: list[RequestType] = []
@@ -294,9 +297,11 @@ def get_requests_to_process(
             elif not state.is_prefilled:
                 # `JSONLogitsProcessor` needs to be created only once.
                 if state.sampling_params.json_schema is not None:
-                    state.sampling_params.logits_processor = JSONLogitsProcessor(
-                        state.sampling_params.json_schema, tokenizer._tokenizer
-                    )
+                    json_regex = build_regex_from_object(state.sampling_params.json_schema)
+                    state.sampling_params.regex_fsm = regex_fsm_cache.query(json_regex)
+                    # state.sampling_params.logits_processor = JSONLogitsProcessor(
+                    #     state.sampling_params.json_schema, tokenizer._tokenizer
+                    # )
 
                 if (
                     state.num_sequences == 1
@@ -379,6 +384,7 @@ def should_stop_by_length(
 class EngineBase:
     text_generator: TextGenerator
     tokenizer: TokenizerP
+    regex_fsm_cache: FSMCache
     model_artifact_config: ModelArtifactConfig
     max_context_length: int
     max_num_batched_tokens: int
@@ -395,6 +401,13 @@ class EngineBase:
     def __init__(self, model_module: ModelModule):
         self.text_generator = model_module.text_generator
         self.tokenizer = model_module.tokenizer
+        self.regex_fsm_cache = FSMCache(
+            "/home/lvega/hexagon/mlc-llm/dist/Mistral-7B-Instruct-v0.2-q0f16/model",
+            {
+                "tokenizer_mode": "auto",
+                "trust_remote_code": False,
+            },
+        )
         self.conversation_template = model_module.conversation_template
         self.cache_manager = model_module.cache_manager
         self.model_artifact_config = model_module.model_artifact_config
