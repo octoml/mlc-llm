@@ -56,7 +56,7 @@ class ConversationTemplate:
 class HfTokenizerModule:
     def __init__(self, tokenizer_path: Path):
         hf_tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_path, trust_remote_code=True
+            tokenizer_path, trust_remote_code=True,
             revision=None, tokenizer_revision=None,
         )
         self.tokenizer = Tokenizer(hf_tokenizer)

@@ -60,9 +60,10 @@ class StagingInferenceEngine(ScopedInferenceEngine):
 
         # TODO(@team): This is a temporary solution to expose model config to higher API layer.
         #   Follow-up with the proper solution
-        self.model_artifact_config = get_model_artifact_config(
-            model_module_loader_kwargs["model_artifact_path"]
-        )
+        # TODO fix for PT
+        # self.model_artifact_config = get_model_artifact_config(
+        #     model_module_loader_kwargs["model_artifact_path"]
+        # )
         self.tokenizer = tokenizer_module.tokenizer
         self.conversation_template = tokenizer_module.conversation_template
 

@@ -83,20 +83,16 @@ def sample_from_logits(
     requests: Sequence[RequestType],
     sampling_metadata: SamplingState,
     vocab_size: int,
-    copy_stream: torch.cuda.Stream,
     torch_dtype: torch.dtype,
     torch_dev: str,
     past_decode_tokens: List[List[int]],
 ) -> List[TextGenerationResult]:
     batch_size = logits.shape[0]
     assert batch_size == len(requests)
+
     # Convert to torch tensors if logits are in tvm ndarray
     if isinstance(logits, tvm.nd.NDArray):
         logits = torch.from_dlpack(logits)
-
-    # synchronization point for sampling tensors
-    # wait until all the tensors are loaded on GPU
-    torch.cuda.current_stream().wait_stream(copy_stream)
 
     # Logit processing for constraint sampling e.g., JSON Mode
     for i, (sequence_id, request) in enumerate(zip(sequence_ids, requests)):
@@ -137,6 +133,7 @@ def sample_from_logits(
             " or element < 0"
         )
         logits = torch.from_dlpack(logits)
+
         for i in range(batch_size):
             sequence_id = sequence_ids[i]
             logits_per_token = logits[i]
@@ -145,15 +142,13 @@ def sample_from_logits(
             # NOTE: Rerun the preparation for simplicity.
             # Assume this code path is taken rarely and the recomputation overhead is
             # marginal.
-            with torch.cuda.stream(copy_stream):
-                new_sampling_metadata = SamplingState.from_sampling_params(
-                    [sampling_param],
-                    [past_decode_tokens_per_request],
-                    torch_dtype,
-                    torch_dev,
-                    vocab_size,
-                )
-            torch.cuda.current_stream().wait_stream(copy_stream)
+            new_sampling_metadata = SamplingState.from_sampling_params(
+                [sampling_param],
+                [past_decode_tokens_per_request],
+                torch_dtype,
+                torch_dev,
+                vocab_size,
+            )
             maybe_sampling_output: Optional[SamplingOutput] = sample(
                 torch.unsqueeze(logits_per_token, 0),
                 new_sampling_metadata,
@@ -164,6 +159,7 @@ def sample_from_logits(
             logprob_info = maybe_sampling_output.logprob_infos[0]
             # Valid sample
             request = requests[i]
+
             if maybe_sampling_output is not None:
                 outputs.extend(
                     prepare_textgen_result(
@@ -195,6 +191,7 @@ def prepare_inputs(
     all_decode_block_tables,
     sliding_window,
     is_prefill,
+    block_size,
     num_decode_query_tokens=1,
     for_vllm=False,
 ):
@@ -292,8 +289,8 @@ def prepare_inputs(
 
     if not is_prefill:
         max_block_table_len = (
-            max_context_len + CacheManager.block_size - 1
-        ) // CacheManager.block_size
+            max_context_len + block_size - 1
+        ) // block_size
 
         padded_block_tables = _do_pad(block_tables, max_block_table_len, 0)
         block_tables = to_torch(padded_block_tables, torch.int)

@@ -2,7 +2,7 @@ import time
 import os
 import tempfile
 import socket
-from typing import List, Tuple
+from typing import List, Tuple, Sequence
 from pathlib import Path
 
 import structlog
@@ -45,8 +45,10 @@ from ..engine.model_module import (
     PrefillRequest,
     TextGenerationResult,
     TextGenerator,
-    RequestsType,
+    RequestType,
 )
+from .sampler import SamplingState
+
 
 LOG = structlog.stdlib.get_logger(__name__)
 
@@ -94,6 +96,10 @@ def profile_memory_usage(pt_model, seq_lens, num_hidden_layers):
     slot_mapping_tensor = torch.cuda.LongTensor(slot_mapping)
     prompt_lens_tensor = torch.cuda.LongTensor(seq_lens)
 
+    peak_memory = torch.cuda.max_memory_allocated()
+
+    print("peak memory before:", peak_memory / 1e9)
+
     input_metadata = InputMetadata(
         is_prompt=True,
         slot_mapping=slot_mapping_tensor,
@@ -122,6 +128,8 @@ def profile_memory_usage(pt_model, seq_lens, num_hidden_layers):
 
     torch.cuda.empty_cache()
 
+    print("peak memory after:", peak_memory / 1e9)
+
     return peak_memory
 
 
@@ -135,12 +143,15 @@ def profile_and_init_cache(
     num_hidden_layers = hf_config.num_hidden_layers
     head_size = hf_config.hidden_size // hf_config.num_attention_heads
 
+    block_size = 16
+
     if max_num_batched_tokens > 0:
         LOG.info("Running memory profiling.")
         seq_lens = [1] * max_num_batched_tokens
         used_memory_bytes = profile_memory_usage(pt_model, seq_lens, num_hidden_layers)
         num_blocks = get_num_cache_blocks(
             used_memory_bytes,
+            block_size,
             hf_config.num_hidden_layers,
             num_kv_heads,
             head_size,
@@ -154,7 +165,7 @@ def profile_and_init_cache(
         head_size,
         hf_config.num_hidden_layers,
         num_kv_heads,
-        CacheManager.block_size,
+        block_size,
         num_blocks,
     )
 
@@ -183,7 +194,7 @@ def load_model(hf_config, model_path):
 
 
 def generate(
-    requests: RequestsType,
+    requests: Sequence[RequestType],
     cache_info: KVCacheInfo,
     pt_model,
     cache_blocks,
@@ -198,20 +209,23 @@ def generate(
     all_token_ids = []
     sequence_ids = []
     prompt_lens = []
-    num_sequences = []
+    sampling_params = []
+    past_decode_tokens = []
 
     for request in requests:
         if isinstance(request, PrefillRequest):
             sequence_ids.append(get_prompt_sequence_id(request.request_id))
-            num_sequences.append(request.num_sequence)
             prompt_lens.append(len(request.token_ids))
+            past_decode_tokens.append([vocab_size])
         elif isinstance(request, DecodeRequest):
             sequence_ids.append(request.sequence_id)
             prompt_lens.append(request.prompt_token_counts)
+            past_decode_tokens.append([vocab_size, *request.token_ids])
         else:
             raise RuntimeError(f"Unsupported request type {request}")
 
         all_token_ids.append(request.token_ids)
+        sampling_params.append(request.sampling_params)
 
     selected_token_indices: List[int] = []
 
@@ -240,6 +254,7 @@ def generate(
         cache_info.decode_block_tables,
         sliding_window,
         is_prefill,
+        cache_info.block_size,
         for_vllm=True,
     )
 
@@ -300,7 +315,24 @@ def generate(
         torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
 
-    return sample_from_logits(logits, sequence_ids, requests, vocab_size)
+    sampling_metadata = SamplingState.from_sampling_params(
+        sampling_params,
+        past_decode_tokens,
+        torch.float32,
+        "cuda",
+        vocab_size,
+    )
+
+    return sample_from_logits(
+        logits,
+        sequence_ids,
+        requests,
+        sampling_metadata,
+        vocab_size,
+        torch.float32,
+        "cuda",
+        past_decode_tokens,
+    )
 
 
 class ModelRpcServer(rpyc.Service):
@@ -356,7 +388,7 @@ class ModelRpcServer(rpyc.Service):
 
     def exposed_generate(
         self,
-        requests: RequestsType,
+        requests: Sequence[RequestType],
         cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
         # TODO(masahi): Currently, obtaining inputs is the bottleneck.
@@ -461,7 +493,7 @@ class ModelRpcClient:
 
     def generate(
         self,
-        requests: RequestsType,
+        requests: Sequence[RequestType],
         cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
         def _generate(i):
@@ -527,11 +559,12 @@ class Model:
         self.sliding_window = hf_config.sliding_window
 
     def __del__(self):
-        del self.model_rpc
+        if self.model_rpc:
+            del self.model_rpc
 
     def generate(
         self,
-        requests: RequestsType,
+        requests: Sequence[RequestType],
         cache: KVCacheInfo,
     ) -> List[TextGenerationResult]:
         if self.model_rpc is None:
@@ -582,6 +615,7 @@ def init_torch_model(
 
     cache_manager = CacheManager(
         model.num_blocks,
+        16,
         hf_config.sliding_window,
     )
 

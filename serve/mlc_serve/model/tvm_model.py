@@ -33,6 +33,7 @@ from ..engine.model_module import (
 )
 from .sampler import SamplingState
 
+
 LOG = structlog.stdlib.get_logger(__name__)
 
 
@@ -106,6 +107,7 @@ def _prepare_inputs(
     all_decode_block_tables,
     sliding_window,
     is_prefill,
+    block_size,
     num_decode_query_tokens=1,
 ):
     (
@@ -123,6 +125,7 @@ def _prepare_inputs(
         all_decode_block_tables,
         sliding_window,
         is_prefill,
+        block_size,
         num_decode_query_tokens,
     )
 
@@ -159,15 +162,13 @@ class Model:
         self.num_shards = config.num_shards
 
         # TODO(@sunggg): Find a better way
-        if config.model_type == "llama":
-            self.torch_dtype = torch.float32
-        elif config.model_type == "mistral" or config.model_type == "mixtral":
+        if config.model_type in ["llama", "mistral", "mixtral"]:
             self.torch_dtype = torch.float32
         else:
             assert 0, f"{config.model_type} is NOT supported yet"
 
         self._copy_stream: torch.cuda.Stream = torch.cuda.Stream()
-        self.torch_dev: str = "cuda"
+        self.torch_dev = "cuda"
 
         if self.sliding_window:
             self.block_sliding_window = self.sliding_window // block_size
@@ -314,13 +315,17 @@ class Model:
         torch.cuda.nvtx.range_pop()
 
         last_query_logits = torch.from_dlpack(logits)[last_query_offsets]
+
+        # synchronization point for sampling tensors
+        # wait until all the tensors are loaded on GPU
+        torch.cuda.current_stream().wait_stream(self._copy_stream)
+
         return sample_from_logits(
             last_query_logits,
             sequence_ids,
             requests,
             sampling_metadata,
             self.vocab_size,
-            self._copy_stream,
             self.torch_dtype,
             self.torch_dev,
             past_decode_tokens,
@@ -404,10 +409,12 @@ class Model:
             cache.decode_block_tables,
             self.sliding_window,
             is_prefill,
+            cache.block_size,
             num_decode_query_tokens,
         )
 
         input_shape = input_ids.shape
+
         if self.disco_session:
             input_ids = copy_to_worker_0(self.disco_session, input_ids)
             positions = copy_to_worker_0(self.disco_session, positions)
@@ -498,13 +505,16 @@ class Model:
             # TODO(masahi, yelite): Proper logic for handling multi-query logits (speculative decoding).
             return []
 
+        # synchronization point for sampling tensors
+        # wait until all the tensors are loaded on GPU
+        torch.cuda.current_stream().wait_stream(self._copy_stream)
+
         return sample_from_logits(
             logits,
             sequence_ids,
             requests,
             sampling_metadata,
             self.vocab_size,
-            self._copy_stream,
             self.torch_dtype,
             self.torch_dev,
             past_decode_tokens,
