@@ -2,7 +2,7 @@ from pathlib import Path
 import structlog
 from typing import Sequence, List
 
-from .base import get_model_artifact_config
+from .base import ModelArtifactConfig
 from .paged_cache_manager import CacheManager
 from .tokenizer import HfTokenizerModule, ConversationTemplate, Tokenizer
 from .tvm_model import init_tvm_model
@@ -17,6 +17,7 @@ from ..engine.model_module import (
     TextGenerationResult,
     TextGenerator,
 )
+
 
 LOG = structlog.stdlib.get_logger(__name__)
 
@@ -78,9 +79,8 @@ class PagedCacheModelModule:
         self,
         model_artifact_path: Path,
         engine_config: MLCServeEngineConfig,
+        model_artifact_config: ModelArtifactConfig
     ):
-        model_artifact_config = get_model_artifact_config(model_artifact_path)
-
         # TODO(masahi): Make the model type configurable.
         model, cache_manager = init_tvm_model(model_artifact_config, engine_config)
 

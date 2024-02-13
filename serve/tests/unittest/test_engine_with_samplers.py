@@ -6,49 +6,12 @@ from mlc_serve.engine import (
     SamplingParams,
     StoppingCriteria,
     FinishReason,
-    get_engine_config,
 )
-from mlc_serve.engine.staging_engine import StagingInferenceEngine
-from mlc_serve.engine.sync_engine import SynchronousInferenceEngine
 from mlc_serve.model.base import get_model_artifact_config
-from mlc_serve.model.paged_cache_model import HfTokenizerModule, PagedCacheModelModule
-from mlc_serve.utils import get_default_mlc_serve_argparser, postproc_mlc_serve_args
+from mlc_serve.utils import get_default_mlc_serve_argparser, postproc_mlc_serve_args, create_mlc_engine
 import random
 from pydantic import BaseModel
 from typing import List
-
-
-def create_engine(
-    model_artifact_path,
-    max_num_batched_tokens,
-    use_staging_engine,
-):
-    engine_config = get_engine_config(
-        {
-            "use_staging_engine": use_staging_engine,
-            "max_num_batched_tokens": max_num_batched_tokens,
-            # Use defaults for "min_decode_steps", "max_decode_steps"
-        }
-    )
-
-    if use_staging_engine:
-        engine = StagingInferenceEngine(
-            tokenizer_module=HfTokenizerModule(model_artifact_path),
-            model_module_loader=PagedCacheModelModule,
-            model_module_loader_kwargs={
-                "model_artifact_path": model_artifact_path,
-                "engine_config": engine_config,
-            },
-        )
-        engine.start()
-    else:
-        engine = SynchronousInferenceEngine(
-            PagedCacheModelModule(
-                model_artifact_path=model_artifact_path,
-                engine_config=engine_config,
-            )
-        )
-    return engine
 
 
 def create_request(
@@ -433,12 +396,11 @@ if __name__ == "__main__":
     parser = get_default_mlc_serve_argparser("test engine with samplers")
     args = parser.parse_args()
     postproc_mlc_serve_args(args)
-    max_num_batched_tokens = 2048
+    args.max_num_batched_tokens = 2048
 
     # Test staging engines
-    staging_engine = create_engine(
-        args.model_artifact_path, max_num_batched_tokens, use_staging_engine=True
-    )
+    staging_engine = create_mlc_engine(args)
+
     _test_max_tokens(staging_engine)
     _test_ignore_eos(staging_engine)
     # TODO (@sunggg): There is something stateful.
@@ -452,9 +414,9 @@ if __name__ == "__main__":
     staging_engine.stop()
 
     # Test sync engines
-    sync_engine = create_engine(
-        args.model_artifact_path, max_num_batched_tokens, use_staging_engine=False
-    )
+    args.use_staging_engine = False
+    sync_engine = create_mlc_engine(args)
+
     _test_max_tokens(sync_engine)
     _test_ignore_eos(sync_engine)
     _test_stop(sync_engine)
