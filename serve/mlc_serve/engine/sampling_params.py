@@ -107,7 +107,7 @@ class SamplingParams:
             raise ValueError(f"top_p must be in (0, 1], got {self.top_p}.")
 
         if not isinstance(self.top_k, int):
-            raise ValueError(f"top_k must be integer.")
+            raise TypeError(f"top_k must be integer.")
 
         if self.top_k < -1 or self.top_k == 0:
             raise ValueError(
@@ -133,8 +133,8 @@ class SamplingParams:
                     f"top_logprobs must be between 0 and {LOGPROB_TOP_K_MAX}, got {self.top_logprobs}."
                 )
             if not isinstance(self.top_logprobs, int):
-                raise ValueError(
-                    "top_logprobs muse be integer"
+                raise TypeError(
+                    "top_logprobs must be integer"
                 )
 
     def _verify_greedy_sampling(self) -> None:

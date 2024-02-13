@@ -502,8 +502,8 @@ def sample(
             assert sampling_metadata.sampling_params[batch_idx].logprobs
             top_k = sampling_metadata.sampling_params[batch_idx].top_logprobs
             logprob_infos[batch_idx] = RawLogprobsInfo(
-                current_token_id=next_token,
-                current_logprob=logprobs[batch_idx][next_token],
+                current_token_id=int(next_token),
+                current_logprob=float(logprobs[batch_idx][next_token]),
                 top_token_ids=top_tokens[idx][:top_k],
                 top_logprobs=top_logprobs[idx][:top_k],
             )

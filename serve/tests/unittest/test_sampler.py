@@ -431,10 +431,10 @@ def _test_logprobs():
         output: SamplingOutput = sample(logits, sampling_metadata)
         assert len(output.logprob_infos) == batch_size
         for idx in range(batch_size):
-            assert output.logprob_infos[idx].current_token_id is not None
-            assert output.logprob_infos[idx].current_logprob is not None 
-            assert output.logprob_infos[idx].top_token_ids is None
-            assert output.logprob_infos[idx].top_logprobs is None
+            assert isinstance(output.logprob_infos[idx].current_token_id, int)
+            assert isinstance(output.logprob_infos[idx].current_logprob, float)
+            assert output.logprob_infos[idx].top_token_ids.nelement() == 0
+            assert output.logprob_infos[idx].top_logprobs.nelement() == 0
 
         # Top-k logprobs
         for top_logprobs in [1, 3, 5]:
@@ -445,11 +445,11 @@ def _test_logprobs():
             output: SamplingOutput = sample(logits, sampling_metadata)
             assert len(output.logprob_infos) == batch_size
             for idx in range(batch_size):
-                assert output.logprob_infos[idx].current_token_id is not None
-                assert output.logprob_infos[idx].current_logprob is not None
-                assert output.logprob_infos[idx].top_token_ids is not None
+                assert isinstance(output.logprob_infos[idx].current_token_id, int)
+                assert isinstance(output.logprob_infos[idx].current_logprob, float)
+                assert output.logprob_infos[idx].top_token_ids.nelement() != 0
                 assert len(output.logprob_infos[idx].top_token_ids) == top_logprobs
-                assert output.logprob_infos[idx].top_logprobs is not None
+                assert output.logprob_infos[idx].top_logprobs.nelement() != 0
                 assert len(output.logprob_infos[idx].top_logprobs) == top_logprobs
 
 if __name__ == "__main__":
