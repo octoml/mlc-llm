@@ -433,7 +433,7 @@ if __name__ == "__main__":
     parser = get_default_mlc_serve_argparser("test engine with samplers")
     args = parser.parse_args()
     postproc_mlc_serve_args(args)
-    max_num_batched_tokens = 2048
+    args.max_num_batched_tokens = 2048
 
     # Test staging engines
     staging_engine = create_mlc_engine(args)
@@ -451,6 +451,7 @@ if __name__ == "__main__":
     staging_engine.stop()
 
     # Test sync engines
+    args.use_staging_engine = False
     sync_engine = create_mlc_engine(args)
 
     _test_max_tokens(sync_engine)
