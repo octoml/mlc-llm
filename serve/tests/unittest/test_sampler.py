@@ -306,7 +306,7 @@ def _test_top_p_top_k_checker():
     with pytest.raises(ValueError):
         get_sampling_metadata([SamplingParams(top_k=0)])
 
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         get_sampling_metadata([SamplingParams(top_k=0.8)])
 
     with pytest.raises(ValueError):
@@ -406,7 +406,7 @@ def _test_logprobs_checker():
     with pytest.raises(ValueError):
         get_sampling_metadata([SamplingParams(logprobs=True, top_logprobs=6)])
 
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         get_sampling_metadata([SamplingParams(logprobs=True, top_logprobs=2.5)])
 
 
