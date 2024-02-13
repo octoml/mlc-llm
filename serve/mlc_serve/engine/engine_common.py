@@ -3,6 +3,7 @@ Common utilites for engine classes.
 """
 
 import time
+import json
 from typing import Tuple, Deque, Dict, Optional, Union, Callable, List
 from collections import deque
 from threading import Condition, Lock
@@ -297,7 +298,8 @@ def get_requests_to_process(
             elif not state.is_prefilled:
                 # `JSONLogitsProcessor` needs to be created only once.
                 if state.sampling_params.json_schema is not None:
-                    json_regex = build_regex_from_object(state.sampling_params.json_schema)
+                    json_schema = json.dumps(state.sampling_params.json_schema)
+                    json_regex = build_regex_from_object(json_schema)
                     state.sampling_params.regex_fsm = regex_fsm_cache.query(json_regex)
                     # state.sampling_params.logits_processor = JSONLogitsProcessor(
                     #     state.sampling_params.json_schema, tokenizer._tokenizer

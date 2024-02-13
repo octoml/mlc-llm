@@ -75,7 +75,9 @@ class SamplingParams:
     vocab_size = 32000
     json_schema: Optional[Dict[str, Any]] = None
     logits_processor: Optional[Any] = None
-    regex_fsm: Optional[Any] = None 
+    regex_fsm: Optional[Any] = None
+    regex_fsm_state: int = 0
+
 
     def __post_init__(self):
         if self.logit_bias:
