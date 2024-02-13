@@ -49,14 +49,11 @@ router = APIRouter()
 def _get_sampling_params(
     request: ChatCompletionRequest, model_artifact_config: ModelArtifactConfig
 ) -> SamplingParams:
-    sampling_params = SamplingParams(
-        # These params came from vllm
-        # TODO(amnalyshe): should they be put into mlc-llm batch serving ChatCompletionRequest?
-        # best_of=request.best_of,
-        # top_k=request.top_k,
-        # ignore_eos=request.ignore_eos,
-        # use_beam_search=request.use_beam_search,
-    )
+    sampling_params = SamplingParams()
+    assert model_artifact_config.vocab_size is not None
+    sampling_params.vocab_size =  model_artifact_config.vocab_size
+
+    # Initialize optional parameters
     if request.presence_penalty is not None:
         sampling_params.presence_penalty = request.presence_penalty
     if request.frequency_penalty is not None:
@@ -74,7 +71,9 @@ def _get_sampling_params(
         sampling_params.logprobs = request.logprobs
     if request.response_format and request.response_format.type == "json_object":
         sampling_params.json_schema = request.response_format.response_schema
-    sampling_params.vocab_size = model_artifact_config.vocab_size
+
+    sampling_params.verify()
+
     return sampling_params
 
 

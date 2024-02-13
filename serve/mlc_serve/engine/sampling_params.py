@@ -80,7 +80,7 @@ class SamplingParams:
         if self.logit_bias:
             self.logit_bias_index = list(self.logit_bias.keys())
             self.logit_bias_value = list(self.logit_bias.values())
-        self._verify_args()
+        self.verify()
         if self.temperature < _SAMPLING_EPS:
             # Zero temperature means greedy sampling.
             self.top_p = 1.0
@@ -89,7 +89,7 @@ class SamplingParams:
         if not self.logprobs:
             self.top_logprobs = 0
 
-    def _verify_args(self) -> None:
+    def verify(self) -> None:
         if not -2.0 <= self.presence_penalty <= 2.0:
             raise ValueError(
                 "presence_penalty must be in [-2, 2], got " f"{self.presence_penalty}."
