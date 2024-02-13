@@ -21,12 +21,9 @@ from .base import (
     ScopedInferenceEngine,
     SequenceOutput,
 )
-from .engine_common import (
-    get_new_request_state,
-    update_sequence,
-    logprobs_detokenize
-)
+from .engine_common import get_new_request_state, prepare_output
 from .model_module import ModelModule, TokenizerModule
+from ..model.base import get_model_artifact_config
 from .staging_engine_worker import (
     AddRequestsCommand,
     CancelRequestCommand,
@@ -61,6 +58,11 @@ class StagingInferenceEngine(ScopedInferenceEngine):
         self.requests_lock = Lock()
         self.requests = dict[RequestId, RequestState]()
 
+        # TODO(@team): This is a temporary solution to expose model config to higher API layer.
+        #   Follow-up with the proper solution
+        self.model_artifact_config = get_model_artifact_config(
+            model_module_loader_kwargs["model_artifact_path"]
+        )
         self.tokenizer = tokenizer_module.tokenizer
         self.conversation_template = tokenizer_module.conversation_template
 
@@ -209,6 +211,10 @@ class StagingInferenceEngine(ScopedInferenceEngine):
 
                 with structlog.contextvars.bound_contextvars(**state.contextvars):
                     if seq_output.error is not None:
+                        LOG.exception(
+                            "An error occurred during generating sequence outputs.",
+                            exc=seq_output.error,
+                        )
                         outputs.append(
                             RequestOutput(
                                 request_id,
@@ -222,17 +228,19 @@ class StagingInferenceEngine(ScopedInferenceEngine):
 
                     gen_seq = state.generation_sequences[seq_output.id.sequence_index]
                     new_token_ids = seq_output.new_tokens
-
+                    LOG.debug(f"New token ids: {new_token_ids}")
                     if new_token_ids:
-                        delta = update_sequence(
+                        delta, logprob_info = prepare_output(
                             gen_seq,
                             new_token_ids,
                             state.prompt_token_ids,
+                            seq_output.logprob_info,
                             self.tokenizer,
                             state.stopping_criteria,
                         )
                     else:
                         delta = None
+                        logprob_info = []
 
                     if not state.is_prefilled:
                         # Successfully completed a prefill request
@@ -252,7 +260,7 @@ class StagingInferenceEngine(ScopedInferenceEngine):
                         delta,
                         finish_reason,
                         num_generated_tokens=len(gen_seq.generated_token_ids),
-                        logprob_info=logprobs_detokenize(self.tokenizer, seq_output.logprob_info),
+                        logprob_info=logprob_info,
                     )
 
                     seq_outputs[request_id].append(output)

@@ -20,9 +20,8 @@ from .engine_common import (
     should_stop_by_length,
     get_new_request_state,
     get_requests_to_process,
-    update_sequence,
+    prepare_output,
     EngineBase,
-    logprobs_detokenize
 )
 from .model_module import (
     ModelModule,
@@ -144,7 +143,7 @@ class SynchronousInferenceEngine(InferenceEngine, EngineBase):
             return InferenceStepResult(outputs)
 
         requests, _, _ = get_requests_to_process(
-            list(self.current_batch.values()), self.cache_manager
+            list(self.current_batch.values()), self.cache_manager, self.tokenizer
         )
         results = self.text_generator.generate(requests, self.cache_manager.get_cache())
         logger.debug("Finished text generation.")
@@ -191,10 +190,11 @@ class SynchronousInferenceEngine(InferenceEngine, EngineBase):
                     gen_seq.is_finished = True
                     break
 
-            delta = update_sequence(
+            delta, logprob_info = prepare_output(
                 gen_seq,
                 new_token_ids,
                 state.prompt_token_ids,
+                res.logprob_info,
                 self.tokenizer,
                 state.stopping_criteria,
             )
@@ -223,7 +223,7 @@ class SynchronousInferenceEngine(InferenceEngine, EngineBase):
                     delta,
                     num_generated_tokens=len(gen_seq.generated_token_ids),
                     finish_reason=finish_reason,
-                    logprob_info=logprobs_detokenize(self.tokenizer, res.logprob_info),
+                    logprob_info=logprob_info,
                 )
             )
 

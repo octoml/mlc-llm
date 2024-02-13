@@ -4,7 +4,7 @@ The worker for StagingInferenceEngine
 import time
 import multiprocessing
 import multiprocessing.synchronize
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from threading import Thread, Lock
 from typing import Callable, Optional, Union, Any, Dict, List
 
@@ -12,12 +12,12 @@ import structlog
 
 from .base import (
     FinishReason,
-    RawLogprobsInfos,
     RequestId,
     RequestState,
     ValidationError,
     SequenceId,
     GenerationSequence,
+    RawLogprobsInfo,
 )
 
 from .metrics import PrometheusMetrics
@@ -66,7 +66,7 @@ class SequenceGenerationOutput:
     new_tokens: List[int]
     finish_reason: Optional[FinishReason] = None
     error: Optional[Union[str, ValidationError]] = None
-    logprob_info: Optional[RawLogprobsInfos] = None
+    logprob_info: Optional[List[Optional[RawLogprobsInfo]]] = None
 
 
 @dataclass
@@ -285,7 +285,6 @@ class GenerationLoopWorker(EngineBase):
             ):
                 gen_seq.is_finished = True
                 finish_reason = FinishReason.Length
-
             outputs.append(
                 SequenceGenerationOutput(
                     id=res.sequence_id,
@@ -330,7 +329,7 @@ class GenerationLoopWorker(EngineBase):
 
     def _get_requests_to_process(self):
         requests, is_prompt_batch, token_counts = get_requests_to_process(
-            self.current_batch.values(), self.cache_manager
+            self.current_batch.values(), self.cache_manager, self.tokenizer
         )
 
         if is_prompt_batch:

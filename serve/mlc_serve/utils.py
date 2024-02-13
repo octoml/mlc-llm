@@ -6,7 +6,7 @@ import torch
 import random
 import argparse
 
-from mlc_serve.engine import get_engine_config
+from mlc_serve.engine import get_engine_config, InferenceEngine
 from mlc_serve.logging_utils import configure_logging
 from mlc_serve.engine.staging_engine import StagingInferenceEngine
 from mlc_serve.engine.sync_engine import SynchronousInferenceEngine
@@ -47,7 +47,7 @@ def postproc_mlc_serve_args(args):
     random.seed(args.seed)
 
 
-def create_mlc_engine(args: argparse.Namespace):
+def create_mlc_engine(args: argparse.Namespace) -> InferenceEngine:
     model_type = "tvm"
     num_shards = None
 
@@ -72,7 +72,8 @@ def create_mlc_engine(args: argparse.Namespace):
         }
     )
 
-    # TODO(@team): There is a type mismatch in the definition. Let's fix this when have time.
+    engine: InferenceEngine
+
     if args.use_staging_engine:
         if model_type == "tvm":
             tokenizer_path = args.model_artifact_path.joinpath("model")
@@ -81,7 +82,7 @@ def create_mlc_engine(args: argparse.Namespace):
 
         engine = StagingInferenceEngine(
             tokenizer_module=HfTokenizerModule(tokenizer_path),
-            model_module_loader=PagedCacheModelModule,  # type: ignore
+            model_module_loader=PagedCacheModelModule,
             model_module_loader_kwargs={
                 "model_artifact_path": args.model_artifact_path,
                 "engine_config": engine_config,

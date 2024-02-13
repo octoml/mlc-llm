@@ -310,11 +310,11 @@ class MoE(nn.Module):
             )
         )
 
-    def topk(self, x, k):
+    def gating_softmax_topk(self, x, k):
         index_dtype = "int32"
 
         @T.prim_func
-        def top2_func(
+        def top2_softmax_func(
             x_handle: T.handle,
             out_handle: T.handle,
             out_index_handle: T.handle,
@@ -325,6 +325,8 @@ class MoE(nn.Module):
             out_index = T.match_buffer(out_index_handle, (total_rows, 2), index_dtype)
             local_top_k = T.alloc_buffer((2,), dtype=self.dtype, scope="local")
             local_top_k_index = T.alloc_buffer((2,), dtype=index_dtype, scope="local")
+            local_top_k_f32 = T.alloc_buffer((2,), dtype="float32", scope="local")
+            local_top_k_max = T.alloc_buffer((1,), dtype="float32", scope="local")
             T.func_attr({"tir.noalias": True, "tir.is_scheduled": True})
             for io in T.thread_binding(0, T.ceildiv(total_rows, T.int64(1024)), "blockIdx.x"):
                 for ii in T.thread_binding(0, T.min(total_rows, T.int64(1024)), "threadIdx.x"):
@@ -346,15 +348,28 @@ class MoE(nn.Module):
                                     local_top_k[1] = x[vi, vk]
                                     local_top_k_index[1] = vk
                         for j in T.unroll(2):
+                            with T.block("cast"):
+                                vj = T.axis.remap("S", [j])
+                                local_top_k_f32[vj] = T.cast(local_top_k[j], "float32")
+                        with T.block("max"):
+                            local_top_k_max[0] = T.max(local_top_k_f32[0], local_top_k_f32[1])
+                        for j in T.unroll(2):
                             with T.block("output"):
                                 vj = T.axis.remap("S", [j])
-                                out[vi, vj] = local_top_k[vj]
+                                out[vi, vj] = T.cast(
+                                    T.exp(local_top_k_f32[j] - local_top_k_max[0])
+                                    / (
+                                        T.exp(local_top_k_f32[0] - local_top_k_max[0])
+                                        + T.exp(local_top_k_f32[1] - local_top_k_max[0])
+                                    ),
+                                    self.dtype,
+                                )
                                 out_index[vi, vj] = local_top_k_index[vj]
 
         if k != 2:
             raise NotImplementedError("only support num_experts_per_token=2 for now")
         bb = relax.BlockBuilder.current()
-        gvar = bb.add_func(top2_func, "top2")
+        gvar = bb.add_func(top2_softmax_func, "top2_softmax")
         return bb.emit(
             relax.call_tir(
                 gvar,
@@ -388,15 +403,8 @@ class MoE(nn.Module):
 
         router_logits = self.gate(hidden_states)
 
-        if router_logits.struct_info.dtype != "float32":
-            router_logits = nn.emit(relax.op.astype(router_logits, "float32"))
-        expert_weights = nn.emit(relax.op.nn.softmax(router_logits))
-        if expert_weights.struct_info.dtype != self.dtype:
-            expert_weights = nn.emit(relax.op.astype(expert_weights, self.dtype))
-
-        expert_weights, expert_indices = self.topk(expert_weights, k=self.num_experts_per_tok)
-        expert_weights = nn.emit(
-            relax.op.divide(expert_weights, relax.op.sum(expert_weights, axis=1, keepdims=True))
+        expert_weights, expert_indices = self.gating_softmax_topk(
+            router_logits, k=self.num_experts_per_tok
         )
 
         expert_mask = self.topk_mask(expert_indices)

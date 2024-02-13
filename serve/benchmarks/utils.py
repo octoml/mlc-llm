@@ -1,4 +1,9 @@
 """Utils for benchmark scripts"""
+from pydantic import BaseModel
+
+
+class Output(BaseModel):
+    answer: str
 
 
 def add_sampling_flags(parser):
@@ -18,6 +23,11 @@ def add_sampling_flags(parser):
         help="Apply top-p and top-k.",
     )
     parser.add_argument(
+        "--apply-json-mode",
+        action="store_true",
+        help="Apply json mode.",
+    )
+    parser.add_argument(
         "--apply-all-sampling-params",
         action="store_true",
         help="Apply all penalties, logit bias, top-p and top-k.",
@@ -26,13 +36,13 @@ def add_sampling_flags(parser):
         "--logprobs",
         action="store_true",
         default=False,
-        help="Switch on logprobs output"
+        help="Switch on logprobs output",
     )
     parser.add_argument(
         "--top-logprobs",
         type=int,
         default=5,
-        help="Number of top logprobs to output, limited by 5. Works only with logprobs true."
+        help="Number of top logprobs to output, limited by 5. Works only with logprobs true.",
     )
 
 
@@ -47,12 +57,14 @@ def postproc_sampling_args(args):
         "top_k": -1,
         "logprobs": False,
         "top_logprobs": 5,
+        "json_schema": None,
     }
 
     if args.apply_all_sampling_params:
         args.apply_penalties = True
         args.apply_logit_bias = True
         args.apply_top_p_top_k = True
+        args.apply_json_mode = True
 
     if args.apply_penalties:
         args.sampling_setting["presence_penalty"] = 0.7
@@ -69,3 +81,6 @@ def postproc_sampling_args(args):
     if args.logprobs:
         args.sampling_setting["logprobs"] = True
         args.sampling_setting["top_logprobs"] = args.top_logprobs
+
+    if args.apply_json_mode:
+        args.sampling_setting["json_schema"] = Output.model_json_schema()

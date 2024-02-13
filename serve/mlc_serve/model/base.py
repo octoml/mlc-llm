@@ -10,6 +10,7 @@ class ModelArtifactConfig:
     model_artifact_path: Optional[str] = None
     num_shards: Optional[int] = None
     quantization: Optional[str] = None
+    paged_kv_cache_type: Optional[str] = None
     model_type: Optional[str] = None
     library_name: Optional[str] = None
     max_context_length: Optional[int] = None
@@ -48,5 +49,8 @@ def get_model_artifact_config(model_artifact_path):
 
         with open(config_file_path, mode="rt", encoding="utf-8") as f:
             json_object.update(json.load(f))
+
+    if not "paged_kv_cache_type" in json_object:
+        json_object["paged_kv_cache_type"] = "vllm"
 
     return ModelArtifactConfig._from_json(json_object)

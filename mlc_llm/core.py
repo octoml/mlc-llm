@@ -4,7 +4,6 @@ import functools
 import json
 import os
 import pickle
-import shutil
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Dict, Optional
 
@@ -157,8 +156,9 @@ class BuildArgs:
     pdb: bool
         If set, drop into a pdb debugger on error.
 
-    use_vllm_attention: bool
-        Use vLLM paged KV cache and attention kernel, only relevant when enable_batching=True.
+    paged_kv_cache_type: str
+        The type of paged KV cache to use, only relevant when enable_batching=True.
+        Currently "vllm" and "flash-decoding" are supported.
     """
     model: str = field(
         default="auto",
@@ -392,19 +392,18 @@ class BuildArgs:
             "action": "store_true",
         },
     )
-    # TODO(masahi): Remove the use of this option with paged_kv_cache_type
     use_vllm_attention: bool = field(
         default=False,
         metadata={
             "help": (
-                "Use vLLM paged KV cache and attention kernel, only relevant when "
-                "enable_batching=True."
+                "(DEPREPCATED) Use vLLM paged KV cache and attention kernel, only relevant"
+                "when  enable_batching=True."
             ),
             "action": "store_true",
         },
     )
     paged_kv_cache_type: str = field(
-        default="vllm",
+        default="",
         metadata={"help": "The type of paged KV cache, either vllm or flash-decoding"},
     )
 
@@ -463,11 +462,21 @@ def _parse_args(parsed) -> argparse.Namespace:
     utils.argparse_postproc_common(parsed)
 
     if parsed.use_vllm_attention:
-        assert parsed.enable_batching, "--enable_batching is required for using vLLM attention."
-        assert parsed.target_kind == "cuda", "vLLM attention is only supported for CUDA."
-        assert tvm.get_global_func(
-            "tvm.contrib.vllm.single_query_cached_kv_attention", True
-        ), "TVM needs to be built with -DUSE_VLLM=ON."
+        print("WARNING: --use-vllm-attention is deprecated. Use --paged-kv-cache-type vllm instead.")
+        parsed.paged_kv_cache_type = "vllm"
+
+    if parsed.paged_kv_cache_type in ["vllm", "flash-decoding"]:
+        assert parsed.enable_batching, "--enable_batching is required for using vLLM or Flash-Decoding."
+        assert parsed.target_kind == "cuda", "vLLM and Flash-Decoding are only supported for CUDA."
+
+        if parsed.paged_kv_cache_type == "vllm":
+            assert tvm.get_global_func(
+                "tvm.contrib.vllm.single_query_cached_kv_attention", True
+            ), "TVM needs to be built with -DUSE_VLLM=ON to use vLLM."
+        elif parsed.paged_kv_cache_type == "flash-decoding":
+            assert tvm.get_global_func(
+                "tvm.contrib.flash_attn.flash_decoding_with_paged_kvcache", True
+            ), "TVM needs to be built with -DUSE_CUTLASS=ON to use Flash-Decoding."
 
     model_name = [
         parsed.model,
@@ -588,13 +597,7 @@ def mod_transform_before_build(
             "decode",
         ]
 
-        if not args.use_vllm_attention:
-            model_names += [
-                "create_kv_cache",
-                "softmax_with_temperature",
-                "get_metadata",
-            ]
-        else:
+        if args.paged_kv_cache_type in ["vllm", "flash-decoding"]:
             # This is equivalent to prefill but without KV cache. It is used for
             # determining the number of paged cache blocks that can be allocated.
             model_names.append("evaluate")
@@ -602,6 +605,12 @@ def mod_transform_before_build(
 
             if args.paged_kv_cache_type == "flash-decoding":
                 model_names.append("decode_multi_query")
+        else:
+            model_names += [
+                "create_kv_cache",
+                "softmax_with_temperature",
+                "get_metadata",
+            ]
 
         if args.sep_embed:
             model_names = ["embed", "prefill_with_embed"] + model_names[1:]
@@ -879,7 +888,7 @@ def build_model_from_args(args: argparse.Namespace):
             "mixtral": llama,
         }
 
-        if args.use_vllm_attention:
+        if args.paged_kv_cache_type in ["vllm", "flash-decoding"]:
             model_generators["llama"] = llama_batched_vllm
             model_generators["mistral"] = llama_batched_vllm
             model_generators["mixtral"] = llama_batched_vllm

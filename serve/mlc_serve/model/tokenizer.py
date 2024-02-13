@@ -5,15 +5,23 @@ from pathlib import Path
 
 
 class Tokenizer:
-    def __init__(self, hf_tokenizer, skip_special_tokens=True):
+    def __init__(
+            self,
+            hf_tokenizer,
+            skip_special_tokens=True, # for decode function
+            add_special_tokens=False # for encode function
+        ):
         self._tokenizer = hf_tokenizer
         self.eos_token_id = self._tokenizer.eos_token_id
+        self.add_special_tokens = add_special_tokens
         self.skip_special_tokens = skip_special_tokens
         self.all_special_ids = self._tokenizer.all_special_ids
         self.is_fast = self._tokenizer.is_fast
 
     def encode(self, text: str) -> List[int]:
-        return self._tokenizer.encode(text)
+        return self._tokenizer.encode(
+            text, add_special_tokens=self.add_special_tokens
+        )
 
     def decode(self, token_ids: List[int]) -> str:
         return self._tokenizer.decode(
@@ -49,6 +57,7 @@ class HfTokenizerModule:
     def __init__(self, tokenizer_path: Path):
         hf_tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_path, trust_remote_code=True
+            revision=None, tokenizer_revision=None,
         )
         self.tokenizer = Tokenizer(hf_tokenizer)
         self.conversation_template = ConversationTemplate(hf_tokenizer)

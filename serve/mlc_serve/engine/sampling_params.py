@@ -3,11 +3,10 @@ Sampling parameters for text generation.
 
 based on https://github.com/vllm-project/vllm/blob/ac5cf86aa6aebbf9e42df51f7e377fbee85bc703/vllm/sampling_params.py
 """
-from collections import defaultdict
 from dataclasses import dataclass
 from enum import IntEnum
 from functools import cached_property
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 _SAMPLING_EPS = 1e-5
 LOGPROB_TOP_K_MAX = 5
@@ -46,6 +45,8 @@ class SamplingParams:
             to -1 to consider all tokens.
         logit_bias: The bias applied on the logit before sampling. Must be in
             [-100, 100].
+        logit_bias_index: Internal data container that stores indices of `logit_bias`.
+        logit_bias_value: Internal data container that stores values of `logit_bias`.
         logprobs: Optional[bool] Whether to return log probabilities of the output
             tokens or not. If true, returns the log probabilities of each output
             token returned in the content of message.
@@ -53,6 +54,8 @@ class SamplingParams:
             the number of most likely tokens to return at each token position,
             each with an associated log probability. logprobs must be set to
             true if this parameter is used.
+        vocab_size: Not a part of the sampling params, but needed for the argument validation.
+            Remove this when we have a better solution.
     """
 
     presence_penalty: float = 0.0
@@ -62,21 +65,29 @@ class SamplingParams:
     top_p: float = 1.0
     top_k: int = -1
     logit_bias: Optional[Dict[int, float]] = None
-    appeared_tokens_freq: Dict[int, int] = None
     logit_bias_index: list[int] = None
     logit_bias_value: list[float] = None
     logprobs: bool = False
     top_logprobs: int = 0
+    # TODO(@team): This info comes from the model config.
+    # Currently, it is unclear what is the best way to fetch this info and
+    # check in `_verify_args` without this field. Follow-up when we have a better idea.
+    vocab_size = 32000
+    json_schema: Optional[Dict[str, Any]] = None
+    logits_processor: Optional[Any] = None
 
     def __post_init__(self):
-        self.appeared_tokens_freq = {}
         if self.logit_bias:
             self.logit_bias_index = list(self.logit_bias.keys())
             self.logit_bias_value = list(self.logit_bias.values())
         self._verify_args()
         if self.temperature < _SAMPLING_EPS:
             # Zero temperature means greedy sampling.
+            self.top_p = 1.0
+            self.top_k = -1
             self._verify_greedy_sampling()
+        if not self.logprobs:
+            self.top_logprobs = 0
 
     def _verify_args(self) -> None:
         if not -2.0 <= self.presence_penalty <= 2.0:
@@ -94,6 +105,10 @@ class SamplingParams:
             )
         if not 0.0 < self.top_p <= 1.0:
             raise ValueError(f"top_p must be in (0, 1], got {self.top_p}.")
+
+        if not isinstance(self.top_k, int):
+            raise ValueError(f"top_k must be integer.")
+
         if self.top_k < -1 or self.top_k == 0:
             raise ValueError(
                 f"top_k must be -1 (disable), or at least 1, " f"got {self.top_k}."
@@ -104,8 +119,16 @@ class SamplingParams:
                     raise ValueError(
                         f"logit bias must be in [-100, 100], got {bias} for token {token}."
                     )
+                if not 1 <= token <= self.vocab_size:
+                    raise ValueError(f"token id must be in [1, vocab_size]")
+
+        if self.repetition_penalty <= 0:
+            raise ValueError(
+                f"repetition penalty should be a positive float value, got {self.repetition_penalty}."
+            )
+
         if self.logprobs:
-            if (self.top_logprobs < 0 or self.top_logprobs > LOGPROB_TOP_K_MAX):
+            if self.top_logprobs < 0 or self.top_logprobs > LOGPROB_TOP_K_MAX:
                 raise ValueError(
                     f"top_logprobs must be between 0 and {LOGPROB_TOP_K_MAX}, got {self.top_logprobs}."
                 )

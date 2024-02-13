@@ -11,13 +11,12 @@ import structlog
 
 from .base import (
     GenerationSequence,
-    RawLogprobsInfo,
-    RawLogprobsInfos,
     Request,
     RequestId,
     RequestState,
     SequenceId,
     StoppingCriteria,
+    RawLogprobsInfo,
 )
 from .model_module import (
     DecodeRequest,
@@ -33,6 +32,7 @@ from .model_module import (
 )
 from ..model.base import ModelArtifactConfig
 from ..openai_logprob_protocol import LogprobsContent, TopLogprobs
+from .constrained_sampling import JSONLogitsProcessor
 
 LOG = structlog.stdlib.get_logger(__name__)
 
@@ -82,10 +82,15 @@ def detokenize_incrementally(
     prompt_tokens: list[int],
     generation_sequence: GenerationSequence,
     tokenizer: TokenizerP,
-    skip_special_tokens=False,
+    new_token_id: Optional[int] = None,
+    skip_special_tokens: bool = False,
 ) -> str:
-    new_token_id = generation_sequence.generated_token_ids[-1]
-
+    # tokenizer.decode() is similar to doing convert_tokens_to_string(convert_ids_to_tokens(token_ids))
+    # in this function, we separate these two steps.
+    is_logprob = new_token_id is not None
+    new_token_id = (
+        generation_sequence.generated_token_ids[-1] if not is_logprob else new_token_id
+    )
     # This is the first iteration for this sequence
     if generation_sequence.prev_tokens is None:
         # TODO(masahi): Figure out a way to remove this concat
@@ -105,7 +110,9 @@ def detokenize_incrementally(
             prefix_end_offset = max(len(output_tokens) - 1, 0)
     else:
         # Put new_token_id in a list so skip_special_tokens is respected
-        new_tokens = tokenizer.convert_ids_to_tokens([new_token_id])
+        new_tokens = tokenizer.convert_ids_to_tokens(
+            [new_token_id]
+        )
         output_tokens = generation_sequence.prev_tokens + new_tokens
 
         prefix_begin_offset = generation_sequence.prefix_begin_offset
@@ -131,60 +138,17 @@ def detokenize_incrementally(
         new_prefix_end_offset = prefix_end_offset
         delta = ""
 
-    generation_sequence.prefix_begin_offset = new_prefix_begin_offset
-    generation_sequence.prefix_end_offset = new_prefix_end_offset
-    if generation_sequence.prev_tokens is None:
-        generation_sequence.prev_tokens = new_tokens
-    else:
-        generation_sequence.prev_tokens.extend(new_tokens)
+    # Update the status
+    # If this is for logprob, we do not update the status
+    if not is_logprob:
+        generation_sequence.prefix_begin_offset = new_prefix_begin_offset
+        generation_sequence.prefix_end_offset = new_prefix_end_offset
+        if generation_sequence.prev_tokens is None:
+            generation_sequence.prev_tokens = new_tokens
+        else:
+            generation_sequence.prev_tokens.extend(new_tokens)
 
     return delta
-
-
-def logprob_detokenize(
-    tokenizer: TokenizerP,
-    logprob_info: Optional[RawLogprobsInfo],
-) -> Optional[LogprobsContent]:
-    """Detokenize tokens from RawLogprobInfo and convert the latter to LogprobContent"""
-    if logprob_info is None:
-        return None
-
-    top_logprobs: List[TopLogprobs] = []
-    if logprob_info.top_token_ids is not None and logprob_info.top_logprobs is not None:
-        top_tokens = list(zip(logprob_info.top_token_ids, logprob_info.top_logprobs))
-        for top_token_id, top_logprob in top_tokens:
-            top_logprobs.append(
-                TopLogprobs(
-                    token=tokenizer.decode(top_token_id),
-                    logprob=float(top_logprob),
-                    # TODO(vvchernov): implement bytes based on https://platform.openai.com/docs/api-reference/chat/object
-                    bytes=None,
-                )
-            )
-
-    logprobs_content = LogprobsContent(
-        token=tokenizer.decode([logprob_info.current_token_id]),
-        logprob=logprob_info.current_logprob,
-        # TODO(vvchernov): implement bytes based on https://platform.openai.com/docs/api-reference/chat/object
-        bytes=None,
-        top_logprobs=top_logprobs,
-    )
-
-    return logprobs_content
-
-
-def logprobs_detokenize(
-    tokenizer: TokenizerP,
-    logprob_info: Optional[RawLogprobsInfos],
-) -> List[Optional[LogprobsContent]]:
-    if logprob_info is None:
-        return []
-
-    res: List[Optional[LogprobsContent]] = []
-    for info in logprob_info:
-        res.append(logprob_detokenize(tokenizer, info))
-
-    return res
 
 
 def check_stopping_sequences(stopping_criteria, output_text, delta, is_ended):
@@ -206,13 +170,58 @@ def check_stopping_sequences(stopping_criteria, output_text, delta, is_ended):
     return output_text, delta, is_ended
 
 
-def update_sequence(
+def prepare_logprob(
+    logprob_info: Optional[List[Optional[RawLogprobsInfo]]],
+    delta: str,
+    gen_seq: GenerationSequence,
+    prompt_token_ids: List[int],
+    tokenizer: TokenizerP,
+) -> List[Optional[LogprobsContent]]:
+    if logprob_info is None:
+        return []
+
+    outputs = []
+    for info in logprob_info:
+        assert info is not None
+        assert info.top_token_ids is not None
+
+        top_logprobs: List[TopLogprobs] = []
+        if info.top_logprobs is not None:
+            assert info.top_logprobs is not None
+            token_ids = info.top_token_ids.cpu().numpy()
+            logprobs = info.top_logprobs.cpu().numpy()
+
+            for top_token_id, top_logprob in zip(token_ids, logprobs):
+                top_logprobs.append(
+                    TopLogprobs(
+                        token=detokenize_incrementally(
+                            prompt_token_ids, gen_seq, tokenizer, top_token_id
+                        ),
+                        logprob=float(top_logprob),
+                        # TODO(vvchernov): implement bytes based on https://platform.openai.com/docs/api-reference/chat/object
+                        bytes=None,
+                    )
+                )
+
+        logprobs_content = LogprobsContent(
+            token=delta,
+            logprob=info.current_logprob,
+            # TODO(vvchernov): implement bytes based on https://platform.openai.com/docs/api-reference/chat/object
+            bytes=None,
+            top_logprobs=top_logprobs,
+        )
+        outputs.append(logprobs_content)
+    return outputs
+
+
+def prepare_output(
     gen_seq: GenerationSequence,
     new_token_ids: list[int],
     prompt_token_ids: list[int],
+    logprob_info,
     tokenizer: TokenizerP,
     stopping_criteria: StoppingCriteria,
-) -> str:
+) -> Tuple[str, List[Optional[LogprobsContent]]]:
     gen_seq.next_start_position = len(prompt_token_ids) + len(
         gen_seq.generated_token_ids
     )
@@ -220,15 +229,21 @@ def update_sequence(
     delta = detokenize_incrementally(prompt_token_ids, gen_seq, tokenizer)
     gen_seq.output_text += delta
 
+    out_logprob_info: List[Optional[LogprobsContent]] = prepare_logprob(
+        logprob_info, delta, gen_seq, prompt_token_ids, tokenizer
+    )
+
     gen_seq.output_text, delta, gen_seq.is_finished = check_stopping_sequences(
         stopping_criteria, gen_seq.output_text, delta, gen_seq.is_finished
     )
 
-    return delta
+    return delta, out_logprob_info
 
 
 def get_requests_to_process(
-    current_states: list[RequestState], cache_manager: KVCacheManager
+    current_states: list[RequestState],
+    cache_manager: KVCacheManager,
+    tokenizer: TokenizerP,
 ) -> Tuple[list[RequestType], bool, int]:
     requests: list[RequestType] = []
     # TODO: consider having hybrid batch if the underlying attention kernel supports
@@ -277,6 +292,12 @@ def get_requests_to_process(
                 # TODO(masahi): How to account for token counts in EvalMultiQueryRequest in
                 # Prometheus metric?
             elif not state.is_prefilled:
+                # `JSONLogitsProcessor` needs to be created only once.
+                if state.sampling_params.json_schema is not None:
+                    state.sampling_params.logits_processor = JSONLogitsProcessor(
+                        state.sampling_params.json_schema, tokenizer._tokenizer
+                    )
+
                 if (
                     state.num_sequences == 1
                     and state.generation_sequences[0].generated_token_ids
