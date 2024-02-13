@@ -447,6 +447,8 @@ def adjust_logits(
             batch_size,
         )
 
+        # It was checked that vLLM and HF approaches for repetition penalty are the same
+        # For calculation of it their combination is used (see references below)
         # Calculate repetition penalty use vLLM approach
         # https://github.com/vllm-project/vllm/blob/0580aab02ffe60fee50bddc80b787828eb233c44/vllm/model_executor/layers/sampler.py#L177
         # and RepetitionPenaltyLogitsProcessor approach from HF TGI API

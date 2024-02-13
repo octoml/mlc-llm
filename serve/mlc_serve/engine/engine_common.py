@@ -277,7 +277,7 @@ def get_requests_to_process(
     if is_prompt_batch:
         for state in current_states:
             if is_evicted_parallel_sampling_request(state):
-                # TODO(vvchernov): we still need mask if apply_penallty = True
+                # TODO(vvchernov): we still need mask if apply_penalty = True
                 # if state.sampling_params.repetition_penalty != 1.0:
                 set_mask_prompt_to(state)
                 requests.append(
