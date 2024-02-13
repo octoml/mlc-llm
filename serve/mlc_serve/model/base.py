@@ -4,6 +4,7 @@ import os
 import json
 import inspect
 
+
 # TODO(@sunggg): consider transition to something like Pydantic
 @dataclass
 class ModelArtifactConfig:
@@ -32,10 +33,12 @@ class ModelArtifactConfig:
             }
         )
 
+
 class AssetNotFound(Exception):
     def __init__(self, asset_path):
         self.asset_path = asset_path
         super().__init__(f"{self.asset_path} should exist. Did you build with `--enable-batching`?")
+
 
 def get_model_artifact_config(model_artifact_path):
     json_object = {"model_artifact_path": model_artifact_path}

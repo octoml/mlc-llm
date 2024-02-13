@@ -170,11 +170,7 @@ class TextGenerator(Protocol):
 class Tokenizer(Protocol):
     _tokenizer: Any
     eos_token_id: int
-    # Whether or not to remove special tokens in the decoding.
     skip_special_tokens: bool
-    # Whether or not to add special tokens when encoding the sequences.
-    # Special tokens are relative to models like [CLS] and [SEP]
-    add_special_tokens: bool
     all_special_ids: List[int]
     is_fast: bool
 

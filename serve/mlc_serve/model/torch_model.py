@@ -619,4 +619,5 @@ def init_torch_model(
         hf_config.sliding_window,
     )
 
-    return model, cache_manager, artifact_config
+    # TODO
+    return model, cache_manager

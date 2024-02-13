@@ -10,6 +10,7 @@ from mlc_serve.engine import get_engine_config, InferenceEngine
 from mlc_serve.logging_utils import configure_logging
 from mlc_serve.engine.staging_engine import StagingInferenceEngine
 from mlc_serve.engine.sync_engine import SynchronousInferenceEngine
+from mlc_serve.model.base import get_model_artifact_config
 from mlc_serve.model.paged_cache_model import HfTokenizerModule, PagedCacheModelModule
 
 
@@ -47,7 +48,7 @@ def postproc_mlc_serve_args(args):
     random.seed(args.seed)
 
 
-def create_mlc_engine(args: argparse.Namespace) -> InferenceEngine:
+def create_mlc_engine(args: argparse.Namespace, start_engine=True) -> InferenceEngine:
     model_type = "tvm"
     num_shards = None
 
@@ -71,6 +72,7 @@ def create_mlc_engine(args: argparse.Namespace) -> InferenceEngine:
             "num_shards": num_shards,
         }
     )
+    model_artifact_config = get_model_artifact_config(args.model_artifact_path)
 
     engine: InferenceEngine
 
@@ -86,14 +88,19 @@ def create_mlc_engine(args: argparse.Namespace) -> InferenceEngine:
             model_module_loader_kwargs={
                 "model_artifact_path": args.model_artifact_path,
                 "engine_config": engine_config,
+                "model_artifact_config": model_artifact_config
             },
         )
-        engine.start()
+
+        if start_engine:
+            engine.start()
     else:
         engine = SynchronousInferenceEngine(
             PagedCacheModelModule(
                 model_artifact_path=args.model_artifact_path,
                 engine_config=engine_config,
-            )  # type: ignore
+                model_artifact_config=model_artifact_config
+            )
         )
+
     return engine

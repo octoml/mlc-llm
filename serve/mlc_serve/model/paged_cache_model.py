@@ -2,7 +2,7 @@ from pathlib import Path
 import structlog
 from typing import Sequence, List
 
-from .base import get_model_artifact_config
+from .base import ModelArtifactConfig
 from .paged_cache_manager import CacheManager
 from .tokenizer import HfTokenizerModule, ConversationTemplate, Tokenizer
 from .torch_model import init_torch_model
@@ -18,6 +18,7 @@ from ..engine.model_module import (
     TextGenerationResult,
     TextGenerator,
 )
+
 
 LOG = structlog.stdlib.get_logger(__name__)
 
@@ -79,13 +80,13 @@ class PagedCacheModelModule:
         self,
         model_artifact_path: Path,
         engine_config: MLCServeEngineConfig,
+        model_artifact_config: ModelArtifactConfig
     ):
         if engine_config.model_type == "tvm":
-            model_artifact_config = get_model_artifact_config(model_artifact_path)
             model, cache_manager = init_tvm_model(model_artifact_config, engine_config)
             tokenizer_module = HfTokenizerModule(model_artifact_path.joinpath("model"))
         elif engine_config.model_type == "torch":
-            model, cache_manager, model_artifact_config = init_torch_model(
+            model, cache_manager = init_torch_model(
                 model_artifact_path, engine_config
             )
             tokenizer_module = HfTokenizerModule(model_artifact_path)
