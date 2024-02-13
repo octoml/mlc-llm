@@ -22,7 +22,7 @@ def run_server():
     with tempfile.TemporaryDirectory() as temp_dir:
         os.environ["PROMETHEUS_MULTIPROC_DIR"] = temp_dir
 
-        engine = create_mlc_engine(args)
+        engine = create_mlc_engine(args, start_engine=False)
         connector = AsyncEngineConnector(engine)
         app = create_app(connector)
 

@@ -47,7 +47,7 @@ def postproc_mlc_serve_args(args):
     random.seed(args.seed)
 
 
-def create_mlc_engine(args: argparse.Namespace) -> InferenceEngine:
+def create_mlc_engine(args: argparse.Namespace, start_engine=True) -> InferenceEngine:
     engine_config = get_engine_config(
         {
             "use_staging_engine": args.use_staging_engine,
@@ -70,7 +70,9 @@ def create_mlc_engine(args: argparse.Namespace) -> InferenceEngine:
                 "model_artifact_config": model_artifact_config
             },
         )
-        engine.start()
+
+        if start_engine:
+            engine.start()
     else:
         engine = SynchronousInferenceEngine(
             PagedCacheModelModule(
