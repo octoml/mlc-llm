@@ -118,6 +118,9 @@ def detokenize_incrementally(
         prefix_begin_offset = generation_sequence.prefix_begin_offset
         prefix_end_offset = generation_sequence.prefix_end_offset
 
+    # Some models, such as Qwen, uses a tokenizer from titoken package which fails this assert.
+    # assert tokenizer.is_fast
+
     prefix_text = tokenizer.convert_tokens_to_string(
         output_tokens[prefix_begin_offset:prefix_end_offset]
     )
