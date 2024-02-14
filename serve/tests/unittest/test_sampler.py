@@ -38,39 +38,35 @@ def _test_temperature_checker():
     get_sampling_metadata([SamplingParams(temperature=2.0)])
 
     with pytest.raises(ValueError):
-        temperature = -0.1
-        sampling_param = SamplingParams(temperature=temperature)
-        get_sampling_metadata([sampling_param])
+        get_sampling_metadata([SamplingParams(temperature=-0.1)])
 
     with pytest.raises(ValueError):
-        temperature = 2.1
-        sampling_param = SamplingParams(temperature=temperature)
-        get_sampling_metadata([sampling_param])
+        get_sampling_metadata([SamplingParams(temperature=2.1)])
 
 def _test_temperature():
-    for batch_size in [1, 4, 8]:
+    # single-batch
+    shape = (1, vocab_size)
+    logits = torch.rand(shape, dtype=dtype, device=dev)
+    for temperature in [0, 0.5, 1.0, 1.5, 2.0]:
+        sampling_params = [SamplingParams(temperature=temperature)]
+        expected = logits / temperature if abs(temperature) > SAMPLING_EPS else logits
+        sampling_metadata = get_sampling_metadata(sampling_params)
+        new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
+        assert torch.allclose(expected, new_logits)
+
+    # multi-batch
+    for batch_size in [4, 8, 12]:
         shape = (batch_size, vocab_size)
         logits = torch.rand(shape, dtype=dtype, device=dev)
-
-        for temperature in [0, 0.5, 1.0, 1.5, 2.0]:
-            # use same temperature
-            sampling_params = [SamplingParams(temperature=temperature) for _ in range(batch_size)]
-            expected = logits / temperature if abs(temperature) > SAMPLING_EPS else logits
-            sampling_metadata = get_sampling_metadata(sampling_params)
-            new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
-            for idx, response in enumerate(new_logits):
-                assert torch.allclose(expected[idx], response)
-
-        # use different temperature
-        if batch_size > 1:
-            temperature = [i % 3 for i in range(batch_size)]
-            sampling_params = [SamplingParams(temperature=val) for val in temperature]
-            for idx, val in enumerate(temperature):
-                expected[idx] = logits[idx] / val if abs(val) > SAMPLING_EPS else logits[idx]
-            sampling_metadata = get_sampling_metadata(sampling_params)
-            new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
-            for idx, response in enumerate(new_logits):
-                assert torch.allclose(expected[idx], response)
+        temperature = [i % 3 for i in range(batch_size)] # temperature from {0, 1, 2}
+        sampling_params = [SamplingParams(temperature=val) for val in temperature]
+        expected = []
+        for idx, val in enumerate(temperature):
+            expected.append(logits[idx] / val if abs(val) > SAMPLING_EPS else logits[idx])
+        sampling_metadata = get_sampling_metadata(sampling_params)
+        new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
+        for idx, response in enumerate(new_logits):
+            assert torch.allclose(expected[idx], response)
 
 def _test_logit_bias_checker():
     # logit bias must be [-100, 100]
@@ -453,6 +449,7 @@ def _test_logprobs():
                 assert len(output.logprob_infos[idx].top_logprobs) == top_logprobs
 
 if __name__ == "__main__":
+    _test_temperature_checker()
     _test_temperature()
     _test_logit_bias_checker()
     _test_logit_bias()
