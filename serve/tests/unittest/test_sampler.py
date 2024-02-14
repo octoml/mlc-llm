@@ -140,28 +140,75 @@ def _test_logit_bias():
 
 
 def _test_penalties_checker():
-    get_sampling_metadata([SamplingParams(presence_penalty=-2.0)])
-    get_sampling_metadata([SamplingParams(frequency_penalty=-2.0)])
+    # repetition_penalty
     get_sampling_metadata([SamplingParams(repetition_penalty=0.1)])
-    get_sampling_metadata([SamplingParams(presence_penalty=2.0)])
-    get_sampling_metadata([SamplingParams(frequency_penalty=2.0)])
     get_sampling_metadata([SamplingParams(repetition_penalty=2.0)])
 
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(presence_penalty=-2.1)])
+        get_sampling_metadata([SamplingParams(repetition_penalty=0.0)])
+    
+    with pytest.raises(ValueError):
+        get_sampling_metadata([SamplingParams(repetition_penalty=-2.0)])
+
+    # frequency_penalty
+    get_sampling_metadata([SamplingParams(frequency_penalty=-2.0)])
+    get_sampling_metadata([SamplingParams(frequency_penalty=2.0)])
 
     with pytest.raises(ValueError):
         get_sampling_metadata([SamplingParams(frequency_penalty=-2.1)])
 
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(repetition_penalty=0.0)])
+        get_sampling_metadata([SamplingParams(frequency_penalty=2.1)])
+
+    # presence_penalty
+    get_sampling_metadata([SamplingParams(presence_penalty=-2.0)])
+    get_sampling_metadata([SamplingParams(presence_penalty=2.0)])
+
+    with pytest.raises(ValueError):
+        get_sampling_metadata([SamplingParams(presence_penalty=-2.1)])
 
     with pytest.raises(ValueError):
         get_sampling_metadata([SamplingParams(presence_penalty=2.1)])
 
-    with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(frequency_penalty=2.1)])
+    # combinations of penalties with valid values
+    get_sampling_metadata([SamplingParams(
+        repetition_penalty=0.5, 
+        presence_penalty=0.5, 
+        frequency_penalty=0.0)
+    ])
 
+    # combinations of penalties with invalid values
+    with pytest.raises(ValueError):
+        get_sampling_metadata([SamplingParams(
+            repetition_penalty=-0.5, 
+            presence_penalty=0.5, 
+            frequency_penalty=0.0)
+        ])
+
+    with pytest.raises(ValueError):
+        get_sampling_metadata([SamplingParams(
+            repetition_penalty=0.5, 
+            presence_penalty=2.5, 
+            frequency_penalty=0.0)
+        ])
+
+    with pytest.raises(ValueError):
+        get_sampling_metadata([SamplingParams(
+            repetition_penalty=0.5, 
+            presence_penalty=0.5, 
+            frequency_penalty=-3.0)
+        ])
+
+    # penalties with valid values in multi-batch
+    get_sampling_metadata(
+        [
+            SamplingParams(repetition_penalty=1.5),
+            SamplingParams(presence_penalty=0.5),
+            SamplingParams(frequency_penalties=0.0)
+        ]
+    )
+
+    # penalties with invalid values in multi-batch
     with pytest.raises(ValueError):
         get_sampling_metadata(
             [
