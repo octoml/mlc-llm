@@ -59,6 +59,7 @@ def create_request(
     pre_pen,
     max_tokens,
     stop,
+    num_sequences=1,
     ignore_eos=False,
     top_logprobs=0,
     logprobs=False,
@@ -78,6 +79,7 @@ def create_request(
             json_schema=json_schema,
         ),
         stopping_criteria=StoppingCriteria(max_tokens=max_tokens, stop_sequences=stop),
+        num_sequences=num_sequences,
         debug_options=DebugOptions(ignore_eos=ignore_eos),
     )
 
@@ -338,6 +340,48 @@ def _test_logprobs_mixed_requests(
                     assert len(seq.logprob_info) == 0
                 generated[int(res.request_id)] += seq.delta
 
+def _test_num_sequences(
+    engine,
+    num_requests=5,
+):
+    prompt = "Write a merge sort program in Python."
+    requests = []
+    num_sequences = [2 * i for i in range(1, num_requests + 1)]
+    for n, num_seq in enumerate(num_sequences):
+        requests.append(
+            create_request(
+                idx=str(n),
+                prompt=prompt,
+                temp=0.6,
+                freq_pen=0,
+                pre_pen=0,
+                stop=None,
+                max_tokens=300,
+                ignore_eos=False,
+                num_sequences=num_seq
+            )
+        )
+    engine.add(requests)
+
+    generated = [[""] * num_seq for _, num_seq in zip(range(num_requests), num_sequences)]
+    unique_sequences = [set() for _ in range(num_requests)]
+    while engine.has_pending_requests():
+        results = engine.step()
+        for idx, res in enumerate(results.outputs):
+            assert len(res.sequences) == num_sequences[idx]
+            for seq_id, seq in enumerate(res.sequences):
+                req_id = int(res.request_id)
+
+                if seq.delta:
+                    generated[int(req_id)][seq_id] += seq.delta
+
+                if seq.is_finished:
+                    unique_sequences[req_id].add(generated[req_id][seq_id])
+
+    for idx, response in enumerate(unique_sequences):
+        assert num_sequences[idx] == len(response)
+
+
 
 # These three models are used in _test_json_mode
 class France(BaseModel):
@@ -445,6 +489,7 @@ if __name__ == "__main__":
     # _test_stop(staging_engine)
     _test_logprobs(staging_engine)
     _test_logprobs_mixed_requests(staging_engine)
+    _test_num_sequences(staging_engine)
     _test_json_mode(staging_engine)
     # These tests are broken since we are now imposing no length limit
     # if max_tokens = None. The tests do not finish in a reasonable time.
