@@ -10,7 +10,7 @@ from mlc_serve.engine import get_engine_config, InferenceEngine
 from mlc_serve.logging_utils import configure_logging
 from mlc_serve.engine.staging_engine import StagingInferenceEngine
 from mlc_serve.engine.sync_engine import SynchronousInferenceEngine
-from mlc_serve.model.base import get_model_artifact_config
+from mlc_serve.model.base import get_model_artifact_config, ModelArtifactConfig, get_hf_config
 from mlc_serve.model.paged_cache_model import HfTokenizerModule, PagedCacheModelModule
 
 
@@ -72,7 +72,24 @@ def create_mlc_engine(args: argparse.Namespace, start_engine=True) -> InferenceE
             "num_shards": num_shards,
         }
     )
-    model_artifact_config = get_model_artifact_config(args.model_artifact_path)
+
+    if model_type == "tvm":
+        model_artifact_config = get_model_artifact_config(args.model_artifact_path)
+    else:
+        hf_config = get_hf_config(args.model_artifact_path)
+
+        model_artifact_config = ModelArtifactConfig(
+            model_artifact_path=str(args.model_artifact_path),
+            num_shards=num_shards,
+            quantization=None,
+            max_context_length=hf_config.max_position_embeddings,
+            vocab_size=hf_config.vocab_size,
+            sliding_window=hf_config.sliding_window,
+            num_key_value_heads=hf_config.num_key_value_heads // num_shards,
+            num_attention_heads=hf_config.num_attention_heads,
+            num_hidden_layers=hf_config.num_hidden_layers,
+            hidden_size=hf_config.hidden_size,
+        )
 
     engine: InferenceEngine
 

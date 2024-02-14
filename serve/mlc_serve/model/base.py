@@ -1,5 +1,8 @@
+from transformers import AutoConfig
+
 from dataclasses import dataclass
 from typing import Optional
+from pathlib import Path
 import os
 import json
 import inspect
@@ -57,3 +60,17 @@ def get_model_artifact_config(model_artifact_path):
         json_object["paged_kv_cache_type"] = "vllm"
 
     return ModelArtifactConfig._from_json(json_object)
+
+
+def get_hf_config(model_path: Path) -> AutoConfig:
+    hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+
+    if not hasattr(hf_config, "num_key_value_heads") and hasattr(
+        hf_config, "num_attention_heads"
+    ):
+        hf_config.num_key_value_heads = hf_config.num_attention_heads
+
+    if not hasattr(hf_config, "sliding_window"):
+        hf_config.sliding_window = None
+
+    return hf_config

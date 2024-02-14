@@ -28,7 +28,7 @@ from rpyc.utils.factory import unix_connect
 
 from concurrent.futures import ThreadPoolExecutor
 
-from .base import ModelArtifactConfig
+from .base import ModelArtifactConfig, get_hf_config
 from .paged_cache_manager import KVCacheInfo, CacheManager
 from .model_common import (
     prepare_inputs,
@@ -582,34 +582,11 @@ class Model:
 
 def init_torch_model(
     model_path: Path, engine_config: MLCServeEngineConfig
-) -> Tuple[TextGenerator, CacheManager, ModelArtifactConfig]:
-    hf_config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-
-    if not hasattr(hf_config, "num_key_value_heads") and hasattr(
-        hf_config, "num_attention_heads"
-    ):
-        hf_config.num_key_value_heads = hf_config.num_attention_heads
-
-    if not hasattr(hf_config, "sliding_window"):
-        hf_config.sliding_window = None
+) -> Tuple[TextGenerator, CacheManager]:
+    hf_config = get_hf_config(model_path)
 
     if engine_config.num_shards is None:
         raise RuntimeError("num_shards needs to be specifed for PyTorch models.")
-
-    num_shards = engine_config.num_shards
-
-    artifact_config = ModelArtifactConfig(
-        model_artifact_path=str(model_path),
-        num_shards=num_shards,
-        quantization=None,
-        max_context_length=hf_config.max_position_embeddings,  # TODO,
-        vocab_size=hf_config.vocab_size,
-        sliding_window=hf_config.sliding_window,
-        num_key_value_heads=hf_config.num_key_value_heads // num_shards,
-        num_attention_heads=hf_config.num_attention_heads,
-        num_hidden_layers=hf_config.num_hidden_layers,
-        hidden_size=hf_config.hidden_size,
-    )
 
     model = Model(model_path, hf_config, engine_config)
 
@@ -619,5 +596,4 @@ def init_torch_model(
         hf_config.sliding_window,
     )
 
-    # TODO
     return model, cache_manager
