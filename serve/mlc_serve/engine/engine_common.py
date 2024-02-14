@@ -279,7 +279,7 @@ def get_requests_to_process(
             if is_evicted_parallel_sampling_request(state):
                 # TODO(vvchernov): we still need mask if apply_penalty = True
                 # if state.sampling_params.repetition_penalty != 1.0:
-                set_mask_prompt_to(state)
+                # set_mask_prompt_to(state)
                 requests.append(
                     PrefillRequest(
                         request_id=state.request_id,
@@ -327,6 +327,9 @@ def get_requests_to_process(
                 else:
                     token_ids = state.prompt_token_ids
 
+                # TODO(vvchernov): we still need mask if apply_penalty = True
+                # if state.sampling_params.repetition_penalty != 1.0:
+                set_mask_prompt_to(state)
                 requests.append(
                     PrefillRequest(
                         request_id=state.request_id,
