@@ -503,8 +503,6 @@ def sample(
         top_tokens = all_top_tokens[mask]
         top_logprobs = all_top_logprobs[mask]
 
-        logprobs = logprobs.to("cpu")
-
         for idx, batch_idx in enumerate(sampling_metadata.logprob_batch_indices):
             next_token = next_tokens[batch_idx]
             assert sampling_metadata.sampling_params[batch_idx].logprobs
