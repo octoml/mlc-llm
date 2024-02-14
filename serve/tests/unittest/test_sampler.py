@@ -1,3 +1,4 @@
+from itertools import product, permutations
 import torch
 import pytest
 from mlc_serve.model.sampler import (
@@ -204,7 +205,7 @@ def _test_penalties_checker():
         [
             SamplingParams(repetition_penalty=1.5),
             SamplingParams(presence_penalty=0.5),
-            SamplingParams(frequency_penalties=0.0)
+            SamplingParams(frequency_penalty=0.0)
         ]
     )
 
@@ -215,7 +216,7 @@ def _test_penalties_checker():
                 SamplingParams(frequency_penalty=2.1),
                 SamplingParams(repetition_penalty=1.1),
                 SamplingParams(presence_penalty=1.1),
-                SamplingParams(frequency_penalties=1.1)
+                SamplingParams(frequency_penalty=1.1)
             ]
         )
 
@@ -334,27 +335,64 @@ def _test_penalties():
                     assert torch.allclose(expected[batch_idx], response)
 
 def _test_top_p_top_k_checker():
-    get_sampling_metadata([SamplingParams(top_p=0.8)])
-    get_sampling_metadata([SamplingParams(top_k=3)])
+    # top_p must be in (0, 1]
+    # top_k must be in (0, vocab_size] (use -1 to consider all tokens)
 
+    # top_p
+    get_sampling_metadata([SamplingParams(top_p=0.6)])
+    get_sampling_metadata([SamplingParams(top_p=0.1)])
+    get_sampling_metadata([SamplingParams(top_p=1.0)])
+
+    # top_k
+    get_sampling_metadata([SamplingParams(top_k=3)])
     get_sampling_metadata([SamplingParams(top_k=-1)])
     get_sampling_metadata([SamplingParams(top_k=1)])
 
+    # combinations of top_p, top_k with valid values
+    get_sampling_metadata([SamplingParams(top_p=0.1, top_k=128)])
+    get_sampling_metadata([SamplingParams(top_p=0.6, top_k=1)])
+    get_sampling_metadata([SamplingParams(top_p=1.0, top_k=-1)])
+
+    # combinations of top_p, top_k with invalid values
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(top_p=0.0)])
-
+        get_sampling_metadata([SamplingParams(top_p=0.0, top_k=128)])
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(top_p=-0.8)])
-
+        get_sampling_metadata([SamplingParams(top_p=-1, top_k=-5)])
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(top_k=0)])
+        get_sampling_metadata([SamplingParams(top_p=5, top_k=0)])
 
-    with pytest.raises(TypeError):
-        get_sampling_metadata([SamplingParams(top_k=0.8)])
+    # top_p, top_k with valid values in multi-batch
+    get_sampling_metadata([
+        SamplingParams(top_p=0.1, top_k=128),
+        SamplingParams(top_p=0.5, top_k=1024),
+        SamplingParams(top_p=1.0, top_k=8)
+    ])
+    get_sampling_metadata([
+        SamplingParams(top_p=0.1),
+        SamplingParams(top_p=0.5, top_k=1024),
+        SamplingParams(top_k=8)
+    ])
+    get_sampling_metadata([
+        SamplingParams(top_p=1.0, top_k=-1),
+        SamplingParams(top_p=0.5, top_k=32000),
+    ])
 
+    # top_p, top_k with invalid values in multi-batch
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(top_k=-2)])
-
+        get_sampling_metadata([
+            SamplingParams(top_p=-1, top_k=128),
+            SamplingParams(top_p=0.5, top_k=12),
+        ])
+    with pytest.raises(ValueError):
+        get_sampling_metadata([
+            SamplingParams(top_p=0.1),
+            SamplingParams(top_k=-2),
+        ])
+    with pytest.raises(ValueError):
+        get_sampling_metadata([
+            SamplingParams(top_p=1.1, top_k=-1),
+            SamplingParams(top_p=0.5, top_k=64),
+        ])
 
 def _test_top_p_top_k():
     def get_expected_result(logits, top_pks, filter_value=-float("Inf")):
@@ -400,32 +438,23 @@ def _test_top_p_top_k():
             lst_logits.append(_logits)
         return torch.stack(lst_logits)
 
-    batch_size = 1
-    top_p, top_k = 0.7, 5
-    shape = (batch_size, vocab_size)
-    logits = torch.rand(shape, dtype=dtype, device=dev)
-    sampling_params = [
-        SamplingParams(top_p=top_p, top_k=top_k) for _ in range(batch_size)
-    ]
-    sampling_metadata = get_sampling_metadata(sampling_params)
-    new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
-    expected = logits.clone()
-    expected = get_expected_result(expected, top_pks=[(top_p, top_k)])
-    assert torch.allclose(expected, new_logits)
-
-    batch_size = 3
-    shape = (batch_size, vocab_size)
-    logits = torch.rand(shape, dtype=dtype, device=dev)
-    top_pks = [(0.7, 3), (0.5, 2), (0.8, 5)]
-    sampling_params = [
-        SamplingParams(top_p=top_p, top_k=top_k) for top_p, top_k in top_pks
-    ]
-    sampling_metadata = get_sampling_metadata(sampling_params)
-
-    new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
-    expected = logits.clone()
-    expected = get_expected_result(expected, top_pks)
-    assert torch.allclose(expected, new_logits)
+    for batch_size in [1, 4]:
+        shape = (batch_size, vocab_size)
+        logits = torch.rand(shape, dtype=dtype, device=dev)
+        for top_pks in permutations(
+            product(
+                [0.3, 0.7],    # top_p
+                [128, 2048, 32000]  # top_k
+            ),
+            batch_size
+        ):
+            sampling_params = [
+                SamplingParams(top_p=top_p, top_k=top_k) for top_p, top_k in top_pks
+            ]
+            sampling_metadata = get_sampling_metadata(sampling_params)
+            new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
+            expected = get_expected_result(logits.clone(), top_pks)
+            assert torch.allclose(expected, new_logits)
 
 def _test_logprobs_checker():
     get_sampling_metadata([SamplingParams(logprobs=False)])
