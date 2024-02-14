@@ -457,7 +457,9 @@ def adjust_logits(
         # https://github.com/huggingface/transformers/blob/de11e654c962d5b23eb53a4387cd637b01987491/src/transformers/generation/logits_process.py#L76C1-L78C92
         repetition_penalties_t = repetition_penalties_t[:, None].repeat(1, vocab_size)
         repetition_penalties_t[~(prompt_mask | output_mask)] = 1.0
-        logits /= repetition_penalties_t
+        logits = torch.where(
+            logits > 0, logits / repetition_penalties_t, logits * repetition_penalties_t
+        )
 
         # Calculate frequency and presence penalties
         logits -= frequency_penalties_t.unsqueeze_(dim=1) * bin_counts
