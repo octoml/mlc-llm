@@ -456,6 +456,7 @@ def adjust_logits(
         # where score is logits
         # https://github.com/huggingface/transformers/blob/de11e654c962d5b23eb53a4387cd637b01987491/src/transformers/generation/logits_process.py#L76C1-L78C92
         repetition_penalties_t = repetition_penalties_t[:, None].repeat(1, vocab_size)
+        prompt_mask = prompt_mask.to(repetition_penalties_t.device)
         repetition_penalties_t[~(prompt_mask | output_mask)] = 1.0
         logits = torch.where(
             logits > 0, logits / repetition_penalties_t, logits * repetition_penalties_t
