@@ -32,7 +32,6 @@ quantization_schemes = {
         final_fc_weight=NoQuantizationSpec("float16"),
     ),
     "q0f16": QuantizationScheme("q0f16", NoQuantizationSpec("float16")),
-    "q0bf16": QuantizationScheme("q0bf16", NoQuantizationSpec("bfloat16")),
     "q0f32": QuantizationScheme("q0f32", NoQuantizationSpec("float32")),
     "q3f16_0": QuantizationScheme(
         name="q3f16_0",
