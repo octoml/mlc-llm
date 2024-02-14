@@ -10,7 +10,11 @@ from mlc_serve.engine import get_engine_config, InferenceEngine
 from mlc_serve.logging_utils import configure_logging
 from mlc_serve.engine.staging_engine import StagingInferenceEngine
 from mlc_serve.engine.sync_engine import SynchronousInferenceEngine
-from mlc_serve.model.base import get_model_artifact_config, ModelArtifactConfig, get_hf_config
+from mlc_serve.model.base import (
+    get_model_artifact_config,
+    ModelArtifactConfig,
+    get_hf_config,
+)
 from mlc_serve.model.paged_cache_model import HfTokenizerModule, PagedCacheModelModule
 
 
@@ -30,7 +34,7 @@ def get_default_mlc_serve_argparser(description="", allow_override=False):
     parser.add_argument("--max-decode-steps", type=int, default=56)
     parser.add_argument("--debug-logging", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--num-shards", type=int, default=1) # Needed for PT models
+    parser.add_argument("--num-shards", type=int, default=1)  # Needed for PT models
     return parser
 
 
@@ -56,10 +60,13 @@ def create_mlc_engine(args: argparse.Namespace, start_engine=True) -> InferenceE
         model_type = "torch"
         num_shards = args.num_shards
 
-        assert num_shards is not None, "--num-shards needs to be provided for PT models."
+        assert (
+            num_shards is not None
+        ), "--num-shards needs to be provided for PT models."
 
         if num_shards > 1:
             import torch
+
             torch.multiprocessing.set_start_method("spawn")
 
     engine_config = get_engine_config(
@@ -105,7 +112,7 @@ def create_mlc_engine(args: argparse.Namespace, start_engine=True) -> InferenceE
             model_module_loader_kwargs={
                 "model_artifact_path": args.model_artifact_path,
                 "engine_config": engine_config,
-                "model_artifact_config": model_artifact_config
+                "model_artifact_config": model_artifact_config,
             },
         )
 
@@ -116,7 +123,7 @@ def create_mlc_engine(args: argparse.Namespace, start_engine=True) -> InferenceE
             PagedCacheModelModule(
                 model_artifact_path=args.model_artifact_path,
                 engine_config=engine_config,
-                model_artifact_config=model_artifact_config
+                model_artifact_config=model_artifact_config,
             )
         )
 

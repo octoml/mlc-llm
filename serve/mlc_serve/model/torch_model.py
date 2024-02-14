@@ -14,6 +14,8 @@ from vllm.model_executor.layers.sampler import get_logits
 from vllm.model_executor.models.llama import LlamaForCausalLM
 from vllm.model_executor.models.qwen import QWenLMHeadModel
 from vllm.model_executor.models.phi import PhiForCausalLM
+from vllm.model_executor.models.mistral import MistralForCausalLM
+from vllm.model_executor.models.mixtral import MixtralForCausalLM
 from vllm.model_executor import InputMetadata, SamplingMetadata
 from vllm.model_executor.parallel_utils.parallel_state import (
     initialize_model_parallel,
@@ -28,7 +30,7 @@ from rpyc.utils.factory import unix_connect
 
 from concurrent.futures import ThreadPoolExecutor
 
-from .base import ModelArtifactConfig, get_hf_config
+from .base import get_hf_config
 from .paged_cache_manager import KVCacheInfo, CacheManager
 from .model_common import (
     prepare_inputs,
@@ -98,8 +100,6 @@ def profile_memory_usage(pt_model, seq_lens, num_hidden_layers):
 
     peak_memory = torch.cuda.max_memory_allocated()
 
-    print("peak memory before:", peak_memory / 1e9)
-
     input_metadata = InputMetadata(
         is_prompt=True,
         slot_mapping=slot_mapping_tensor,
@@ -127,8 +127,6 @@ def profile_memory_usage(pt_model, seq_lens, num_hidden_layers):
     peak_memory = torch.cuda.max_memory_allocated()
 
     torch.cuda.empty_cache()
-
-    print("peak memory after:", peak_memory / 1e9)
 
     return peak_memory
 
@@ -179,6 +177,8 @@ def load_model(hf_config, model_path):
         "LlamaForCausalLM": LlamaForCausalLM,
         "PhiForCausalLM": PhiForCausalLM,
         "QWenLMHeadModel": QWenLMHeadModel,  # requires tiktoken package
+        "MistralForCausalLM": MistralForCausalLM,
+        "MixtralForCausalLM": MixtralForCausalLM,
     }
 
     arch = hf_config.architectures[0]
