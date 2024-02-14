@@ -10,7 +10,9 @@ fastapi = ">=0.103.1"
 pydantic = ">=1.8.0"
 prometheus-client = ">=0.18.0"
 outlines = "0.0.23"
+# PT model dep
 rpyc = "5.3.1"
+tiktoken = "0.5.2" # for Qwen
 # TODO vllm dep
 # https://github.com/octoml/vllm/tree/for-mlc-serve
 
