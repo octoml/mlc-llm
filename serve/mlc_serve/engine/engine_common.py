@@ -248,7 +248,7 @@ def set_mask_prompt_to(state: RequestState):
     bin_counts = torch.zeros((vocab_size + 1,),
                              dtype=torch.long,
                              device=tokens.device)
-    bin_counts.scatter_add_(1, tokens, torch.ones_like(tokens))
+    bin_counts.scatter_add_(0, tokens, torch.ones_like(tokens))
     bin_counts = bin_counts[:vocab_size]
     state.sampling_params.mask_prompt = bin_counts > 0
 
