@@ -70,75 +70,63 @@ def _test_temperature():
             assert torch.allclose(expected[idx], response)
 
 def _test_logit_bias_checker():
-    # logit bias must be [-100, 100]
-    with pytest.raises(ValueError):
-        logit_bias = {1: 2, 3: 105, 2: 2}
-        sampling_param = SamplingParams(logit_bias=logit_bias)
-        get_sampling_metadata([sampling_param])
-
-    with pytest.raises(ValueError):
-        logit_bias = {1: 99, 3: -101, 2: 2}
-        sampling_param = SamplingParams(logit_bias=logit_bias)
-        get_sampling_metadata([sampling_param])
-
-    logit_bias = {1: 100, 3: -100, 2: 2}
-    sampling_param = SamplingParams(logit_bias=logit_bias)
-    get_sampling_metadata([sampling_param])
-
+    # logit bias values must be [-100, 100]
+    get_sampling_metadata([SamplingParams(logit_bias={1: 100, 3: -100, 2: 2})])
+    get_sampling_metadata([SamplingParams(logit_bias={34: 0, 23: -0.5})])
     # TODO(@team): it seems like the valid range is [1,vocab_size]. Double check.
-    logit_bias = {1: 10, 3: -10, vocab_size: 2}
-    sampling_param = SamplingParams(logit_bias=logit_bias)
-    get_sampling_metadata([sampling_param])
+    get_sampling_metadata([SamplingParams(logit_bias={1: 10, 3: -10, vocab_size: 2})])
+    get_sampling_metadata([SamplingParams(logit_bias={})])
 
     with pytest.raises(ValueError):
-        logit_bias = {0: 10, 3: -10}
-        sampling_param = SamplingParams(logit_bias=logit_bias)
-        get_sampling_metadata([sampling_param])
+        get_sampling_metadata([
+            SamplingParams(logit_bias={1: 2, 3: 105, 2: 2})
+        ])
 
     with pytest.raises(ValueError):
-        logit_bias = {1: 10, 3: -10, vocab_size + 100: 2}
-        sampling_param = SamplingParams(logit_bias=logit_bias)
-        get_sampling_metadata([sampling_param])
+        get_sampling_metadata([
+            SamplingParams(logit_bias={1: 99, 3: -101, 2: 2})
+        ])
 
     with pytest.raises(ValueError):
-        logit_bias = {1: 10, -1: -10}
-        sampling_param = SamplingParams(logit_bias=logit_bias)
-        get_sampling_metadata([sampling_param])
+        get_sampling_metadata([
+            SamplingParams(logit_bias={0: 10, 3: -10})
+        ])
+
+    with pytest.raises(ValueError):
+        get_sampling_metadata([
+            SamplingParams(logit_bias={1: 10, 3: -10, vocab_size + 100: 2})
+        ])
+
+    with pytest.raises(ValueError):
+        get_sampling_metadata([
+            SamplingParams(logit_bias={1: 10, -1: -10})
+        ])
 
 
 def _test_logit_bias():
-    # test single batch
-    batch_size = 1
-    shape = (batch_size, vocab_size)
-    logits = torch.rand(shape, dtype=dtype, device=dev)
-    logit_bias = {1: -1, 3: 1, 2: 2}
-    sampling_param = SamplingParams(logit_bias=logit_bias)
-    sampling_metadata = get_sampling_metadata([sampling_param])
-
-    expected = torch.clone(logits)
-    for idx, val in logit_bias.items():
-        expected[0][idx - 1] += val
-    new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
-    assert torch.allclose(expected, new_logits)
-
-    # test multi-batch
-    batch_size = 3
-    shape = (batch_size, vocab_size)
-    logits = torch.rand(shape, dtype=dtype, device=dev)
-    list_logit_bias = [{1: -1, 3: 1, 2: 2}, {4: 2, 5: 1}, {1: -10}]
-    sampling_params = [
-        SamplingParams(logit_bias=logit_bias) for logit_bias in list_logit_bias
-    ]
-    sampling_metadata = get_sampling_metadata(sampling_params)
-
-    expected = torch.clone(logits)
-    for batch_size in range(batch_size):
-        logit_bias = list_logit_bias[batch_size]
-        for idx, val in logit_bias.items():
-            expected[batch_size][idx - 1] += val
-    new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
-    assert torch.allclose(expected, new_logits)
-
+    for batch_size in [1, 4]:
+        shape = (batch_size, vocab_size)
+        logits = torch.rand(shape, dtype=dtype, device=dev)
+        sampling_param = [dict() for _ in range(batch_size)]
+        for logit_bias_combination in permutations(
+            product(
+                [1, 32000, 724, 223],
+                [100, -100, -12.5, 0.05]
+            ),
+            batch_size
+        ):
+            for num_batch in range(len(logit_bias_combination)):
+                logit_index, logit_bias = logit_bias_combination[num_batch]
+                sampling_param[num_batch].update({logit_index: logit_bias})
+        expected = torch.clone(logits)
+        for num_batch in range(batch_size):
+            for idx, val in sampling_param[num_batch].items():
+                expected[num_batch][idx - 1] += val
+        for idx, logit_bias in enumerate(sampling_param):
+            sampling_param[idx] = SamplingParams(logit_bias=logit_bias)
+        sampling_metadata = get_sampling_metadata(sampling_param)
+        new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
+        assert torch.allclose(expected, new_logits)
 
 def _test_penalties_checker():
     # repetition_penalty
