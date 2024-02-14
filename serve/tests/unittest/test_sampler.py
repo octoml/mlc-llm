@@ -462,16 +462,6 @@ def _test_logprobs_checker():
     get_sampling_metadata([SamplingParams(logprobs=True, top_logprobs=0)])
     get_sampling_metadata([SamplingParams(logprobs=True, top_logprobs=5)])
 
-    # TODO: Shouldn't ValueError be raised when logprobs is False but top_logprobs is also set?
-    # with pytest.raises(ValueError):
-    #     get_sampling_metadata([SamplingParams(logprobs=False, top_logprobs=0)])
-
-    # with pytest.raises(ValueError):
-    #     get_sampling_metadata([SamplingParams(logprobs=False, top_logprobs=5)])
-
-    # with pytest.raises(ValueError):
-    #     get_sampling_metadata([SamplingParams(logprobs=False, top_logprobs=-1)])
-
     with pytest.raises(ValueError):
         get_sampling_metadata([SamplingParams(logprobs=True, top_logprobs=-1)])
 
