@@ -4,31 +4,36 @@ import tempfile
 import socket
 from typing import List, Tuple, Sequence
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 import structlog
+
 import torch
+import torch.multiprocessing as multiprocessing
 
 from transformers import AutoConfig
 
-from vllm.model_executor.layers.sampler import get_logits
-from vllm.model_executor.models.llama import LlamaForCausalLM
-from vllm.model_executor.models.qwen import QWenLMHeadModel
-from vllm.model_executor.models.phi import PhiForCausalLM
-from vllm.model_executor.models.mistral import MistralForCausalLM
-from vllm.model_executor.models.mixtral import MixtralForCausalLM
-from vllm.model_executor import InputMetadata, SamplingMetadata
-from vllm.model_executor.parallel_utils.parallel_state import (
-    initialize_model_parallel,
-)
+try:
+    from vllm.model_executor.layers.sampler import get_logits
+    from vllm.model_executor.models.llama import LlamaForCausalLM
+    from vllm.model_executor.models.qwen import QWenLMHeadModel
+    from vllm.model_executor.models.phi import PhiForCausalLM
+    from vllm.model_executor.models.mistral import MistralForCausalLM
+    from vllm.model_executor.models.mixtral import MixtralForCausalLM
+    from vllm.model_executor import InputMetadata, SamplingMetadata
+    from vllm.model_executor.parallel_utils.parallel_state import (
+        initialize_model_parallel,
+    )
+    import rpyc
+    from rpyc.utils.classic import obtain
+    from rpyc.utils.server import ThreadedServer
+    from rpyc.utils.factory import unix_connect
 
-import torch.multiprocessing as multiprocessing
+    support_torch_model = True
 
-import rpyc
-from rpyc.utils.classic import obtain
-from rpyc.utils.server import ThreadedServer
-from rpyc.utils.factory import unix_connect
+except ImportError:
+    support_torch_model = False
 
-from concurrent.futures import ThreadPoolExecutor
 
 from .base import get_hf_config
 from .paged_cache_manager import KVCacheInfo, CacheManager
@@ -335,77 +340,79 @@ def generate(
     )
 
 
-class ModelRpcServer(rpyc.Service):
-    def exposed_init_model(
-        self,
-        tp_rank: int,
-        num_shards: int,
-        model_path: Path,
-        hf_config: AutoConfig,
-        engine_config: MLCServeEngineConfig,
-        master_port: int,
-    ) -> int:
-        hf_config = obtain(hf_config)
-        engine_config = obtain(engine_config)
-        model_path = obtain(model_path)
+if support_torch_model:
+    class ModelRpcServer(rpyc.Service):
+        def exposed_init_model(
+            self,
+            tp_rank: int,
+            num_shards: int,
+            model_path: Path,
+            hf_config: AutoConfig,
+            engine_config: MLCServeEngineConfig,
+            master_port: int,
+        ) -> int:
+            hf_config = obtain(hf_config)
+            engine_config = obtain(engine_config)
+            model_path = obtain(model_path)
 
-        self.vocab_size = hf_config.vocab_size
-        self.sliding_window = hf_config.sliding_window
+            self.vocab_size = hf_config.vocab_size
+            self.sliding_window = hf_config.sliding_window
 
-        # torch.distributed.all_reduce does not free the input tensor until
-        # the synchronization point. This causes the memory usage to grow
-        # as the number of all_reduce calls increases. This env var disables
-        # this behavior.
-        # Related issue:
-        # https://discuss.pytorch.org/t/cuda-allocation-lifetime-for-inputs-to-distributed-all-reduce/191573
-        os.environ["TORCH_NCCL_AVOID_RECORD_STREAMS"] = "1"
+            # This was taken from vLLM
+            # torch.distributed.all_reduce does not free the input tensor until
+            # the synchronization point. This causes the memory usage to grow
+            # as the number of all_reduce calls increases. This env var disables
+            # this behavior.
+            # Related issue:
+            # https://discuss.pytorch.org/t/cuda-allocation-lifetime-for-inputs-to-distributed-all-reduce/191573
+            os.environ["TORCH_NCCL_AVOID_RECORD_STREAMS"] = "1"
 
-        torch.cuda.set_device(tp_rank)
+            torch.cuda.set_device(tp_rank)
 
-        os.environ["MASTER_ADDR"] = str("127.0.0.1")
-        os.environ["MASTER_PORT"] = str(master_port)
+            os.environ["MASTER_ADDR"] = str("127.0.0.1")
+            os.environ["MASTER_PORT"] = str(master_port)
 
-        torch.distributed.init_process_group(
-            backend="nccl",
-            world_size=num_shards,
-            rank=tp_rank,
-        )
-        initialize_model_parallel(num_shards)
+            torch.distributed.init_process_group(
+                backend="nccl",
+                world_size=num_shards,
+                rank=tp_rank,
+            )
+            initialize_model_parallel(num_shards)
 
-        # A small all_reduce for warmup.
-        torch.distributed.all_reduce(torch.zeros(1).cuda())
+            # A small all_reduce for warmup.
+            torch.distributed.all_reduce(torch.zeros(1).cuda())
 
-        self.pt_model = load_model(hf_config, model_path)
+            self.pt_model = load_model(hf_config, model_path)
 
-        self.cache_blocks, num_blocks = profile_and_init_cache(
-            self.pt_model,
-            hf_config,
-            num_shards,
-            engine_config.max_num_batched_tokens,
-        )
+            self.cache_blocks, num_blocks = profile_and_init_cache(
+                self.pt_model,
+                hf_config,
+                num_shards,
+                engine_config.max_num_batched_tokens,
+            )
 
-        return num_blocks
+            return num_blocks
 
-    def exposed_generate(
-        self,
-        requests: Sequence[RequestType],
-        cache: KVCacheInfo,
-    ) -> List[TextGenerationResult]:
-        # TODO(masahi): Currently, obtaining inputs is the bottleneck.
-        # We should switch to the architecture used by Disco and vLLM as of
-        # https://github.com/vllm-project/vllm/pull/2221
-        torch.cuda.nvtx.range_push(f"Obtain input")
-        requests = obtain(requests)
-        cache = obtain(cache)
-        torch.cuda.nvtx.range_pop()
-        return generate(
-            requests,
-            cache,
-            self.pt_model,
-            self.cache_blocks,
-            self.sliding_window,
-            self.vocab_size,
-        )
+        def exposed_generate(
+            self,
+            requests: Sequence[RequestType],
+            cache: KVCacheInfo,
+        ) -> List[TextGenerationResult]:
+            # TODO(masahi): Currently, obtaining inputs is the bottleneck.
+            # We should switch to the architecture used by Disco and vLLM as of
+            # https://github.com/vllm-project/vllm/pull/2221
+            torch.cuda.nvtx.range_push(f"Obtain input")
+            requests = obtain(requests)
+            cache = obtain(cache)
+            torch.cuda.nvtx.range_pop()
+            return generate(
+                requests,
+                cache,
+                self.pt_model,
+                self.cache_blocks,
+                self.sliding_window,
+                self.vocab_size,
+            )
 
 
 def _init_service(socket_path):
@@ -583,6 +590,11 @@ class Model:
 def init_torch_model(
     model_path: Path, engine_config: MLCServeEngineConfig
 ) -> Tuple[TextGenerator, CacheManager]:
+    if not support_torch_model:
+        raise RuntimeError("Running PyTorch models requires vLLM from "
+                           "https://github.com/octoml/vllm/tree/for-mlc-serve installed. "
+                           "Furthermore, rpyc is needed for multi-gpu support.")
+
     hf_config = get_hf_config(model_path)
 
     if engine_config.num_shards is None:
