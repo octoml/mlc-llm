@@ -31,7 +31,7 @@ def get_sampling_metadata(sampling_params, past_output_tokens=None):
     return sampling_metadata
 
 
-def _test_temperature_checker():
+def test_temperature_checker():
     # temperature must be in [0, 2]
     get_sampling_metadata([SamplingParams(temperature=0.0)])
     get_sampling_metadata([SamplingParams(temperature=0.8)])
@@ -44,7 +44,7 @@ def _test_temperature_checker():
     with pytest.raises(ValueError):
         get_sampling_metadata([SamplingParams(temperature=2.1)])
 
-def _test_temperature():
+def test_temperature():
     # single-batch
     shape = (1, vocab_size)
     logits = torch.rand(shape, dtype=dtype, device=dev)
@@ -69,7 +69,7 @@ def _test_temperature():
         for idx, response in enumerate(new_logits):
             assert torch.allclose(expected[idx], response)
 
-def _test_logit_bias_checker():
+def test_logit_bias_checker():
     # logit bias values must be [-100, 100]
     get_sampling_metadata([SamplingParams(logit_bias={1: 100, 3: -100, 2: 2})])
     get_sampling_metadata([SamplingParams(logit_bias={34: 0, 23: -0.5})])
@@ -103,7 +103,7 @@ def _test_logit_bias_checker():
         ])
 
 
-def _test_logit_bias():
+def test_logit_bias():
     for batch_size in [1, 4]:
         shape = (batch_size, vocab_size)
         logits = torch.rand(shape, dtype=dtype, device=dev)
@@ -128,7 +128,7 @@ def _test_logit_bias():
         new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
         assert torch.allclose(expected, new_logits)
 
-def _test_penalties_checker():
+def test_penalties_checker():
     # repetition_penalty
     get_sampling_metadata([SamplingParams(repetition_penalty=0.1)])
     get_sampling_metadata([SamplingParams(repetition_penalty=2.0)])
@@ -229,7 +229,7 @@ def _test_penalties_checker():
         )
 
 
-def _test_penalties():
+def test_penalties():
     def _prepare_metadata(past_output_tokens):
         count_map = []
         for past_output_tokens_per_req in past_output_tokens:
@@ -322,7 +322,7 @@ def _test_penalties():
                 for batch_idx, response in enumerate(new_logits):
                     assert torch.allclose(expected[batch_idx], response)
 
-def _test_top_p_top_k_checker():
+def test_top_p_top_k_checker():
     # top_p must be in (0, 1]
     # top_k must be in (0, vocab_size] (use -1 to consider all tokens)
 
@@ -382,7 +382,7 @@ def _test_top_p_top_k_checker():
             SamplingParams(top_p=0.5, top_k=64),
         ])
 
-def _test_top_p_top_k():
+def test_top_p_top_k():
     def get_expected_result(logits, top_pks, filter_value=-float("Inf")):
         """Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
         Args:
@@ -444,7 +444,7 @@ def _test_top_p_top_k():
             expected = get_expected_result(logits.clone(), top_pks)
             assert torch.allclose(expected, new_logits)
 
-def _test_logprobs_checker():
+def test_logprobs_checker():
     get_sampling_metadata([SamplingParams(logprobs=False)])
     get_sampling_metadata([SamplingParams(logprobs=True)])
     get_sampling_metadata([SamplingParams(logprobs=True, top_logprobs=0)])
@@ -460,7 +460,7 @@ def _test_logprobs_checker():
         get_sampling_metadata([SamplingParams(logprobs=True, top_logprobs=2.5)])
 
 
-def _test_logprobs():
+def test_logprobs():
     for batch_size in [1, 4, 8]:
         shape = (batch_size, vocab_size)
         logits = torch.rand(shape, dtype=dtype, device=dev)
@@ -501,15 +501,3 @@ def _test_logprobs():
                 assert len(output.logprob_infos[idx].top_token_ids) == top_logprobs
                 assert output.logprob_infos[idx].top_logprobs.nelement() != 0
                 assert len(output.logprob_infos[idx].top_logprobs) == top_logprobs
-
-if __name__ == "__main__":
-    _test_temperature_checker()
-    _test_temperature()
-    _test_logit_bias_checker()
-    _test_logit_bias()
-    _test_penalties_checker()
-    _test_penalties()
-    _test_top_p_top_k_checker()
-    _test_top_p_top_k()
-    _test_logprobs_checker()
-    _test_logprobs()
