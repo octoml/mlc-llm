@@ -294,6 +294,10 @@ class LlamaAttentionBase(nn.Module):
             )
             self.query_key_value_proj.weight.shard_dim = 0
             self.query_key_value_proj.weight.shard_strategy = "shard_qkv"
+
+            if config.attention_bias:
+                self.query_key_value_proj.bias.shard_dim = 0
+                self.query_key_value_proj.bias.shard_strategy = "shard_qkv_bias"
         else:
             self.q_proj = Linear(
                 self.hidden_size,
@@ -322,6 +326,10 @@ class LlamaAttentionBase(nn.Module):
         )
         self.o_proj.weight.shard_dim = 1
         self.o_proj.weight.shard_strategy = "shard_o_proj_k"
+
+        if config.attention_bias:
+            self.o_proj.bias.shard_dim = 0
+            self.o_proj.bias.shard_strategy = "shard_o_proj_k_bias"
 
     def project_qkv(self, hidden_states, query_output_shape, kv_output_shape):
         from tvm.relax.op import reshape, split
