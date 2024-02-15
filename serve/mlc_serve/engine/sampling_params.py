@@ -73,7 +73,7 @@ class SamplingParams:
     # TODO(@team): This info comes from the model config.
     # Currently, it is unclear what is the best way to fetch this info and
     # check in `_verify_args` without this field. Follow-up when we have a better idea.
-    vocab_size = 32000
+    vocab_size: int = 32000
     json_schema: Optional[Dict[str, Any]] = None
     logits_processor: Optional[Any] = None
     mask_prompt: Optional[torch.Tensor] = None
