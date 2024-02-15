@@ -34,7 +34,7 @@ from mlc_llm.relax_model.param_manager import (
     chain_parameter_transforms,
     transform_params_for_each_rank,
 )
-from mlc_llm.transform import fuse_split_rotary_embedding, rewrite_attention
+from mlc_llm.transform import fuse_split_rotary_embedding, rewrite_attention, SetEntryFuncs
 from tvm import dlight as dl
 from tvm import relax
 from tvm.contrib.nvcc import parse_compute_version
@@ -1275,7 +1275,6 @@ def generate_mod_transform(model_generators, args, config):
         # optimize_transform_param_order, so that the parameter names can
         # be preserved longer.
         generate_orig_param_names,
-        relax.transform.BundleModelParams(),
         # TODO(Lunderberg): Implement
         # relax.transform.Simplify() that applies
         # canonicalization, CSE, and DCE until
@@ -1286,10 +1285,10 @@ def generate_mod_transform(model_generators, args, config):
         relax.transform.CanonicalizeBindings(),
         relax.transform.EliminateCommonSubexpr(),
         relax.transform.DeadCodeElimination(),
-        # Re-order parameters to avoid needed to load from
-        # multiple pytorch files at the same time.
+        # Re-order parameters to avoid needed to minimize the number
+        # of loaded files required
         tvm.ir.transform.ApplyPassToFunction(
-            param_manager.optimize_transform_param_order(),
+            mlc_llm.transform.ReorderTransformFunc({}),
             ".*transform_params",
         ),
     ]
@@ -1558,6 +1557,9 @@ def build_model_from_args(args: argparse.Namespace):
 
             seq = tvm.ir.transform.Sequential(
                 [
+                    SetEntryFuncs("transform_params"),
+                    transform_params_for_each_rank(num_shards=args.num_shards),
+                    relax.transform.BundleModelParams(),
                     relax.transform.CanonicalizeBindings(),
                     relax.transform.EliminateCommonSubexpr(),
                     relax.transform.DeadCodeElimination(),
