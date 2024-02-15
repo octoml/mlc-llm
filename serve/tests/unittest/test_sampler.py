@@ -8,13 +8,13 @@ dev = "cuda"
 vocab_size = 32000
 
 
-def get_sampling_metadata(sampling_params, past_output_tokens=None):
+def get_sampling_state(sampling_params, past_output_tokens=None):
     batch_size = len(sampling_params)
     if past_output_tokens is None:
         past_output_tokens = [[] for _ in range(batch_size)]
     _copy_stream: torch.cuda.Stream = torch.cuda.Stream()
     with torch.cuda.stream(_copy_stream):
-        sampling_metadata = SamplingState.from_sampling_params(
+        sampling_state = SamplingState.from_sampling_params(
             sampling_params,
             list_past_output_tokens=past_output_tokens,
             dtype=dtype,
@@ -22,7 +22,7 @@ def get_sampling_metadata(sampling_params, past_output_tokens=None):
             vocab_size=vocab_size,
         )
     torch.cuda.current_stream().wait_stream(_copy_stream)
-    return sampling_metadata
+    return sampling_state
 
 
 def _test_temperature(temp=0, batch_size=1):
@@ -32,10 +32,10 @@ def _test_temperature(temp=0, batch_size=1):
         temperature=temp,
     )
 
-    sampling_metadata = get_sampling_metadata([sampling_param])
+    sampling_state = get_sampling_state([sampling_param])
 
     expected = logits / temp if abs(temp) > SAMPLING_EPS else logits
-    new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
+    new_logits = adjust_logits(logits, sampling_state, vocab_size)
     assert torch.allclose(expected, new_logits)
 
 
@@ -44,36 +44,36 @@ def _test_logit_bias_checker():
     with pytest.raises(ValueError):
         logit_bias = {1: 2, 3: 105, 2: 2}
         sampling_param = SamplingParams(logit_bias=logit_bias)
-        get_sampling_metadata([sampling_param])
+        get_sampling_state([sampling_param])
 
     with pytest.raises(ValueError):
         logit_bias = {1: 99, 3: -101, 2: 2}
         sampling_param = SamplingParams(logit_bias=logit_bias)
-        get_sampling_metadata([sampling_param])
+        get_sampling_state([sampling_param])
 
     logit_bias = {1: 100, 3: -100, 2: 2}
     sampling_param = SamplingParams(logit_bias=logit_bias)
-    get_sampling_metadata([sampling_param])
+    get_sampling_state([sampling_param])
 
     # TODO(@team): it seems like the valid range is [1,vocab_size]. Double check.
     logit_bias = {1: 10, 3: -10, vocab_size: 2}
     sampling_param = SamplingParams(logit_bias=logit_bias)
-    get_sampling_metadata([sampling_param])
+    get_sampling_state([sampling_param])
 
     with pytest.raises(ValueError):
         logit_bias = {0: 10, 3: -10}
         sampling_param = SamplingParams(logit_bias=logit_bias)
-        get_sampling_metadata([sampling_param])
+        get_sampling_state([sampling_param])
 
     with pytest.raises(ValueError):
         logit_bias = {1: 10, 3: -10, vocab_size + 100: 2}
         sampling_param = SamplingParams(logit_bias=logit_bias)
-        get_sampling_metadata([sampling_param])
+        get_sampling_state([sampling_param])
 
     with pytest.raises(ValueError):
         logit_bias = {1: 10, -1: -10}
         sampling_param = SamplingParams(logit_bias=logit_bias)
-        get_sampling_metadata([sampling_param])
+        get_sampling_state([sampling_param])
 
 
 def _test_logit_bias():
@@ -83,12 +83,12 @@ def _test_logit_bias():
     logits = torch.rand(shape, dtype=dtype, device=dev)
     logit_bias = {1: -1, 3: 1, 2: 2}
     sampling_param = SamplingParams(logit_bias=logit_bias)
-    sampling_metadata = get_sampling_metadata([sampling_param])
+    sampling_state = get_sampling_state([sampling_param])
 
     expected = torch.clone(logits)
     for idx, val in logit_bias.items():
         expected[0][idx - 1] += val
-    new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
+    new_logits = adjust_logits(logits, sampling_state, vocab_size)
     assert torch.allclose(expected, new_logits)
 
     # test multi-batch
@@ -99,39 +99,39 @@ def _test_logit_bias():
     sampling_params = [
         SamplingParams(logit_bias=logit_bias) for logit_bias in list_logit_bias
     ]
-    sampling_metadata = get_sampling_metadata(sampling_params)
+    sampling_state = get_sampling_state(sampling_params)
 
     expected = torch.clone(logits)
     for batch_size in range(batch_size):
         logit_bias = list_logit_bias[batch_size]
         for idx, val in logit_bias.items():
             expected[batch_size][idx - 1] += val
-    new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
+    new_logits = adjust_logits(logits, sampling_state, vocab_size)
     assert torch.allclose(expected, new_logits)
 
 
 def _test_penalties_checker():
-    get_sampling_metadata([SamplingParams(presence_penalty=-1.0)])
-    get_sampling_metadata([SamplingParams(frequency_penalty=-1.0)])
-    get_sampling_metadata([SamplingParams(repetition_penalty=0.7)])
+    get_sampling_state([SamplingParams(presence_penalty=-1.0)])
+    get_sampling_state([SamplingParams(frequency_penalty=-1.0)])
+    get_sampling_state([SamplingParams(repetition_penalty=0.7)])
 
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(presence_penalty=-2.1)])
+        get_sampling_state([SamplingParams(presence_penalty=-2.1)])
 
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(frequency_penalty=-2.1)])
+        get_sampling_state([SamplingParams(frequency_penalty=-2.1)])
 
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(repetition_penalty=-2.1)])
+        get_sampling_state([SamplingParams(repetition_penalty=-2.1)])
 
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(presence_penalty=2.1)])
+        get_sampling_state([SamplingParams(presence_penalty=2.1)])
 
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(frequency_penalty=2.1)])
+        get_sampling_state([SamplingParams(frequency_penalty=2.1)])
 
     with pytest.raises(ValueError):
-        get_sampling_metadata(
+        get_sampling_state(
             [
                 SamplingParams(frequency_penalty=1.1),
                 SamplingParams(repetition_penalty=2.1),
@@ -187,10 +187,10 @@ def _test_penalties():
             frequency_penalty=frequency_penalties[0],
         )
     ]
-    sampling_metadata = get_sampling_metadata(
+    sampling_state = get_sampling_state(
         sampling_param, past_output_tokens=past_output_tokens
     )
-    new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
+    new_logits = adjust_logits(logits, sampling_state, vocab_size)
     assert torch.allclose(expected, new_logits)
 
     batch_size = 3
@@ -212,34 +212,34 @@ def _test_penalties():
         )
         for i in range(batch_size)
     ]
-    sampling_metadata = get_sampling_metadata(
+    sampling_state = get_sampling_state(
         sampling_params, past_output_tokens=past_output_tokens
     )
-    new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
+    new_logits = adjust_logits(logits, sampling_state, vocab_size)
     assert torch.allclose(expected, new_logits)
 
 
 def _test_top_p_top_k_checker():
-    get_sampling_metadata([SamplingParams(top_p=0.8)])
-    get_sampling_metadata([SamplingParams(top_k=3)])
+    get_sampling_state([SamplingParams(top_p=0.8)])
+    get_sampling_state([SamplingParams(top_k=3)])
 
-    get_sampling_metadata([SamplingParams(top_k=-1)])
-    get_sampling_metadata([SamplingParams(top_k=1)])
-
-    with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(top_p=0.0)])
+    get_sampling_state([SamplingParams(top_k=-1)])
+    get_sampling_state([SamplingParams(top_k=1)])
 
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(top_p=-0.8)])
+        get_sampling_state([SamplingParams(top_p=0.0)])
 
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(top_k=0)])
+        get_sampling_state([SamplingParams(top_p=-0.8)])
 
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(top_k=0.8)])
+        get_sampling_state([SamplingParams(top_k=0)])
 
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(top_k=-2)])
+        get_sampling_state([SamplingParams(top_k=0.8)])
+
+    with pytest.raises(ValueError):
+        get_sampling_state([SamplingParams(top_k=-2)])
 
 
 def _test_top_p_top_k():
@@ -293,8 +293,8 @@ def _test_top_p_top_k():
     sampling_params = [
         SamplingParams(top_p=top_p, top_k=top_k) for _ in range(batch_size)
     ]
-    sampling_metadata = get_sampling_metadata(sampling_params)
-    new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
+    sampling_state = get_sampling_state(sampling_params)
+    new_logits = adjust_logits(logits, sampling_state, vocab_size)
     expected = logits.clone()
     expected = get_expected_result(expected, top_pks=[(top_p, top_k)])
     assert torch.allclose(expected, new_logits)
@@ -306,9 +306,9 @@ def _test_top_p_top_k():
     sampling_params = [
         SamplingParams(top_p=top_p, top_k=top_k) for top_p, top_k in top_pks
     ]
-    sampling_metadata = get_sampling_metadata(sampling_params)
+    sampling_state = get_sampling_state(sampling_params)
 
-    new_logits = adjust_logits(logits, sampling_metadata, vocab_size)
+    new_logits = adjust_logits(logits, sampling_state, vocab_size)
     expected = logits.clone()
     expected = get_expected_result(expected, top_pks)
     assert torch.allclose(expected, new_logits)
