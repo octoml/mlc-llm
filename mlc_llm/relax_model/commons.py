@@ -134,7 +134,6 @@ def _get_shard_strategies(
         "shard_qkv_bias": shard_bias,
         "shard_mlp_k": shard_k_weight_scale,
         "shard_o_proj_k": shard_k_weight_scale,
-        "shard_o_proj_k_bias": shard_bias,
         "shard_gate_up": shard_gate_up_weight_scale,
         "moe_shard_mlp_k": moe_shard_k_weight_scale,
         "moe_shard_gate_up": moe_shard_gate_up_weight_scale,
