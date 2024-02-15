@@ -1017,8 +1017,8 @@ def _create_quantize_func(param_manager: ParamManager) -> tvm.IRModule:
 
 
 def transform_params_for_each_rank(
-    mod: tvm.IRModule, num_shards: int, rank_argument_name: str = "rank_arg"
-) -> tvm.IRModule:
+    num_shards: int, rank_argument_name: str = "rank_arg"
+) -> tvm.ir.transform.Pass:
     """Update a parameter transform to apply across all ranks
 
     For use in generating a pre-sharded set of weights.  Given a
@@ -1049,35 +1049,47 @@ def transform_params_for_each_rank(
 
         The modified parameter transformation
     """
-    generic_transform = mod["transform_params"]
-    tensor_params = generic_transform.params[1:]
 
-    attrs = {}
-    if generic_transform.attrs is not None and "num_input" in generic_transform.attrs:
-        attrs["num_input"] = generic_transform.attrs["num_input"] - 1
+    @tvm.ir.transform.module_pass(opt_level=0, name="ParamManager.transform_params_for_each_rank")
+    def transform_func(mod: tvm.IRModule, _context) -> tvm.IRModule:
+        generic_transform = mod["transform_params"]
 
-    bb = relax.BlockBuilder()
+        if generic_transform.attrs is not None and "num_input" in generic_transform.attrs:
+            num_input = generic_transform.attrs["num_input"].value
+        else:
+            num_input = 0
 
-    with bb.function("transform_params", params=tensor_params, attrs=attrs):
-        output = []
-        for rank in range(num_shards):
-            # TODO(Lunderberg): Implement this in terms of a
-            # generic utility that inlines local functions.
-            func = generic_transform
-            func = func.bind_params({rank_argument_name: relax.ShapeExpr([rank])})
-            func = relax.utils.copy_with_new_vars(func)
-            func = func.bind_params(
-                {var: tensor_param for (var, tensor_param) in zip(func.params, tensor_params)}
-            )
-            shard_tuple = func.body
-            output.extend([shard_tuple[i] for i in range(len(tensor_params))])
+        if num_input == 0:
+            return mod
 
-        with bb.dataflow():
-            gv = bb.emit_output(relax.Tuple(output))
-        bb.emit_func_output(gv)
+        tensor_params = generic_transform.params[num_input:]
+        attrs = {"num_input": num_input - 1}
 
-    mod["transform_params"] = bb.get()["transform_params"]
-    return mod
+        bb = relax.BlockBuilder()
+
+        with bb.function("transform_params", params=tensor_params, attrs=attrs):
+            output = []
+            for rank in range(num_shards):
+                # TODO(Lunderberg): Implement this in terms of a
+                # generic utility that inlines local functions.
+                func = generic_transform
+                func = func.bind_params({rank_argument_name: relax.ShapeExpr([rank])})
+                func = relax.utils.copy_with_new_vars(func)
+                func = func.bind_params(
+                    {var: tensor_param for (var, tensor_param) in zip(func.params, tensor_params)}
+                )
+                shard_tuple = func.body
+                output.extend([shard_tuple[i] for i in range(len(tensor_params))])
+
+            with bb.dataflow():
+                gv = bb.emit_output(relax.Tuple(output))
+            bb.emit_func_output(gv)
+
+        mod = mod.clone()
+        mod["transform_params"] = bb.get()["transform_params"]
+        return mod
+
+    return transform_func
 
 
 def chain_parameter_transforms(mod_a: tvm.IRModule, mod_b: tvm.IRModule) -> tvm.IRModule:
