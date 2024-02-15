@@ -83,7 +83,7 @@ def init_cache_blocks(head_size, num_layers, num_heads, block_size, num_gpu_bloc
     return gpu_cache
 
 
-def profile_memory_usage(pt_model, seq_lens, num_hidden_layers):
+def profile_memory_usage(pt_model, seq_lens, num_hidden_layers, vocab_size):
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
 
@@ -98,12 +98,21 @@ def profile_memory_usage(pt_model, seq_lens, num_hidden_layers):
         input_positions.append(list(range(seq_len)))
         slot_mapping.append([0] * seq_len)
 
+    selected_token_indices: List[int] = []
+
+    max_prompt_len = max(seq_lens)
+    seq_start = 0
+
+    for prompt_len in seq_lens:
+        selected_token_indices.append(seq_start + prompt_len - 1)
+        seq_start += max_prompt_len
+
     input_ids = torch.cuda.LongTensor(input_tokens)
     positions = torch.cuda.LongTensor(input_positions)
     slot_mapping_tensor = torch.cuda.LongTensor(slot_mapping)
     prompt_lens_tensor = torch.cuda.LongTensor(seq_lens)
 
-    peak_memory = torch.cuda.max_memory_allocated()
+    peak_memory_before = torch.cuda.max_memory_allocated()
 
     input_metadata = InputMetadata(
         is_prompt=True,
@@ -117,19 +126,37 @@ def profile_memory_usage(pt_model, seq_lens, num_hidden_layers):
         use_cuda_graph=False,
     )
 
+    sampling_metadata = SamplingMetadata(
+        seq_groups=None,
+        seq_data=None,
+        prompt_lens=seq_lens,
+        selected_token_indices=torch.tensor(
+            selected_token_indices, dtype=torch.long, device="cuda"
+        ),
+        categorized_sample_indices=None,
+    )
+
     kv_caches = [(None, None)] * num_hidden_layers
 
     with torch.no_grad():
-        pt_model.forward(
+        hidden_states = pt_model.forward(
             input_ids,
             positions,
             kv_caches,
             input_metadata,
         )
 
+        _ = get_logits(
+            pt_model.lm_head.weight,
+            hidden_states,
+            sampling_metadata,
+            vocab_size,
+        )
+
     torch.cuda.synchronize()
 
     peak_memory = torch.cuda.max_memory_allocated()
+    print(f"peak memory during profling: {(peak_memory - peak_memory_before) / 1e9} GB")
 
     torch.cuda.empty_cache()
 
@@ -151,7 +178,9 @@ def profile_and_init_cache(
     if max_num_batched_tokens > 0:
         LOG.info("Running memory profiling.")
         seq_lens = [1] * max_num_batched_tokens
-        used_memory_bytes = profile_memory_usage(pt_model, seq_lens, num_hidden_layers)
+        used_memory_bytes = profile_memory_usage(
+            pt_model, seq_lens, num_hidden_layers, hf_config.vocab_size
+        )
         num_blocks = get_num_cache_blocks(
             used_memory_bytes,
             block_size,
@@ -341,6 +370,7 @@ def generate(
 
 
 if support_torch_model:
+
     class ModelRpcServer(rpyc.Service):
         def exposed_init_model(
             self,
@@ -591,9 +621,11 @@ def init_torch_model(
     model_path: Path, engine_config: MLCServeEngineConfig
 ) -> Tuple[TextGenerator, CacheManager]:
     if not support_torch_model:
-        raise RuntimeError("Running PyTorch models requires vLLM from "
-                           "https://github.com/octoml/vllm/tree/for-mlc-serve installed. "
-                           "Furthermore, rpyc is needed for multi-gpu support.")
+        raise RuntimeError(
+            "Running PyTorch models requires vLLM from "
+            "https://github.com/octoml/vllm/tree/for-mlc-serve installed. "
+            "Furthermore, rpyc is needed for multi-gpu support."
+        )
 
     hf_config = get_hf_config(model_path)
 
