@@ -8,41 +8,16 @@ from mlc_serve.engine import (
     DebugOptions,
     SamplingParams,
     StoppingCriteria,
-    get_engine_config,
 )
-from mlc_serve.engine.staging_engine import StagingInferenceEngine
-from mlc_serve.engine.sync_engine import SynchronousInferenceEngine
-from mlc_serve.model.paged_cache_model import HfTokenizerModule, PagedCacheModelModule
-from mlc_serve.utils import get_default_mlc_serve_argparser, postproc_mlc_serve_args
+from mlc_serve.utils import (
+    get_default_mlc_serve_argparser,
+    postproc_mlc_serve_args,
+    create_mlc_engine,
+)
 
 
 def _test(args: argparse.Namespace):
-    engine_config = get_engine_config(
-        {
-            "use_staging_engine": args.use_staging_engine,
-            "max_num_batched_tokens": args.max_num_batched_tokens,
-            "min_decode_steps": args.min_decode_steps,
-            "max_decode_steps": args.max_decode_steps,
-        }
-    )
-
-    if args.use_staging_engine:
-        engine = StagingInferenceEngine(
-            tokenizer_module=HfTokenizerModule(args.model_artifact_path),
-            model_module_loader=PagedCacheModelModule,
-            model_module_loader_kwargs={
-                "model_artifact_path": args.model_artifact_path,
-                "engine_config": engine_config,
-            },
-        )
-        engine.start()
-    else:
-        engine = SynchronousInferenceEngine(
-            PagedCacheModelModule(
-                model_artifact_path=args.model_artifact_path,
-                engine_config=engine_config,
-            )
-        )
+    engine = create_mlc_engine(args)
 
     sampling_params_greedy = SamplingParams(
         temperature=0.0,

@@ -9,13 +9,13 @@ dev = "cuda"
 vocab_size = 32000
 
 
-def get_sampling_metadata(sampling_params, past_output_tokens=None):
+def get_sampling_state(sampling_params, past_output_tokens=None):
     batch_size = len(sampling_params)
     if past_output_tokens is None:
         past_output_tokens = [[] for _ in range(batch_size)]
     _copy_stream: torch.cuda.Stream = torch.cuda.Stream()
     with torch.cuda.stream(_copy_stream):
-        sampling_metadata = SamplingState.from_sampling_params(
+        sampling_state = SamplingState.from_sampling_params(
             sampling_params,
             list_past_output_tokens=past_output_tokens,
             dtype=dtype,
@@ -23,7 +23,7 @@ def get_sampling_metadata(sampling_params, past_output_tokens=None):
             vocab_size=vocab_size,
         )
     torch.cuda.current_stream().wait_stream(_copy_stream)
-    return sampling_metadata
+    return sampling_state
 
 
 def test_temperature_checker():
@@ -142,7 +142,7 @@ def test_penalties_checker():
     get_sampling_metadata([SamplingParams(presence_penalty=2.0)])
 
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(presence_penalty=-2.1)])
+        get_sampling_state([SamplingParams(presence_penalty=-2.1)])
 
     with pytest.raises(ValueError):
         get_sampling_metadata([SamplingParams(presence_penalty=2.1)])
@@ -189,7 +189,7 @@ def test_penalties_checker():
         )
 
     with pytest.raises(ValueError):
-        get_sampling_metadata(
+        get_sampling_state(
             [
                 SamplingParams(frequency_penalty=1.1),
                 SamplingParams(repetition_penalty=1.1),
@@ -374,7 +374,6 @@ def test_top_p_top_k_checker():
                 SamplingParams(top_p=0.5, top_k=64),
             ]
         )
-
 
 def test_top_p_top_k():
     def get_expected_result(logits, top_pks, filter_value=-float("Inf")):

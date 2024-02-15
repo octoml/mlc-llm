@@ -4,12 +4,14 @@ import os
 import json
 import inspect
 
+
 # TODO(@sunggg): consider transition to something like Pydantic
 @dataclass
 class ModelArtifactConfig:
     model_artifact_path: Optional[str] = None
     num_shards: Optional[int] = None
     quantization: Optional[str] = None
+    paged_kv_cache_type: Optional[str] = None
     model_type: Optional[str] = None
     library_name: Optional[str] = None
     max_context_length: Optional[int] = None
@@ -31,10 +33,12 @@ class ModelArtifactConfig:
             }
         )
 
+
 class AssetNotFound(Exception):
     def __init__(self, asset_path):
         self.asset_path = asset_path
         super().__init__(f"{self.asset_path} should exist. Did you build with `--enable-batching`?")
+
 
 def get_model_artifact_config(model_artifact_path):
     json_object = {"model_artifact_path": model_artifact_path}
@@ -48,5 +52,8 @@ def get_model_artifact_config(model_artifact_path):
 
         with open(config_file_path, mode="rt", encoding="utf-8") as f:
             json_object.update(json.load(f))
+
+    if not "paged_kv_cache_type" in json_object:
+        json_object["paged_kv_cache_type"] = "vllm"
 
     return ModelArtifactConfig._from_json(json_object)

@@ -119,12 +119,10 @@ class KVCacheInfo:
 
 
 class CacheManager:
-    block_size: int = 16
-
     @staticmethod
-    def get_cache_block_size(num_layers, num_heads, head_size):
+    def get_cache_block_size(block_size, num_layers, num_heads, head_size):
         # Taken from vllm/worker/cache_engine.py
-        key_cache_block = CacheManager.block_size * num_heads * head_size
+        key_cache_block = block_size * num_heads * head_size
         value_cache_block = key_cache_block
         total = num_layers * (key_cache_block + value_cache_block)
         dtype_size = 2  # fp16
@@ -133,9 +131,11 @@ class CacheManager:
     def __init__(
         self,
         num_blocks: int,
+        block_size: int,
         sliding_window: Optional[int] = None,
     ):
         self.num_blocks = num_blocks
+        self.block_size = block_size
         self.free_blocks = list(range(num_blocks))
         self.kv_cache_info = KVCacheInfo(self.block_size)
         self.token_counts = dict[SequenceId, int]()

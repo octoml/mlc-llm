@@ -2,6 +2,7 @@
 Common utilites for engine classes.
 """
 
+import torch
 import time
 from typing import Tuple, Deque, Dict, Optional, Union, Callable, List
 from collections import deque
@@ -240,6 +241,18 @@ def prepare_output(
     return delta, out_logprob_info
 
 
+def set_mask_prompt_to(state: RequestState):
+    # Prompt tokens
+    tokens=torch.tensor(state.prompt_token_ids, dtype=torch.long)
+    vocab_size = state.sampling_params.vocab_size
+    bin_counts = torch.zeros((vocab_size + 1,),
+                             dtype=torch.long,
+                             device=tokens.device)
+    bin_counts.scatter_add_(0, tokens, torch.ones_like(tokens))
+    bin_counts = bin_counts[:vocab_size]
+    state.sampling_params.mask_prompt = bin_counts > 0
+
+
 def get_requests_to_process(
     current_states: list[RequestState],
     cache_manager: KVCacheManager,
@@ -264,6 +277,9 @@ def get_requests_to_process(
     if is_prompt_batch:
         for state in current_states:
             if is_evicted_parallel_sampling_request(state):
+                # TODO(vvchernov): we still need mask if apply_penalty = True
+                # if state.sampling_params.repetition_penalty != 1.0:
+                # set_mask_prompt_to(state)
                 requests.append(
                     PrefillRequest(
                         request_id=state.request_id,
@@ -311,6 +327,9 @@ def get_requests_to_process(
                 else:
                     token_ids = state.prompt_token_ids
 
+                # TODO(vvchernov): we still need mask if apply_penalty = True
+                # if state.sampling_params.repetition_penalty != 1.0:
+                set_mask_prompt_to(state)
                 requests.append(
                     PrefillRequest(
                         request_id=state.request_id,

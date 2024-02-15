@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 from functools import cached_property
 from typing import Dict, Optional, Any
+import torch
 
 _SAMPLING_EPS = 1e-5
 LOGPROB_TOP_K_MAX = 5
@@ -72,15 +73,16 @@ class SamplingParams:
     # TODO(@team): This info comes from the model config.
     # Currently, it is unclear what is the best way to fetch this info and
     # check in `_verify_args` without this field. Follow-up when we have a better idea.
-    vocab_size = 32000
+    vocab_size: int = 32000
     json_schema: Optional[Dict[str, Any]] = None
     logits_processor: Optional[Any] = None
+    mask_prompt: Optional[torch.Tensor] = None
 
     def __post_init__(self):
         if self.logit_bias:
             self.logit_bias_index = list(self.logit_bias.keys())
             self.logit_bias_value = list(self.logit_bias.values())
-        self._verify_args()
+        self.verify()
         if self.temperature < _SAMPLING_EPS:
             # Zero temperature means greedy sampling.
             self.top_p = 1.0
@@ -89,7 +91,7 @@ class SamplingParams:
         if not self.logprobs:
             self.top_logprobs = 0
 
-    def _verify_args(self) -> None:
+    def verify(self) -> None:
         if not -2.0 <= self.presence_penalty <= 2.0:
             raise ValueError(
                 "presence_penalty must be in [-2, 2], got " f"{self.presence_penalty}."
