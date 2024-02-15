@@ -11,7 +11,7 @@ from mlc_serve.model.base import get_model_artifact_config
 from mlc_serve.utils import get_default_mlc_serve_argparser, postproc_mlc_serve_args, create_mlc_engine
 import random
 from pydantic import BaseModel
-from typing import List
+from typing import List, Callable
 
 
 def create_request(
@@ -258,6 +258,46 @@ def _test_logprobs(
                     == req.sampling_params.top_logprobs
                 )
                 generated[int(res.request_id)] += seq.delta
+
+    # If temperature is increasing then difference between
+    # boundaries of range of top logprobs in response must decrease
+    temperatures = [0.2, 1.1, 2.0]
+    mean_bounds_diff = [0 for _ in range(num_requests * len(temperatures))]
+    for idx, temp in enumerate(temperatures):
+        requests = [
+            create_request(
+                idx=str(n),
+                prompt=random.choice(prompts),
+                temp=temp,
+                freq_pen=0,
+                pre_pen=0,
+                max_tokens=300,
+                stop=None,
+                ignore_eos=True,
+                logprobs=True,
+                top_logprobs=5
+            )
+            for n in range(num_requests)
+        ]
+        engine.add(requests)
+
+        while engine.has_pending_requests():
+            results = engine.step()
+            for res in results.outputs:
+                seq = res.sequences[0]
+                req = requests[int(res.request_id)]
+
+                if not seq.is_finished:
+                    mean_bounds_diff[idx * num_requests + int(res.request_id)] += \
+                        seq.logprob_info[0].top_logprobs[0].logprob \
+                        - seq.logprob_info[0].top_logprobs[4].logprob
+                else:
+                    mean_bounds_diff[idx * num_requests + int(res.request_id)] /= seq.num_generated_tokens
+
+    for num_req_batch in range(num_requests):
+        for idx in range(1, len(temperatures)):
+            assert mean_bounds_diff[idx * num_requests + num_req_batch] < \
+                   mean_bounds_diff[(idx - 1) * num_requests + num_req_batch]
 
 
 def _test_logprobs_mixed_requests(
