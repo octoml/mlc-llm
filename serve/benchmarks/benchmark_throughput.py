@@ -142,6 +142,7 @@ def run_mlc(engine, requests, args) -> float:
                         logprobs=args.sampling_setting["logprobs"],
                         top_logprobs=args.sampling_setting["top_logprobs"],
                         json_schema=args.sampling_setting["json_schema"],
+                        vocab_size=engine.model_artifact_config.vocab_size,
                     ),
                     stopping_criteria=StoppingCriteria(
                         max_tokens=args.num_output_tokens, stop_sequences=None
