@@ -256,7 +256,7 @@ class SamplingState:
         cls,
         sampling_params: List[SamplingParams],
         list_past_output_tokens: List[List[int]],
-        list_mask_prompt: List[List[bool]],
+        list_mask_prompt: List[torch.Tensor],
         dtype: torch.dtype,
         dev: str,
         vocab_size: int,

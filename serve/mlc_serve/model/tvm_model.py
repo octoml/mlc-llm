@@ -263,7 +263,7 @@ class Model:
         last_query_offsets: List[int] = []
         sampling_params = []
         past_decode_tokens = []
-        prompt_masks: List[List[bool]] = []
+        prompt_masks: List[torch.Tensor] = []
         for request in requests:
             assert not isinstance(request.queries, DraftTokens)
             sequence_ids.append(request.sequence_id)

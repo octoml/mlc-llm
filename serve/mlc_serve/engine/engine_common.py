@@ -2,11 +2,11 @@
 Common utilites for engine classes.
 """
 
+import torch
 import time
 from typing import Tuple, Deque, Dict, Optional, Callable, List
 from collections import deque
 from threading import Condition, Lock
-import numpy as np
 
 import structlog
 
@@ -58,10 +58,14 @@ def get_new_request_state(
     # TODO: Currently, always create this. But we only need this for the requests with repetition penalty
     #       Follow-up and optimize when it has been stabilized.
     # Create prompt mask for repetition penalty
-    tokens = np.array([prompt_token_ids], dtype=np.int64)
-    prompt_mask = np.zeros((vocab_size + 1,), dtype=bool)
-    prompt_mask[tokens] = True
-    prompt_mask = list(prompt_mask[:vocab_size])
+    tokens=torch.tensor(prompt_token_ids, dtype=torch.long)
+    vocab_size = request.sampling_params.vocab_size
+    bin_counts = torch.zeros((vocab_size + 1,),
+                             dtype=torch.long,
+                             device=tokens.device)
+    bin_counts.scatter_add_(0, tokens, torch.ones_like(tokens))
+    bin_counts = bin_counts[:vocab_size]
+    prompt_mask = bin_counts > 0
 
     validation_err = None
     if request.validate_tokens is not None:
