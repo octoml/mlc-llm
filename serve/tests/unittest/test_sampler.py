@@ -17,7 +17,7 @@ def get_sampling_state(sampling_params, past_output_tokens=None, prompt_masks=No
     if past_output_tokens is None:
         past_output_tokens = [[] for _ in range(batch_size)]
     if prompt_masks is None:
-        prompt_masks = [[] for _ in range(batch_size)]
+        prompt_masks = [[False for _ in range(vocab_size)] for _ in range(batch_size)]
     _copy_stream: torch.cuda.Stream = torch.cuda.Stream()
     with torch.cuda.stream(_copy_stream):
         sampling_state = SamplingState.from_sampling_params(
