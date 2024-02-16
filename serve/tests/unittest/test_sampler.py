@@ -3,21 +3,25 @@ import torch
 import pytest
 from mlc_serve.model.sampler import SamplingState, adjust_logits, sample, SamplingOutput
 from mlc_serve.engine import SamplingParams, SAMPLING_EPS
+import random
 
 dtype = torch.float32
 dev = "cuda"
 vocab_size = 32000
 
 
-def get_sampling_state(sampling_params, past_output_tokens=None):
+def get_sampling_state(sampling_params, past_output_tokens=None, prompt_masks=None):
     batch_size = len(sampling_params)
     if past_output_tokens is None:
         past_output_tokens = [[] for _ in range(batch_size)]
+    if prompt_masks is None:
+        prompt_masks = [[] for _ in range(batch_size)]
     _copy_stream: torch.cuda.Stream = torch.cuda.Stream()
     with torch.cuda.stream(_copy_stream):
         sampling_state = SamplingState.from_sampling_params(
             sampling_params,
             list_past_output_tokens=past_output_tokens,
+            list_mask_prompt=prompt_masks,
             dtype=dtype,
             dev=dev,
             vocab_size=vocab_size,
@@ -117,15 +121,28 @@ def test_logit_bias():
 
 
 def test_penalties_checker():
+    prompt_masks = [[False] * vocab_size] * batch_size
     # repetition_penalty
-    get_sampling_metadata([SamplingParams(repetition_penalty=0.1)])
-    get_sampling_metadata([SamplingParams(repetition_penalty=2.0)])
+    get_sampling_metadata(
+        [SamplingParams(repetition_penalty=0.1)], 
+        prompt_masks=prompt_masks
+    )
+    get_sampling_metadata(
+        [SamplingParams(repetition_penalty=2.0)], 
+        prompt_masks=prompt_masks
+    )
 
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(repetition_penalty=0.0)])
+        get_sampling_metadata(
+            [SamplingParams(repetition_penalty=0.0)], 
+            prompt_masks=prompt_masks
+        )
 
     with pytest.raises(ValueError):
-        get_sampling_metadata([SamplingParams(repetition_penalty=-2.0)])
+        get_sampling_metadata(
+            [SamplingParams(repetition_penalty=-2.0)], 
+            prompt_masks=prompt_masks
+        )
 
     # frequency_penalty
     get_sampling_metadata([SamplingParams(frequency_penalty=-2.0)])
@@ -149,23 +166,27 @@ def test_penalties_checker():
 
     # combinations of penalties with valid values
     get_sampling_metadata(
-        [SamplingParams(repetition_penalty=0.5, presence_penalty=0.5, frequency_penalty=0.0)]
+        [SamplingParams(repetition_penalty=0.5, presence_penalty=0.5, frequency_penalty=0.0)],
+        prompt_masks=prompt_masks
     )
 
     # combinations of penalties with invalid values
     with pytest.raises(ValueError):
         get_sampling_metadata(
-            [SamplingParams(repetition_penalty=-0.5, presence_penalty=0.5, frequency_penalty=0.0)]
+            [SamplingParams(repetition_penalty=-0.5, presence_penalty=0.5, frequency_penalty=0.0)],
+            prompt_masks=prompt_masks
         )
 
     with pytest.raises(ValueError):
         get_sampling_metadata(
-            [SamplingParams(repetition_penalty=0.5, presence_penalty=2.5, frequency_penalty=0.0)]
+            [SamplingParams(repetition_penalty=0.5, presence_penalty=2.5, frequency_penalty=0.0)],
+            prompt_masks=prompt_masks
         )
 
     with pytest.raises(ValueError):
         get_sampling_metadata(
-            [SamplingParams(repetition_penalty=0.5, presence_penalty=0.5, frequency_penalty=-3.0)]
+            [SamplingParams(repetition_penalty=0.5, presence_penalty=0.5, frequency_penalty=-3.0)],
+            prompt_masks=prompt_masks
         )
 
     # penalties with valid values in multi-batch
@@ -174,7 +195,8 @@ def test_penalties_checker():
             SamplingParams(repetition_penalty=1.5),
             SamplingParams(presence_penalty=0.5),
             SamplingParams(frequency_penalty=0.0),
-        ]
+        ],
+        prompt_masks=prompt_masks
     )
 
     # penalties with invalid values in multi-batch
@@ -185,7 +207,8 @@ def test_penalties_checker():
                 SamplingParams(repetition_penalty=1.1),
                 SamplingParams(presence_penalty=1.1),
                 SamplingParams(frequency_penalty=1.1),
-            ]
+            ],
+            prompt_masks=prompt_masks
         )
 
     with pytest.raises(ValueError):
@@ -195,7 +218,8 @@ def test_penalties_checker():
                 SamplingParams(repetition_penalty=1.1),
                 SamplingParams(presence_penalty=1.1),
                 SamplingParams(repetition_penalty=0.0),
-            ]
+            ],
+            prompt_masks=prompt_masks
         )
 
     with pytest.raises(ValueError):
@@ -205,9 +229,9 @@ def test_penalties_checker():
                 SamplingParams(repetition_penalty=1.1),
                 SamplingParams(presence_penalty=1.1),
                 SamplingParams(presence_penalty=2.1),
-            ]
+            ],
+            prompt_masks=prompt_masks
         )
-
 
 def test_penalties():
     def _prepare_metadata(past_output_tokens):
@@ -485,3 +509,23 @@ def test_logprobs():
                 assert len(output.logprob_infos[idx].top_token_ids) == top_logprobs
                 assert output.logprob_infos[idx].top_logprobs.nelement() != 0
                 assert len(output.logprob_infos[idx].top_logprobs) == top_logprobs
+
+
+def test_mixture_of_requests():
+    # Mixed greedy & top_p/top_ks
+    batch_size = 6
+    shape = (batch_size, vocab_size)
+    logits = torch.rand(shape, dtype=dtype, device=dev)
+    top_pks = [(0.7, 3), (1.0, -1), (1.0, -1), (0.5, 2), (1.0, -1), (0.8, 5)]
+    temps = [0.8, 0.8, 0.0, 0.0, 0.0, 0.7]
+    sampling_params = [
+        SamplingParams(temperature=temps[i], top_p=top_p, top_k=top_k)
+        for i, (top_p, top_k) in enumerate(top_pks)
+    ]
+    sampling_state = get_sampling_state(sampling_params)
+    new_logits = adjust_logits(logits, sampling_state, vocab_size)
+
+    # TODO(team): please follow-up. correctness check
+    # expected = logits.clone()
+    # expected = get_expected_result(expected, top_pks)
+    # assert torch.allclose(expected, new_logits)

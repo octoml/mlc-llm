@@ -2,11 +2,11 @@
 Common utilites for engine classes.
 """
 
-import torch
 import time
-from typing import Tuple, Deque, Dict, Optional, Union, Callable, List
+from typing import Tuple, Deque, Dict, Optional, Callable, List
 from collections import deque
 from threading import Condition, Lock
+import numpy as np
 
 import structlog
 
@@ -38,8 +38,12 @@ from .constrained_sampling import JSONLogitsProcessor
 LOG = structlog.stdlib.get_logger(__name__)
 
 
+# TODO: check if we can drop vocab_size here
 def get_new_request_state(
-    request: Request, conversation_template: ConversationTemplate, tokenizer: TokenizerP
+    request: Request,
+    conversation_template: ConversationTemplate,
+    tokenizer: TokenizerP,
+    vocab_size: int,
 ) -> RequestState:
     if request.debug_options.prompt_token_ids is not None:
         prompt_token_ids = request.debug_options.prompt_token_ids
@@ -50,6 +54,14 @@ def get_new_request_state(
             prompt = conversation_template.apply(request.messages)
 
         prompt_token_ids = tokenizer.encode(prompt)
+
+    # TODO: Currently, always create this. But we only need this for the requests with repetition penalty
+    #       Follow-up and optimize when it has been stabilized.
+    # Create prompt mask for repetition penalty
+    tokens = np.array([prompt_token_ids], dtype=np.int64)
+    prompt_mask = np.zeros((vocab_size + 1,), dtype=bool)
+    prompt_mask[tokens] = True
+    prompt_mask = list(prompt_mask[:vocab_size])
 
     validation_err = None
     if request.validate_tokens is not None:
@@ -68,6 +80,7 @@ def get_new_request_state(
     return RequestState(
         request_id=request.request_id,
         prompt_token_ids=prompt_token_ids,
+        prompt_mask=prompt_mask,
         generation_sequences=gen_seqs,
         sampling_params=request.sampling_params,
         stopping_criteria=request.stopping_criteria,
@@ -111,9 +124,7 @@ def detokenize_incrementally(
             prefix_end_offset = max(len(output_tokens) - 1, 0)
     else:
         # Put new_token_id in a list so skip_special_tokens is respected
-        new_tokens = tokenizer.convert_ids_to_tokens(
-            [new_token_id]
-        )
+        new_tokens = tokenizer.convert_ids_to_tokens([new_token_id])
         output_tokens = generation_sequence.prev_tokens + new_tokens
 
         prefix_begin_offset = generation_sequence.prefix_begin_offset
@@ -241,18 +252,6 @@ def prepare_output(
     return delta, out_logprob_info
 
 
-def set_mask_prompt_to(state: RequestState):
-    # Prompt tokens
-    tokens=torch.tensor(state.prompt_token_ids, dtype=torch.long)
-    vocab_size = state.sampling_params.vocab_size
-    bin_counts = torch.zeros((vocab_size + 1,),
-                             dtype=torch.long,
-                             device=tokens.device)
-    bin_counts.scatter_add_(0, tokens, torch.ones_like(tokens))
-    bin_counts = bin_counts[:vocab_size]
-    state.sampling_params.mask_prompt = bin_counts > 0
-
-
 def get_requests_to_process(
     current_states: list[RequestState],
     cache_manager: KVCacheManager,
@@ -277,13 +276,11 @@ def get_requests_to_process(
     if is_prompt_batch:
         for state in current_states:
             if is_evicted_parallel_sampling_request(state):
-                # TODO(vvchernov): we still need mask if apply_penalty = True
-                # if state.sampling_params.repetition_penalty != 1.0:
-                # set_mask_prompt_to(state)
                 requests.append(
                     PrefillRequest(
                         request_id=state.request_id,
                         token_ids=state.prompt_token_ids,
+                        prompt_mask=state.prompt_mask,
                         num_sequence=state.num_sequences,
                         sampling_params=state.sampling_params,
                     )
@@ -327,13 +324,11 @@ def get_requests_to_process(
                 else:
                     token_ids = state.prompt_token_ids
 
-                # TODO(vvchernov): we still need mask if apply_penalty = True
-                # if state.sampling_params.repetition_penalty != 1.0:
-                set_mask_prompt_to(state)
                 requests.append(
                     PrefillRequest(
                         request_id=state.request_id,
                         token_ids=token_ids,
+                        prompt_mask=state.prompt_mask,
                         num_sequence=state.num_sequences,
                         sampling_params=state.sampling_params,
                     )
@@ -355,6 +350,7 @@ def get_requests_to_process(
                         DecodeRequest(
                             sequence_id=gen_seq.seq_id,
                             prompt_token_counts=prompt_counts,
+                            prompt_mask=state.prompt_mask,
                             token_ids=gen_seq.generated_token_ids,
                             sampling_params=state.sampling_params,
                         )

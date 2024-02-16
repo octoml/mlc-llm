@@ -120,7 +120,10 @@ class StagingInferenceEngine(ScopedInferenceEngine):
 
             # If the request violates the tokenization, this returns None, so skip.
             state = get_new_request_state(
-                req, self.conversation_template, self.tokenizer
+                req,
+                self.conversation_template,
+                self.tokenizer,
+                self.model_artifact_config.vocab_size,
             )
             new_request_states.append(state)
 

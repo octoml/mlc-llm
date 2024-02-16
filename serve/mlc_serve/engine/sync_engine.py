@@ -64,7 +64,10 @@ class SynchronousInferenceEngine(InferenceEngine, EngineBase):
                 assert isinstance(req.stopping_criteria.stop_sequences, list)
 
             state = get_new_request_state(
-                req, self.conversation_template, self.tokenizer
+                req,
+                self.conversation_template,
+                self.tokenizer,
+                self.model_artifact_config.vocab_size,
             )
             new_request_states.append(state)
             self.num_sequences_per_requests[state.request_id] = state.num_sequences

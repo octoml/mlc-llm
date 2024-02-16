@@ -21,6 +21,7 @@ class PrefillRequest:
     request_id: RequestId
     # `token_ids` contains prompt token ids
     token_ids: List[int]
+    prompt_mask: Optional[List[bool]]
     # Number of sequences to generate
     num_sequence: int
     sampling_params: SamplingParams
@@ -36,6 +37,7 @@ class PrefillRequest:
 class DecodeRequest:
     sequence_id: SequenceId
     prompt_token_counts: int
+    prompt_mask: Optional[List[bool]]
     # Decoded tokens for this sequence
     token_ids: List[int]
     sampling_params: SamplingParams
