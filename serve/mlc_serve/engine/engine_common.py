@@ -293,10 +293,16 @@ def get_requests_to_process(
                 token_counts += len(state.prompt_token_ids)
 
                 for gen_seq in state.generation_sequences:
+                    # TODO(vvchernov): This is for repetion penalty
+                    # Not obvious EvalMultiQueryRequest needs this
+                    # Now empty instead of state.prompt_mask
+                    vocab_size = state.sampling_params.vocab_size
+                    prompt_mask = torch.zeros((vocab_size,), dtype=torch.bool)
                     requests.append(
                         EvalMultiQueryRequest(
                             sequence_id=gen_seq.seq_id,
                             num_past_tokens=state.prompt_len,
+                            prompt_mask=prompt_mask,
                             queries=EvictedTokens(gen_seq.generated_token_ids),
                             sampling_params=state.sampling_params,
                         )

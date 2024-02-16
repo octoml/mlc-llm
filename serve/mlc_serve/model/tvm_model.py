@@ -274,8 +274,9 @@ class Model:
                     last_query_offsets[-1] + request.queries.num_tokens
                 )
             sampling_params.append(request.sampling_params)
-            # TODO: Empty mask for now. This is for repetion penalty
-            prompt_masks.append([False])
+            # TODO(vvchernov): This is for repetion penalty
+            # Not obvious EvalMultiQueryRequest needs this
+            prompt_masks.append(request.prompt_mask)
             # Use `vocab_size` as a padding
             past_decode_tokens.append([self.vocab_size, *request.queries.token_ids])
 

@@ -66,6 +66,7 @@ class EvictedTokens:
 class EvalMultiQueryRequest:
     sequence_id: SequenceId
     num_past_tokens: int
+    prompt_mask: Optional[torch.Tensor]
     queries: Union[DraftTokens, EvictedTokens]
     sampling_params: SamplingParams
 
