@@ -97,7 +97,7 @@ def get_new_request_state(
 
 # Based on vllm: https://github.com/vllm-project/vllm/pull/984
 def detokenize_incrementally(
-    prompt_tokens: list[int],
+    prompt_tokens: List[int],
     generation_sequence: GenerationSequence,
     tokenizer: TokenizerP,
     new_token_id: Optional[int] = None,
@@ -232,8 +232,8 @@ def prepare_logprob(
 
 def prepare_output(
     gen_seq: GenerationSequence,
-    new_token_ids: list[int],
-    prompt_token_ids: list[int],
+    new_token_ids: List[int],
+    prompt_token_ids: List[int],
     logprob_info,
     tokenizer: TokenizerP,
     stopping_criteria: StoppingCriteria,
@@ -257,11 +257,11 @@ def prepare_output(
 
 
 def get_requests_to_process(
-    current_states: list[RequestState],
+    current_states: List[RequestState],
     cache_manager: KVCacheManager,
     tokenizer: TokenizerP,
-) -> Tuple[list[RequestType], bool, int]:
-    requests: list[RequestType] = []
+) -> Tuple[List[RequestType], bool, int]:
+    requests: List[RequestType] = []
     # TODO: consider having hybrid batch if the underlying attention kernel supports
     # mixing prefill and decode.
     is_prompt_batch = any(not state.is_prefilled for state in current_states)
