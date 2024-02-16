@@ -62,7 +62,7 @@ def get_new_request_state(
     vocab_size = request.sampling_params.vocab_size
     bin_counts = torch.zeros((vocab_size + 1,),
                              dtype=torch.long,
-                             device=tokens.device)
+                             device=tokens.device)  # CPU
     bin_counts.scatter_add_(0, tokens, torch.ones_like(tokens))
     bin_counts = bin_counts[:vocab_size]
     prompt_mask = bin_counts > 0
