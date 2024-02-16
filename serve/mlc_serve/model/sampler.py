@@ -129,11 +129,7 @@ class SamplingTensors:
         )
         # `mask_top_logprob` will be on cpu
         mask_top_logprob = torch.from_numpy(list_mask_top_logprob)
-        mask_prompt = torch.tensor(
-            list_mask_prompt,
-            dtype=torch.bool,
-            device="cpu",
-        )
+        mask_prompt = torch.stack(list_mask_prompt)
         temp = torch.tensor(
             list_temperatures,
             dtype=dtype,
