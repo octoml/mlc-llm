@@ -487,18 +487,20 @@ def test_logprobs(batch_size: int):
             assert output.logprob_infos[idx].top_logprobs.nelement() != 0
             assert len(output.logprob_infos[idx].top_logprobs) == top_logprobs
 
-@pytest.mark.parametrize("batch_size", [4, 8, 12])
+@pytest.mark.parametrize("batch_size", [1, 4, 8, 12])
 def test_mixture_of_requests(batch_size: int):
-    # Mixed greedy & top_p/top_ks
+    # Mixed temperature & top_p/top_ks
     top_ps = list(torch.arange(1, 0, -0.01))
     top_ks = list(range(1, vocab_size + 1))
     temperatures = list(torch.arange(0, 2.1, 0.1))
+    temp_weights = [0.5]
+    temp_weights.extend([1 / (len(temperatures) - 1)] * (len(temperatures) - 1))
     top_ks.append(-1)
     for _ in range(10):
         shape = (batch_size, vocab_size)
         logits = torch.rand(shape, dtype=dtype, device=dev)
         top_pks = [(random.choice(top_ps), random.choice(top_ks)) for _ in range(batch_size)]
-        temps = [random.choice(temperatures) for _ in range(batch_size)]
+        temps = random.choices(temperatures, weights=temp_weights, k=batch_size)
         sampling_params = [
             SamplingParams(temperature=temps[i], top_p=top_p, top_k=top_k)
             for i, (top_p, top_k) in enumerate(top_pks)
