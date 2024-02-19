@@ -88,6 +88,8 @@ class SamplingParams:
             self._verify_greedy_sampling()
         if not self.logprobs:
             self.top_logprobs = 0
+        if self.top_k == -1:
+            self.top_k = self.vocab_size
 
     def verify(self) -> None:
         if not -2.0 <= self.presence_penalty <= 2.0:
