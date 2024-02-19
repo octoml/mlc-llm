@@ -39,6 +39,7 @@ class LlamaConfig:
         build_model_only=False,
         num_shards=1,
         sliding_window=None,
+        attention_bias=False,
         **kwargs,
     ):
         self.dtype = dtype
@@ -59,6 +60,7 @@ class LlamaConfig:
         self.position_embedding_base = position_embedding_base
         self.combine_matmul = combine_matmul
         self.sliding_window = sliding_window
+        self.attention_bias = attention_bias
 
         if build_model_only and num_shards > 1:
             self.num_shards = num_shards
@@ -282,40 +284,45 @@ class LlamaAttentionBase(nn.Module):
         self.position_embedding_base = config.position_embedding_base
 
         self.combine_matmul = config.combine_matmul
+
         if self.combine_matmul:
             self.query_key_value_proj = Linear(
                 self.hidden_size,
                 (self.num_query_heads + 2 * self.num_key_value_heads) * self.head_dim,
                 dtype=dtype,
-                bias=False,
+                bias=config.attention_bias,
             )
             self.query_key_value_proj.weight.shard_dim = 0
             self.query_key_value_proj.weight.shard_strategy = "shard_qkv"
+
+            if config.attention_bias:
+                self.query_key_value_proj.bias.shard_dim = 0
+                self.query_key_value_proj.bias.shard_strategy = "shard_qkv_bias"
         else:
             self.q_proj = Linear(
                 self.hidden_size,
                 self.num_query_heads * self.head_dim,
                 dtype=dtype,
-                bias=False,
+                bias=config.attention_bias,
             )
             self.k_proj = Linear(
                 self.hidden_size,
                 self.num_key_value_heads * self.head_dim,
                 dtype=dtype,
-                bias=False,
+                bias=config.attention_bias,
             )
             self.v_proj = Linear(
                 self.hidden_size,
                 self.num_key_value_heads * self.head_dim,
                 dtype=dtype,
-                bias=False,
+                bias=config.attention_bias,
             )
             self.q_proj.weight.shard_dim = 0
             self.k_proj.weight.shard_dim = 0
             self.v_proj.weight.shard_dim = 0
 
         self.o_proj = Linear(
-            self.head_dim * self.num_query_heads, self.hidden_size, dtype=dtype, bias=False
+            self.head_dim * self.num_query_heads, self.hidden_size, dtype=dtype, bias=config.attention_bias
         )
         self.o_proj.weight.shard_dim = 1
         self.o_proj.weight.shard_strategy = "shard_o_proj_k"
@@ -1365,9 +1372,16 @@ def setup_params(mod, param_manager, dtype, config, args):
             q_heads = config.num_attention_heads
             kv_heads = config.get_num_key_value_heads()
             q, k, v = torch_params
-            assert q.shape == (q_heads * head_dim, hidden_size)
-            assert k.shape == (kv_heads * head_dim, hidden_size)
-            assert v.shape == (kv_heads * head_dim, hidden_size)
+
+            if len(q.shape) == 2:
+                assert q.shape == (q_heads * head_dim, hidden_size)
+                assert k.shape == (kv_heads * head_dim, hidden_size)
+                assert v.shape == (kv_heads * head_dim, hidden_size)
+            elif len(q.shape) == 1:
+                assert q.shape == (q_heads * head_dim,)
+                assert k.shape == (kv_heads * head_dim,)
+                assert v.shape == (kv_heads * head_dim,)
+
             qkv = np.concatenate([q, k, v], axis=0).astype(dtype)
             return qkv
         if "gate_up_proj" in relax_pname:

@@ -17,7 +17,9 @@ def get_sampling_state(sampling_params, past_output_tokens=None, prompt_masks=No
     if past_output_tokens is None:
         past_output_tokens = [[] for _ in range(batch_size)]
     if prompt_masks is None:
-        prompt_masks = [[False for _ in range(vocab_size)] for _ in range(batch_size)]
+        # Prepare empty prompt mask
+        prompt_mask = torch.zeros((vocab_size,), dtype=torch.bool)
+        prompt_masks = [prompt_mask] * batch_size
     _copy_stream: torch.cuda.Stream = torch.cuda.Stream()
     with torch.cuda.stream(_copy_stream):
         sampling_state = SamplingState.from_sampling_params(
@@ -44,7 +46,6 @@ def test_temperature_checker():
 
     with pytest.raises(ValueError):
         get_sampling_state([SamplingParams(temperature=2.1)])
-
 
 def test_temperature():
     # single-batch
@@ -310,6 +311,7 @@ def test_penalties():
             )
             new_logits = adjust_logits(logits, sampling_state, vocab_size)
             assert torch.allclose(expected, new_logits), f"{torch.isclose(expected, new_logits)}, {batch_params}"
+
 
 def test_top_p_top_k_checker():
     # top_p must be in (0, 1]

@@ -89,7 +89,7 @@ def sample_from_logits(
     torch_dtype: torch.dtype,
     torch_dev: str,
     past_decode_tokens: List[List[int]],
-    prompt_masks: List[List[bool]],
+    prompt_masks: List[torch.Tensor],
 ) -> List[TextGenerationResult]:
     batch_size = logits.shape[0]
     assert batch_size == len(requests)

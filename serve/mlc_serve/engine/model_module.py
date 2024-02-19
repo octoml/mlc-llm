@@ -3,6 +3,7 @@ Required interfaces for the actual inference capability in InferenceEngine.
 """
 from dataclasses import dataclass
 from typing import Optional, Protocol, Union, List, Sequence, Any
+import torch
 
 from .base import (
     ChatMessage,
@@ -21,7 +22,7 @@ class PrefillRequest:
     request_id: RequestId
     # `token_ids` contains prompt token ids
     token_ids: List[int]
-    prompt_mask: Optional[List[bool]]
+    prompt_mask: Optional[torch.Tensor]
     # Number of sequences to generate
     num_sequence: int
     sampling_params: SamplingParams
@@ -37,7 +38,7 @@ class PrefillRequest:
 class DecodeRequest:
     sequence_id: SequenceId
     prompt_token_counts: int
-    prompt_mask: Optional[List[bool]]
+    prompt_mask: Optional[torch.Tensor]
     # Decoded tokens for this sequence
     token_ids: List[int]
     sampling_params: SamplingParams
@@ -65,6 +66,7 @@ class EvictedTokens:
 class EvalMultiQueryRequest:
     sequence_id: SequenceId
     num_past_tokens: int
+    prompt_mask: Optional[torch.Tensor]
     queries: Union[DraftTokens, EvictedTokens]
     sampling_params: SamplingParams
 

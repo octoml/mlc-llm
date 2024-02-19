@@ -55,6 +55,25 @@ def _get_shard_strategies(
         func = te.create_prim_func([a, w])
         return func
 
+    def shard_bias(bias: relax.TensorStructInfo):
+        (hidden_dim,), dtype = bias.shape, bias.dtype
+        hidden_dim = int(hidden_dim)
+        if param_shape_is_already_sharded:
+            hidden_dim *= num_shards
+        head_dim = hidden_dim // (q_heads + 2 * kv_heads)
+        a = te.placeholder((hidden_dim,), dtype=dtype)
+        w = topi.reshape(a, (hidden_dim // head_dim, head_dim))
+        q = te.compute((q_heads, head_dim), lambda i, j: w[i, j])
+        k = te.compute((kv_heads, head_dim), lambda i, j: w[q_heads + i, j])
+        v = te.compute((kv_heads, head_dim), lambda i, j: w[q_heads + kv_heads + i, j])
+        q = topi.reshape(q, (num_shards, q_heads // num_shards, head_dim))
+        k = topi.reshape(k, (num_shards, kv_heads // num_shards, head_dim))
+        v = topi.reshape(v, (num_shards, kv_heads // num_shards, head_dim))
+        w = topi.concatenate((q, k, v), axis=1)
+        w = topi.reshape(w, (num_shards, (q_heads + kv_heads * 2) // num_shards * head_dim))
+        func = te.create_prim_func([a, w])
+        return func
+
     def shard_k_weight_scale(weight: relax.TensorStructInfo):
         (spatial, red), dtype = weight.shape, weight.dtype
         spatial, red = int(spatial), int(red)
@@ -112,6 +131,7 @@ def _get_shard_strategies(
 
     return {
         "shard_qkv": shard_qkv_weight_scale,
+        "shard_qkv_bias": shard_bias,
         "shard_mlp_k": shard_k_weight_scale,
         "shard_o_proj_k": shard_k_weight_scale,
         "shard_gate_up": shard_gate_up_weight_scale,

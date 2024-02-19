@@ -2,11 +2,11 @@
 Common utilites for engine classes.
 """
 
+import torch
 import time
 from typing import Tuple, Deque, Dict, Optional, Callable, List
 from collections import deque
 from threading import Condition, Lock
-import numpy as np
 
 import structlog
 
@@ -58,10 +58,14 @@ def get_new_request_state(
     # TODO: Currently, always create this. But we only need this for the requests with repetition penalty
     #       Follow-up and optimize when it has been stabilized.
     # Create prompt mask for repetition penalty
-    tokens = np.array([prompt_token_ids], dtype=np.int64)
-    prompt_mask = np.zeros((vocab_size + 1,), dtype=bool)
-    prompt_mask[tokens] = True
-    prompt_mask = list(prompt_mask[:vocab_size])
+    tokens=torch.tensor(prompt_token_ids, dtype=torch.long)
+    vocab_size = request.sampling_params.vocab_size
+    bin_counts = torch.zeros((vocab_size + 1,),
+                             dtype=torch.long,
+                             device=tokens.device)  # CPU
+    bin_counts.scatter_add_(0, tokens, torch.ones_like(tokens))
+    bin_counts = bin_counts[:vocab_size]
+    prompt_mask = bin_counts > 0
 
     validation_err = None
     if request.validate_tokens is not None:
@@ -93,7 +97,7 @@ def get_new_request_state(
 
 # Based on vllm: https://github.com/vllm-project/vllm/pull/984
 def detokenize_incrementally(
-    prompt_tokens: list[int],
+    prompt_tokens: List[int],
     generation_sequence: GenerationSequence,
     tokenizer: TokenizerP,
     new_token_id: Optional[int] = None,
@@ -228,8 +232,8 @@ def prepare_logprob(
 
 def prepare_output(
     gen_seq: GenerationSequence,
-    new_token_ids: list[int],
-    prompt_token_ids: list[int],
+    new_token_ids: List[int],
+    prompt_token_ids: List[int],
     logprob_info,
     tokenizer: TokenizerP,
     stopping_criteria: StoppingCriteria,
@@ -253,11 +257,11 @@ def prepare_output(
 
 
 def get_requests_to_process(
-    current_states: list[RequestState],
+    current_states: List[RequestState],
     cache_manager: KVCacheManager,
     tokenizer: TokenizerP,
-) -> Tuple[list[RequestType], bool, int]:
-    requests: list[RequestType] = []
+) -> Tuple[List[RequestType], bool, int]:
+    requests: List[RequestType] = []
     # TODO: consider having hybrid batch if the underlying attention kernel supports
     # mixing prefill and decode.
     is_prompt_batch = any(not state.is_prefilled for state in current_states)
@@ -289,10 +293,16 @@ def get_requests_to_process(
                 token_counts += len(state.prompt_token_ids)
 
                 for gen_seq in state.generation_sequences:
+                    # TODO(vvchernov): This is for repetion penalty
+                    # Not obvious EvalMultiQueryRequest needs this
+                    # Now empty instead of state.prompt_mask
+                    vocab_size = state.sampling_params.vocab_size
+                    prompt_mask = torch.zeros((vocab_size,), dtype=torch.bool)
                     requests.append(
                         EvalMultiQueryRequest(
                             sequence_id=gen_seq.seq_id,
                             num_past_tokens=state.prompt_len,
+                            prompt_mask=prompt_mask,
                             queries=EvictedTokens(gen_seq.generated_token_ids),
                             sampling_params=state.sampling_params,
                         )
