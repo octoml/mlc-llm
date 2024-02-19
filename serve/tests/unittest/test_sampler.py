@@ -47,25 +47,18 @@ def test_temperature_checker():
     with pytest.raises(ValueError):
         get_sampling_state([SamplingParams(temperature=2.1)])
 
-def test_temperature():
-    # single-batch
-    shape = (1, vocab_size)
+@pytest.mark.parametrize("batch_size", [1, 4, 8, 12])
+def test_temperature(batch_size: int):
+    shape = (batch_size, vocab_size)
     logits = torch.rand(shape, dtype=dtype, device=dev)
-    for temperature in [0, 0.5, 1.0, 1.5, 2.0]:
-        sampling_params = [SamplingParams(temperature=temperature)]
-        expected = logits / temperature if abs(temperature) > SAMPLING_EPS else logits
-        sampling_state = get_sampling_state(sampling_params)
-        new_logits = adjust_logits(logits, sampling_state, vocab_size)
-        assert torch.allclose(expected, new_logits)
-
-    # multi-batch
-    for batch_size in [4, 8, 12]:
-        shape = (batch_size, vocab_size)
-        logits = torch.rand(shape, dtype=dtype, device=dev)
-        temperature = [i % 3 for i in range(batch_size)]  # temperature from {0, 1, 2}
-        sampling_params = [SamplingParams(temperature=val) for val in temperature]
+    temperature = [0, 0.5, 1.0, 1.5, 2.0]
+    for batch_temp in permutations(temperature, batch_size):
+        sampling_params = [
+            SamplingParams(temperature=val)
+            for val in batch_temp
+        ]
         expected = []
-        for idx, val in enumerate(temperature):
+        for idx, val in enumerate(batch_temp):
             expected.append(logits[idx] / val if abs(val) > SAMPLING_EPS else logits[idx])
         sampling_state = get_sampling_state(sampling_params)
         new_logits = adjust_logits(logits, sampling_state, vocab_size)
@@ -96,31 +89,30 @@ def test_logit_bias_checker():
     with pytest.raises(ValueError):
         get_sampling_state([SamplingParams(logit_bias={1: 10, -1: -10})])
 
-
-def test_logit_bias():
-    for batch_size in [1, 4]:
-        shape = (batch_size, vocab_size)
-        logits = torch.rand(shape, dtype=dtype, device=dev)
-        sampling_param = [{} for _ in range(batch_size)]
-        for logit_bias_combination in permutations(
-            product(
-                [1, 32000, 724, 223], 
-                [100, -100, -12.5, 0.05]
-            ), 
-            batch_size
-        ):
-            for num_batch in range(len(logit_bias_combination)):
-                logit_index, logit_bias = logit_bias_combination[num_batch]
-                sampling_param[num_batch].update({logit_index: logit_bias})
-        expected = torch.clone(logits)
-        for num_batch in range(batch_size):
-            for idx, val in sampling_param[num_batch].items():
-                expected[num_batch][idx - 1] += val
-        for idx, logit_bias in enumerate(sampling_param):
-            sampling_param[idx] = SamplingParams(logit_bias=logit_bias)
-        sampling_state = get_sampling_state(sampling_param)
-        new_logits = adjust_logits(logits, sampling_state, vocab_size)
-        assert torch.allclose(expected, new_logits)
+@pytest.mark.parametrize("batch_size", [1, 4])
+def test_logit_bias(batch_size: int):
+    shape = (batch_size, vocab_size)
+    logits = torch.rand(shape, dtype=dtype, device=dev)
+    sampling_param = [{} for _ in range(batch_size)]
+    for logit_bias_combination in permutations(
+        product(
+            [1, 32000, 724, 223], 
+            [100, -100, -12.5, 0.05]
+        ), 
+        batch_size
+    ):
+        for num_batch in range(len(logit_bias_combination)):
+            logit_index, logit_bias = logit_bias_combination[num_batch]
+            sampling_param[num_batch].update({logit_index: logit_bias})
+    expected = torch.clone(logits)
+    for num_batch in range(batch_size):
+        for idx, val in sampling_param[num_batch].items():
+            expected[num_batch][idx - 1] += val
+    for idx, logit_bias in enumerate(sampling_param):
+        sampling_param[idx] = SamplingParams(logit_bias=logit_bias)
+    sampling_state = get_sampling_state(sampling_param)
+    new_logits = adjust_logits(logits, sampling_state, vocab_size)
+    assert torch.allclose(expected, new_logits)
 
 
 def test_penalties_checker():
@@ -424,22 +416,22 @@ def get_expected_result_by_top_pks(logits, top_pks, filter_value=-float("Inf")):
         lst_logits.append(_logits)
     return torch.stack(lst_logits)
 
-def test_top_p_top_k():
-    for batch_size in [1, 4]:
-        shape = (batch_size, vocab_size)
-        logits = torch.rand(shape, dtype=dtype, device=dev)
-        for top_pks in permutations(
-            product(
-                [0.3, 0.7],          # top_p
-                [128, 2048, 32000]   # top_k
-            ),
-            batch_size
-        ):
-            sampling_params = [SamplingParams(top_p=top_p, top_k=top_k) for top_p, top_k in top_pks]
-            sampling_state = get_sampling_state(sampling_params)
-            new_logits = adjust_logits(logits, sampling_state, vocab_size)
-            expected = get_expected_result_by_top_pks(logits.clone(), top_pks)
-            assert torch.allclose(expected, new_logits)
+@pytest.mark.parametrize("batch_size", [1, 4])
+def test_top_p_top_k(batch_size: int):
+    shape = (batch_size, vocab_size)
+    logits = torch.rand(shape, dtype=dtype, device=dev)
+    for top_pks in permutations(
+        product(
+            [0.3, 0.7],          # top_p
+            [128, 2048, 32000]   # top_k
+        ),
+        batch_size
+    ):
+        sampling_params = [SamplingParams(top_p=top_p, top_k=top_k) for top_p, top_k in top_pks]
+        sampling_state = get_sampling_state(sampling_params)
+        new_logits = adjust_logits(logits, sampling_state, vocab_size)
+        expected = get_expected_result_by_top_pks(logits.clone(), top_pks)
+        assert torch.allclose(expected, new_logits)
 
 
 def test_logprobs_checker():
@@ -457,64 +449,62 @@ def test_logprobs_checker():
     with pytest.raises(TypeError):
         get_sampling_state([SamplingParams(logprobs=True, top_logprobs=2.5)])
 
+@pytest.mark.parametrize("batch_size", [1, 4, 8])
+def test_logprobs(batch_size: int):
+    shape = (batch_size, vocab_size)
+    logits = torch.rand(shape, dtype=dtype, device=dev)
 
-def test_logprobs():
-    for batch_size in [1, 4, 8]:
-        shape = (batch_size, vocab_size)
-        logits = torch.rand(shape, dtype=dtype, device=dev)
+    # No logprobs
+    sampling_params = [SamplingParams(logprobs=False) for _ in range(batch_size)]
+    sampling_state = get_sampling_state(sampling_params)
+    output: SamplingOutput = sample(logits, sampling_state)
+    assert all([logprob_response is None for logprob_response in output.logprob_infos])
 
-        # No logprobs
-        sampling_params = [SamplingParams(logprobs=False) for _ in range(batch_size)]
-        sampling_state = get_sampling_state(sampling_params)
-        output: SamplingOutput = sample(logits, sampling_state)
-        assert all([logprob_response is None for logprob_response in output.logprob_infos])
+    # Logprob only of a current token
+    sampling_params = [SamplingParams(logprobs=True) for _ in range(batch_size)]
+    sampling_state = get_sampling_state(sampling_params)
+    output: SamplingOutput = sample(logits, sampling_state)
+    assert len(output.logprob_infos) == batch_size
+    for idx in range(batch_size):
+        assert isinstance(output.logprob_infos[idx].current_token_id, int)
+        assert isinstance(output.logprob_infos[idx].current_logprob, float)
+        assert output.logprob_infos[idx].top_token_ids.nelement() == 0
+        assert output.logprob_infos[idx].top_logprobs.nelement() == 0
 
-        # Logprob only of a current token
-        sampling_params = [SamplingParams(logprobs=True) for _ in range(batch_size)]
+    # Top-k logprobs
+    for top_logprobs in [1, 3, 5]:
+        sampling_params = [
+            SamplingParams(logprobs=True, top_logprobs=top_logprobs) for _ in range(batch_size)
+        ]
         sampling_state = get_sampling_state(sampling_params)
         output: SamplingOutput = sample(logits, sampling_state)
         assert len(output.logprob_infos) == batch_size
         for idx in range(batch_size):
             assert isinstance(output.logprob_infos[idx].current_token_id, int)
             assert isinstance(output.logprob_infos[idx].current_logprob, float)
-            assert output.logprob_infos[idx].top_token_ids.nelement() == 0
-            assert output.logprob_infos[idx].top_logprobs.nelement() == 0
+            assert output.logprob_infos[idx].top_token_ids.nelement() != 0
+            assert len(output.logprob_infos[idx].top_token_ids) == top_logprobs
+            assert output.logprob_infos[idx].top_logprobs.nelement() != 0
+            assert len(output.logprob_infos[idx].top_logprobs) == top_logprobs
 
-        # Top-k logprobs
-        for top_logprobs in [1, 3, 5]:
-            sampling_params = [
-                SamplingParams(logprobs=True, top_logprobs=top_logprobs) for _ in range(batch_size)
-            ]
-            sampling_state = get_sampling_state(sampling_params)
-            output: SamplingOutput = sample(logits, sampling_state)
-            assert len(output.logprob_infos) == batch_size
-            for idx in range(batch_size):
-                assert isinstance(output.logprob_infos[idx].current_token_id, int)
-                assert isinstance(output.logprob_infos[idx].current_logprob, float)
-                assert output.logprob_infos[idx].top_token_ids.nelement() != 0
-                assert len(output.logprob_infos[idx].top_token_ids) == top_logprobs
-                assert output.logprob_infos[idx].top_logprobs.nelement() != 0
-                assert len(output.logprob_infos[idx].top_logprobs) == top_logprobs
-
-
-def test_mixture_of_requests():
+@pytest.mark.parametrize("batch_size", [4, 8, 12])
+def test_mixture_of_requests(batch_size: int):
     # Mixed greedy & top_p/top_ks
     top_ps = list(torch.arange(1, 0, -0.01))
     top_ks = list(range(1, vocab_size + 1))
     temperatures = list(torch.arange(0, 2.1, 0.1))
     top_ks.append(-1)
-    for batch_size in [4, 8, 12]:
-        for _ in range(10):
-            shape = (batch_size, vocab_size)
-            logits = torch.rand(shape, dtype=dtype, device=dev)
-            top_pks = [(random.choice(top_ps), random.choice(top_ks)) for _ in range(batch_size)]
-            temps = [random.choice(temperatures) for _ in range(batch_size)]
-            sampling_params = [
-                SamplingParams(temperature=temps[i], top_p=top_p, top_k=top_k)
-                for i, (top_p, top_k) in enumerate(top_pks)
-            ]
-            sampling_state = get_sampling_state(sampling_params)
-            new_logits = adjust_logits(logits, sampling_state, vocab_size)
+    for _ in range(10):
+        shape = (batch_size, vocab_size)
+        logits = torch.rand(shape, dtype=dtype, device=dev)
+        top_pks = [(random.choice(top_ps), random.choice(top_ks)) for _ in range(batch_size)]
+        temps = [random.choice(temperatures) for _ in range(batch_size)]
+        sampling_params = [
+            SamplingParams(temperature=temps[i], top_p=top_p, top_k=top_k)
+            for i, (top_p, top_k) in enumerate(top_pks)
+        ]
+        sampling_state = get_sampling_state(sampling_params)
+        new_logits = adjust_logits(logits, sampling_state, vocab_size)
 
-            expected = get_expected_result_by_top_pks(logits.clone(), top_pks)
-            assert torch.allclose(expected, new_logits)
+        expected = get_expected_result_by_top_pks(logits.clone(), top_pks)
+        assert torch.allclose(expected, new_logits)
