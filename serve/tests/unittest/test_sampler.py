@@ -283,7 +283,6 @@ def test_penalties(batch_size: int):
         ),
         batch_size
     ):
-        print(batch_params)
         sampling_params = [
             SamplingParams(
                 temperature=temp,
