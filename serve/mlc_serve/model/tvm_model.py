@@ -253,6 +253,8 @@ class Model:
 
         vm_alloc_after = self.get_used_memory()
 
+        LOG.info(f"peak memory during profling: {(vm_alloc_after - vm_alloc_before) / 1e9} GB")
+
         return self.get_param_nbytes() + (vm_alloc_after - vm_alloc_before)
 
     def generate_multi_query(
