@@ -59,6 +59,11 @@ def get_engine_config(dict_config):
     assert (engine_config.min_decode_steps > 0) and (engine_config.max_decode_steps > 0)
     assert engine_config.max_decode_steps > engine_config.min_decode_steps
 
+    if engine_config.model_type == "torch":
+        assert (
+            engine_config.num_shards is not None
+        ), "num_shards in MLCServeEngineConfig needs to be provided for PT models."
+
     return engine_config
 
 
