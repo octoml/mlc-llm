@@ -186,10 +186,20 @@ class Model:
 
         self.cache_blocks = None
 
-    def get_used_memory(self):
+    def get_param_nbytes(self):
+        """Get the total size of the parameters"""
         if self.disco_session:
             params = self.params.debug_get_from_remote(0)
+        else:
+            params = self.params
 
+        return sum(
+            math.prod(param.shape) * np.dtype(param.dtype).itemsize for param in params
+        )
+
+    def get_used_memory(self):
+        """Get the total memory allocated by the VM"""
+        if self.disco_session:
             get_used_memory_func = self.disco_session.get_global_func(
                 "vm.memory_manager.get_used_memory"
             )
@@ -197,23 +207,13 @@ class Model:
             peak_memory = get_used_memory_func(
                 tvm.device("cuda", 0)
             ).debug_get_from_remote(0)
-
-            # TODO: temp hack to switch the VM allocator to eager recycling mode on all devices
-            for i in range(1, self.num_shards):
-                get_used_memory_func(tvm.device("cuda", i)).debug_get_from_remote(i)
         else:
-            params = self.params
-
             get_used_memory_func = tvm.get_global_func(
                 "vm.memory_manager.get_used_memory"
             )
             peak_memory = get_used_memory_func(self.dev)
 
-        param_bytes = sum(
-            math.prod(param.shape) * np.dtype(param.dtype).itemsize for param in params
-        )
-
-        return peak_memory + param_bytes
+        return peak_memory
 
     def profile_memory_usage(self, seq_lens):
         input_ids = [0] * sum(seq_lens)
@@ -221,6 +221,8 @@ class Model:
 
         for s in seq_lens:
             positions += range(s)
+
+        vm_alloc_before = self.get_used_memory()
 
         input_ids = tvm.nd.array(np.array(input_ids, dtype="int32"), self.dev)
         positions = tvm.nd.array(np.array(positions, dtype="int32"), self.dev)
@@ -231,9 +233,27 @@ class Model:
             positions = copy_to_worker_0(self.disco_session, positions)
             seq_lens = copy_to_worker_0(self.disco_session, seq_lens)
 
-        self.mod["evaluate"](input_ids, positions, seq_lens, self.params)
+            start_profiling_func = self.disco_session.get_global_func(
+                "vm.memory_manager.start_profiling"
+            )
+            stop_profiling_func = self.disco_session.get_global_func(
+                "vm.memory_manager.stop_profiling"
+            )
+        else:
+            start_profiling_func = tvm.get_global_func(
+                "vm.memory_manager.start_profiling"
+            )
+            stop_profiling_func = tvm.get_global_func(
+                "vm.memory_manager.stop_profiling"
+            )
 
-        return self.get_used_memory()
+        start_profiling_func()
+        self.mod["evaluate"](input_ids, positions, seq_lens, self.params)
+        stop_profiling_func()
+
+        vm_alloc_after = self.get_used_memory()
+
+        return self.get_param_nbytes() + (vm_alloc_after - vm_alloc_before)
 
     def generate_multi_query(
         self,
@@ -244,6 +264,7 @@ class Model:
         last_query_offsets: List[int] = []
         sampling_params = []
         past_decode_tokens = []
+        prompt_masks: List[torch.Tensor] = []
         for request in requests:
             assert not isinstance(request.queries, DraftTokens)
             sequence_ids.append(request.sequence_id)
@@ -254,6 +275,9 @@ class Model:
                     last_query_offsets[-1] + request.queries.num_tokens
                 )
             sampling_params.append(request.sampling_params)
+            # TODO(vvchernov): This is for repetion penalty
+            # Not obvious EvalMultiQueryRequest needs this
+            prompt_masks.append(request.prompt_mask)
             # Use `vocab_size` as a padding
             past_decode_tokens.append([self.vocab_size, *request.queries.token_ids])
 
@@ -263,6 +287,7 @@ class Model:
             sampling_state = SamplingState.from_sampling_params(
                 sampling_params,
                 past_decode_tokens,
+                prompt_masks,
                 self.torch_dtype,
                 self.torch_dev,
                 self.vocab_size,
@@ -329,6 +354,7 @@ class Model:
             self.torch_dtype,
             self.torch_dev,
             past_decode_tokens,
+            prompt_masks,
         )
 
     def generate(
@@ -356,6 +382,7 @@ class Model:
         num_decode_query_tokens = 1
         sampling_params = []
         past_decode_tokens = []
+        prompt_masks = []
 
         for request in requests:
             if isinstance(request, PrefillRequest):
@@ -377,6 +404,7 @@ class Model:
                 raise Exception("`EvalMultiQueryRequest` should not reach here.")
 
             past_decode_tokens.append(request_past_decode_tokens)
+            prompt_masks.append(request.prompt_mask)
             sequence_ids.append(seq_id)
 
             assert not isinstance(request, EvalMultiQueryRequest)
@@ -389,6 +417,7 @@ class Model:
             sampling_state = SamplingState.from_sampling_params(
                 sampling_params,
                 past_decode_tokens,
+                prompt_masks,
                 self.torch_dtype,
                 self.torch_dev,
                 self.vocab_size,
@@ -518,6 +547,7 @@ class Model:
             self.torch_dtype,
             self.torch_dev,
             past_decode_tokens,
+            prompt_masks,
         )
 
 

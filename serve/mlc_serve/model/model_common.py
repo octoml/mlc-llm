@@ -86,6 +86,7 @@ def sample_from_logits(
     torch_dtype: torch.dtype,
     torch_dev: str,
     past_decode_tokens: List[List[int]],
+    prompt_masks: List[torch.Tensor],
 ) -> List[TextGenerationResult]:
     batch_size = logits.shape[0]
     assert batch_size == len(requests)
@@ -139,12 +140,14 @@ def sample_from_logits(
             logits_per_token = logits[i]
             sampling_param = sampling_state.sampling_params[i]
             past_decode_tokens_per_request = past_decode_tokens[i]
+            prompt_mask = prompt_masks[i]
             # NOTE: Rerun the preparation for simplicity.
             # Assume this code path is taken rarely and the recomputation overhead is
             # marginal.
             new_sampling_state = SamplingState.from_sampling_params(
                 [sampling_param],
                 [past_decode_tokens_per_request],
+                [prompt_mask],
                 torch_dtype,
                 torch_dev,
                 vocab_size,

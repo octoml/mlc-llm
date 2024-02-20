@@ -318,6 +318,7 @@ class RequestState:
 
     request_id: RequestId
     prompt_token_ids: list[int]
+    prompt_mask: Optional[torch.Tensor]
     sampling_params: SamplingParams
     generation_sequences: list[GenerationSequence]
     stopping_criteria: StoppingCriteria
