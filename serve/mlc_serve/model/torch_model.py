@@ -156,7 +156,7 @@ def profile_memory_usage(pt_model, seq_lens, num_hidden_layers, vocab_size):
     torch.cuda.synchronize()
 
     peak_memory = torch.cuda.max_memory_allocated()
-    print(f"peak memory during profling: {(peak_memory - peak_memory_before) / 1e9} GB")
+    LOG.info(f"peak memory during profling: {(peak_memory - peak_memory_before) / 1e9} GB")
 
     torch.cuda.empty_cache()
 
