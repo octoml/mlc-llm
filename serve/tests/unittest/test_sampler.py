@@ -259,7 +259,6 @@ def test_penalties(batch_size: int):
                 - mask[i] * presence_penalties[i])
                 / temperature
             )
-            print("DEBUG")
         return expected
 
     vocab_size = 512

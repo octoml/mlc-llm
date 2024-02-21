@@ -218,7 +218,6 @@ def _test_logit_bias(
 ):
     prompt = "Repeat only one of the following words: hi, hello"
     requests = []
-    print(engine.tokenizer.encode("hi"))
     for n in range(num_requests):
         requests.append(
             create_request(
