@@ -100,16 +100,7 @@ def sample_from_logits(
     # wait until all the tensors are loaded on GPU
     torch.cuda.current_stream().wait_stream(copy_stream)
 
-    # Logit processing for constraint sampling e.g., JSON Mode
-    # for i, (sequence_id, request) in enumerate(zip(sequence_ids, requests)):
-    #     if request.sampling_params.logits_processor is not None:
-    #         cs_input_ids = (
-    #             request.token_ids if isinstance(request, DecodeRequest) else []
-    #         )
-    #         logits[i] = request.sampling_params.logits_processor(
-    #             sequence_id, cs_input_ids, logits[i]
-    #         )
-
+    # JSON Mode
     has_regex = any(req.sampling_params.regex_fsm is not None for req in requests)
     if has_regex:
         allowed_mask = torch.empty_like(logits[0], dtype=torch.bool)
@@ -130,6 +121,7 @@ def sample_from_logits(
             sampling_metadata,
         )
 
+        # JSON Mode
         if has_regex:
             batch_next_token_ids_cpu = sampling_output.next_tokens
             for i, req in enumerate(requests):

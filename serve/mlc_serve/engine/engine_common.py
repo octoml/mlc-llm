@@ -7,6 +7,7 @@ import json
 from typing import Tuple, Deque, Dict, Optional, Union, Callable, List
 from collections import deque
 from threading import Condition, Lock
+from pathlib import Path
 
 import structlog
 
@@ -35,7 +36,7 @@ from ..model.base import ModelArtifactConfig
 from ..openai_logprob_protocol import LogprobsContent, TopLogprobs
 from .constrained_sampling import JSONLogitsProcessor
 from .constrained.fsm_cache import FSMCache
-from .constrained import build_regex_from_object
+from .constrained import build_regex_from_schema
 
 LOG = structlog.stdlib.get_logger(__name__)
 
@@ -299,7 +300,7 @@ def get_requests_to_process(
                 # `JSONLogitsProcessor` needs to be created only once.
                 if state.sampling_params.json_schema is not None:
                     json_schema = json.dumps(state.sampling_params.json_schema)
-                    json_regex = build_regex_from_object(json_schema)
+                    json_regex = build_regex_from_schema(json_schema)
                     state.sampling_params.regex_fsm = regex_fsm_cache.query(json_regex)
                     # state.sampling_params.logits_processor = JSONLogitsProcessor(
                     #     state.sampling_params.json_schema, tokenizer._tokenizer
@@ -403,8 +404,10 @@ class EngineBase:
     def __init__(self, model_module: ModelModule):
         self.text_generator = model_module.text_generator
         self.tokenizer = model_module.tokenizer
+        mlc_path = Path(__file__).resolve().parent.parent.parent.parent
+        model_path = Path(mlc_path, "dist/Mistral-7B-Instruct-v0.2-q0f16/model")
         self.regex_fsm_cache = FSMCache(
-            "/home/lvega/hexagon/mlc-llm/dist/Mistral-7B-Instruct-v0.2-q0f16/model",
+            model_path,
             {
                 "tokenizer_mode": "auto",
                 "trust_remote_code": False,

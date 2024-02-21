@@ -6,7 +6,7 @@ from typing import DefaultDict, List
 import torch
 
 from outlines.fsm.fsm import RegexFSM
-from outlines.fsm.json_schema import build_regex_from_object
+from outlines.fsm.json_schema import build_regex_from_schema
 from .base import SequenceId
 
 class RegexLogitsProcessor:
@@ -89,6 +89,6 @@ class JSONLogitsProcessor(RegexLogitsProcessor):
         """
         if isinstance(schema, dict):
             schema = json.dumps(schema)
-        regex_string = build_regex_from_object(schema)
+        regex_string = build_regex_from_schema(schema)
         super().__init__(regex_string, tokenizer)
 
