@@ -74,8 +74,7 @@ class SamplingParams:
     # check in `_verify_args` without this field. Follow-up when we have a better idea.
     vocab_size = 32000
     json_schema: Optional[Dict[str, Any]] = None
-    logits_processor: Optional[Any] = None
-    regex_fsm: Optional[Any] = None
+    regex_fsm: Optional[str] = None
     regex_fsm_state: int = 0
 
 

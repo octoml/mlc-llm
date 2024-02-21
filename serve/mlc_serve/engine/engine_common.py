@@ -34,7 +34,6 @@ from .model_module import (
 )
 from ..model.base import ModelArtifactConfig
 from ..openai_logprob_protocol import LogprobsContent, TopLogprobs
-from .constrained_sampling import JSONLogitsProcessor
 from .constrained.fsm_cache import FSMCache
 from .constrained import build_regex_from_schema
 
@@ -297,14 +296,11 @@ def get_requests_to_process(
                 # TODO(masahi): How to account for token counts in EvalMultiQueryRequest in
                 # Prometheus metric?
             elif not state.is_prefilled:
-                # `JSONLogitsProcessor` needs to be created only once.
+                # JSON mode
                 if state.sampling_params.json_schema is not None:
                     json_schema = json.dumps(state.sampling_params.json_schema)
                     json_regex = build_regex_from_schema(json_schema)
                     state.sampling_params.regex_fsm = regex_fsm_cache.query(json_regex)
-                    # state.sampling_params.logits_processor = JSONLogitsProcessor(
-                    #     state.sampling_params.json_schema, tokenizer._tokenizer
-                    # )
 
                 if (
                     state.num_sequences == 1

@@ -9,7 +9,7 @@ python = ">=3.9"
 fastapi = ">=0.103.1"
 pydantic = ">=1.8.0"
 prometheus-client = ">=0.18.0"
-outlines = "0.0.23"
+outlines = "0.0.32"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.2"
