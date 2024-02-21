@@ -23,7 +23,7 @@ from ..api.protocol import (
     ErrorResponse,
     Logprobs,
     UsageInfo,
-    ToolMessage,
+    ChatCompletionMessageToolCall,
     Function,
 )
 from ..engine import (
@@ -62,7 +62,7 @@ def parse_function_text(input_text):
 
         # result = [{'name': function_name, 'arguments': arguments}]
         function_instance = Function(name=function_name, arguments=str(arguments))
-        func_list = [ToolMessage(function=function_instance, type='function')]
+        func_list = [ChatCompletionMessageToolCall(function=function_instance, type='function')]
         return func_list
     except:
         return False
@@ -137,8 +137,8 @@ async def request_completion(
     request_id = f"cmpl-{random_uuid()}"
     model_name = request.model
     
-    if "mistral" not in model_name and request.tools:
-        return create_error_response(status_code=HTTPStatus(400), message="Tools is only supported for Mistral type model")
+    if "mistral-7b-instruct-v0.2-function-calling" not in model_name and request.tools:
+        return create_error_response(status_code=HTTPStatus(400), message="Currently Tools is only supported for Mistral-7b-Instruct-v0.2 model")
     
     if request.stream and request.tools and request.tool_choice !="none":
         return create_error_response(status_code=HTTPStatus(400), message="Setting both Tools and Stream is not supported yet. Please pick one.")

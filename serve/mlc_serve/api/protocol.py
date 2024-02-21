@@ -59,14 +59,14 @@ class Function(BaseModel):
     arguments: str
     name: str
     
-class ToolMessage(BaseModel):
+class ChatCompletionMessageToolCall(BaseModel):
     function: Function
     type: str
     
 class ChatMessage(BaseModel):
     role: str
     content: str
-    tool_calls: List[ToolMessage] = []
+    tool_calls: List[ChatCompletionMessageToolCall] = []
 
 class ChatResponseFormat(BaseModel):
     type: str
