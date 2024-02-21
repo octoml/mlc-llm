@@ -68,10 +68,10 @@ def test_temperature(batch_size: int):
 
 def test_logit_bias_checker():
     # logit bias values must be [-100, 100]
+    # and indices in [0, vocab_size)
     get_sampling_state([SamplingParams(logit_bias={1: 100, 3: -100, 2: 2})])
     get_sampling_state([SamplingParams(logit_bias={34: 0, 23: -0.5})])
-    # TODO(@team): it seems like the valid range is [1,vocab_size]. Double check.
-    get_sampling_state([SamplingParams(logit_bias={1: 10, 3: -10, vocab_size: 2})])
+    get_sampling_state([SamplingParams(logit_bias={1: 10, 3: -10, vocab_size - 1: 2})])
     get_sampling_state([SamplingParams(logit_bias={})])
 
     with pytest.raises(ValueError):
@@ -82,6 +82,9 @@ def test_logit_bias_checker():
 
     with pytest.raises(ValueError):
         get_sampling_state([SamplingParams(logit_bias={0: 10, 3: -10})])
+
+    with pytest.raises(ValueError):
+        get_sampling_state([SamplingParams(logit_bias={1: 10, 3: -10, vocab_size: 2})])
 
     with pytest.raises(ValueError):
         get_sampling_state([SamplingParams(logit_bias={1: 10, 3: -10, vocab_size + 100: 2})])
@@ -116,8 +119,9 @@ def test_logit_bias(batch_size: int):
 
 
 def test_penalties_checker():
-    def _get_prompt_mask(vocab_size: int, batch_size: int) -> List[List[bool]]:
-        return [[False for _ in range(vocab_size)] for _ in range(batch_size)]
+    # repetition_penalty must be >0
+    # frequency_penalty must be in [-2, 2]
+    # precense_penalty must be in [-2, 2]
 
     # repetition_penalty
     get_sampling_state(
@@ -224,7 +228,6 @@ def test_penalties(batch_size: int):
     def _prepare_metadata(past_output_tokens):
         count_map = []
         for past_output_tokens_per_req in past_output_tokens:
-            # TODO: Check if this is the right range
             cnt = [0] * (vocab_size)
             for tok in past_output_tokens_per_req:
                 cnt[tok] += 1

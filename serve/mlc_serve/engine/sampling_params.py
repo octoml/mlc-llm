@@ -121,6 +121,8 @@ class SamplingParams:
                     raise ValueError(
                         f"logit bias must be in [-100, 100], got {bias} for token {token}."
                     )
+                if not isinstance(token, int):
+                    raise ValueError(f"token id must be an integer")
                 if not 1 <= token <= self.vocab_size:
                     raise ValueError(f"token id must be in [1, vocab_size]")
 

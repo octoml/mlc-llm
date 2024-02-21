@@ -212,6 +212,46 @@ def _test_stop(
                 )
                 assert found == 1, f"{gen_txt!r}, matches: {found}"
 
+def _test_logit_bias(
+    engine,
+    num_requests=10
+):
+    prompt = "Repeat only one of the following words: hi, hello"
+    requests = []
+    print(engine.tokenizer.encode("hi"))
+    for n in range(num_requests):
+        requests.append(
+            create_request(
+                idx=str(n),
+                prompt=prompt,
+                temp=0.8,
+                freq_pen=0,
+                pre_pen=0,
+                max_tokens=10,
+                stop="\n",
+                logit_bias={
+                    engine.tokenizer.encode("hi")[0]: -100.0,
+                    engine.tokenizer.encode("Hi")[0]: -100.0
+                }
+            )
+        )
+
+    engine.add(requests)
+    generated = ["" for _ in range(num_requests)]
+
+    while engine.has_pending_requests():
+        results = engine.step()
+        for res in results.outputs:
+            assert len(res.sequences) == 1
+            seq = res.sequences[0]
+            req_id = int(res.request_id)
+
+            if seq.delta:
+                generated[int(res.request_id)] += seq.delta
+
+            if seq.is_finished:
+                gen_txt = generated[req_id]
+                assert "hi" not in gen_txt and "Hi" not in gen_txt
 
 def _test_logprobs(
     engine,
@@ -492,6 +532,7 @@ if __name__ == "__main__":
     _test_logprobs(staging_engine)
     _test_logprobs_mixed_requests(staging_engine)
     _test_num_sequences(staging_engine)
+    _test_logit_bias(staging_engine)
     _test_json_mode(staging_engine)
     # These tests are broken since we are now imposing no length limit
     # if max_tokens = None. The tests do not finish in a reasonable time.
@@ -507,6 +548,8 @@ if __name__ == "__main__":
     _test_stop(sync_engine)
     _test_logprobs(sync_engine)
     _test_logprobs_mixed_requests(sync_engine)
+    _test_num_sequences(sync_engine)
+    _test_logit_bias(sync_engine)
     _test_json_mode(sync_engine)
     # These tests are broken since we are now imposing no length limit
     # if max_tokens = None. The tests do not finish in a reasonable time.
