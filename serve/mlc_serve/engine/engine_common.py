@@ -299,7 +299,7 @@ def get_requests_to_process(
                 # JSON mode
                 if state.sampling_params.json_schema is not None:
                     json_schema = json.dumps(state.sampling_params.json_schema)
-                    json_regex = build_regex_from_schema(json_schema)
+                    json_regex = build_regex_from_schema(json_schema, whitespace_pattern=r"[ \n\t]?")
                     state.sampling_params.regex_fsm = regex_fsm_cache.query(json_regex)
 
                 if (
