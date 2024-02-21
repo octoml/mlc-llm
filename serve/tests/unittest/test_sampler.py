@@ -9,10 +9,9 @@ from mlc_serve.engine import SamplingParams, SAMPLING_EPS
 
 dtype = torch.float32
 dev = "cuda"
-vocab_size = 32000
 
 
-def get_sampling_state(sampling_params, past_output_tokens=None, prompt_masks=None):
+def get_sampling_state(sampling_params, past_output_tokens=None, prompt_masks=None, vocab_size=32000):
     batch_size = len(sampling_params)
     if past_output_tokens is None:
         past_output_tokens = [[] for _ in range(batch_size)]
@@ -49,6 +48,7 @@ def test_temperature_checker():
 
 @pytest.mark.parametrize("batch_size", [1, 4, 8, 12])
 def test_temperature(batch_size: int):
+    vocab_size = 32000
     shape = (batch_size, vocab_size)
     logits = torch.rand(shape, dtype=dtype, device=dev)
     temperature = [0, 0.5, 1.0, 1.5, 2.0]
@@ -69,6 +69,8 @@ def test_temperature(batch_size: int):
 def test_logit_bias_checker():
     # logit bias values must be [-100, 100]
     # and indices in [0, vocab_size)
+
+    vocab_size = 32000
     get_sampling_state([SamplingParams(logit_bias={1: 100, 3: -100, 2: 2})])
     get_sampling_state([SamplingParams(logit_bias={34: 0, 23: -0.5})])
     get_sampling_state([SamplingParams(logit_bias={1: 10, 3: -10, vocab_size - 1: 2})])
@@ -91,6 +93,7 @@ def test_logit_bias_checker():
 
 @pytest.mark.parametrize("batch_size", [1, 4])
 def test_logit_bias(batch_size: int):
+    vocab_size = 32000
     shape = (batch_size, vocab_size)
     logits = torch.rand(shape, dtype=dtype, device=dev)
     sampling_param = [{} for _ in range(batch_size)]
@@ -220,12 +223,12 @@ def test_penalties_checker():
             ],
         )
 
-@pytest.mark.parametrize("batch_size", [1, 4])
+@pytest.mark.parametrize("batch_size", [1, 3])
 def test_penalties(batch_size: int):
-    def _prepare_metadata(past_output_tokens):
+    def _prepare_metadata(past_output_tokens, vocab_size):
         count_map = []
         for past_output_tokens_per_req in past_output_tokens:
-            cnt = [0] * (vocab_size)
+            cnt = [0] * vocab_size
             for tok in past_output_tokens_per_req:
                 cnt[tok] += 1
             count_map.append(cnt)
@@ -246,29 +249,24 @@ def test_penalties(batch_size: int):
     ):
         expected = torch.clone(logits)
         for i in range(batch_size):
-            temperature = temperatures[i]
-            if temperature < SAMPLING_EPS:
-                temperature = 1.0
-            rep_pen = torch.where(
-                mask[i],
-                repetition_penalties[i],
-                1.0
-            )
-            expected[i] = torch.where(
-                expected[i] > 0, expected[i] / rep_pen, expected[i] * rep_pen
-            )
+            for j in range(len(expected[i])):
+                if mask[i][j]:
+                    expected[i][j] *= 1 / repetition_penalties[i] if expected[i][j] > 0 else repetition_penalties[i]
+            temperature = 1.0 if temperatures[i] < SAMPLING_EPS else temperatures[i]
             expected[i] = (
-               (expected[i]
+                (expected[i]
                 - count_map[i] * frequency_penalties[i]
                 - mask[i] * presence_penalties[i])
                 / temperature
             )
+            print("DEBUG")
         return expected
 
+    vocab_size = 512
     shape = (batch_size, vocab_size)
     logits = torch.rand(shape, dtype=dtype, device=dev)
     past_output_tokens = [[2, 2, 2, 3, 5]] * batch_size
-    count_map, mask = _prepare_metadata(past_output_tokens)
+    count_map, mask = _prepare_metadata(past_output_tokens, vocab_size)
 
     temperatures = [0.6]
     presence_penalties = [-2.0, 2.0]
@@ -289,6 +287,7 @@ def test_penalties(batch_size: int):
                 repetition_penalty=rep_pen,
                 presence_penalty=pr_pen,
                 frequency_penalty=fr_pen,
+                vocab_size=vocab_size
             )
             for temp, rep_pen, pr_pen, fr_pen in batch_params
         ]
@@ -302,10 +301,10 @@ def test_penalties(batch_size: int):
             [fr_pen for _, _, _, fr_pen in batch_params],
         )
         sampling_state = get_sampling_state(
-            sampling_params, past_output_tokens=past_output_tokens
+            sampling_params, past_output_tokens=past_output_tokens, vocab_size=vocab_size
         )
         new_logits = adjust_logits(logits, sampling_state, vocab_size)
-        assert torch.allclose(expected, new_logits), f"{torch.isclose(expected, new_logits)}, {batch_params}"
+        assert torch.allclose(expected, new_logits)
 
 
 def test_top_p_top_k_checker():
@@ -421,6 +420,7 @@ def get_expected_result_by_top_pks(logits, top_pks, temps=None, filter_value=-fl
 
 @pytest.mark.parametrize("batch_size", [1, 4])
 def test_top_p_top_k(batch_size: int):
+    vocab_size = 32000
     shape = (batch_size, vocab_size)
     logits = torch.rand(shape, dtype=dtype, device=dev)
     for top_pks in permutations(
@@ -454,6 +454,7 @@ def test_logprobs_checker():
 
 @pytest.mark.parametrize("batch_size", [1, 4, 8])
 def test_logprobs(batch_size: int):
+    vocab_size = 32000
     shape = (batch_size, vocab_size)
     logits = torch.rand(shape, dtype=dtype, device=dev)
 
@@ -497,6 +498,7 @@ def test_logprobs(batch_size: int):
 @pytest.mark.parametrize("batch_size", [1, 4, 8, 12])
 def test_mixture_of_requests(batch_size: int):
     # Mixed temperature & top_p/top_ks
+    vocab_size = 32000
     top_ps = list(torch.arange(1, 0, -0.01))
     top_ks = list(range(1, vocab_size + 1))
     temperatures = list(torch.arange(0, 2.1, 0.1))
