@@ -123,8 +123,8 @@ class SamplingParams:
                     )
                 if not isinstance(token, int):
                     raise ValueError(f"token id must be an integer")
-                if not 1 <= token <= self.vocab_size:
-                    raise ValueError(f"token id must be in [1, vocab_size]")
+                if not 0 <= token < self.vocab_size:
+                    raise ValueError(f"token id must be in [0, vocab_size)")
 
         if self.repetition_penalty <= 0:
             raise ValueError(

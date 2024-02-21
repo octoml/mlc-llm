@@ -81,9 +81,6 @@ def test_logit_bias_checker():
         get_sampling_state([SamplingParams(logit_bias={1: 99, 3: -101, 2: 2})])
 
     with pytest.raises(ValueError):
-        get_sampling_state([SamplingParams(logit_bias={0: 10, 3: -10})])
-
-    with pytest.raises(ValueError):
         get_sampling_state([SamplingParams(logit_bias={1: 10, 3: -10, vocab_size: 2})])
 
     with pytest.raises(ValueError):
@@ -99,7 +96,7 @@ def test_logit_bias(batch_size: int):
     sampling_param = [{} for _ in range(batch_size)]
     for logit_bias_combination in permutations(
         product(
-            [1, 32000, 724, 223], 
+            [0, 31999, 724, 223],
             [100, -100, -12.5, 0.05]
         ), 
         batch_size
@@ -110,7 +107,7 @@ def test_logit_bias(batch_size: int):
     expected = torch.clone(logits)
     for num_batch in range(batch_size):
         for idx, val in sampling_param[num_batch].items():
-            expected[num_batch][idx - 1] += val
+            expected[num_batch][idx] += val
     for idx, logit_bias in enumerate(sampling_param):
         sampling_param[idx] = SamplingParams(logit_bias=logit_bias)
     sampling_state = get_sampling_state(sampling_param)

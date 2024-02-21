@@ -172,8 +172,6 @@ class SamplingTensors:
             device="cpu",
             pin_memory=True,
         )
-        # Convert 1-based index to 0-based
-        logit_bias_indices -= 1
         logit_bias_values = torch.tensor(
             list_logit_bias_values,
             dtype=dtype,
