@@ -268,7 +268,7 @@ def test_penalties(batch_size: int):
     past_output_tokens = [[2, 2, 2, 3, 5]] * batch_size
     count_map, mask = _prepare_metadata(past_output_tokens, vocab_size)
 
-    temperatures = [0.6]
+    temperatures = [0.0, 0.6]
     presence_penalties = [-2.0, 2.0]
     frequency_penalties = [-2.0, 2.0]
     repetition_penalties = [0.4, 1.0]
