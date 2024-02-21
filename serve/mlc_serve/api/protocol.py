@@ -53,10 +53,20 @@ class UsageInfo(BaseModel):
     completion_tokens: Optional[int] = 0
 
 
+B_FUNC, E_FUNC = "You have access to the following functions. Use them if required:\n\n", "\n\n"
+
+class Function(BaseModel):
+    arguments: str
+    name: str
+    
+class ToolMessage(BaseModel):
+    function: Function
+    type: str
+    
 class ChatMessage(BaseModel):
     role: str
     content: str
-
+    tool_calls: List[ToolMessage] = []
 
 class ChatResponseFormat(BaseModel):
     type: str
@@ -83,6 +93,8 @@ class ChatCompletionRequest(BaseModel):
     logprobs: bool = False
     top_logprobs: int = 0
     response_format: Optional[ChatResponseFormat] = None
+    tools: Optional[List] = None
+    tool_choice: Optional[Union[str, object]] = None
 
 
 class ChatCompletionResponseChoice(BaseModel):

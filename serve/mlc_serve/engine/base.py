@@ -124,6 +124,10 @@ class Request:
     validate_tokens: Optional[ValidateTokensCallback] = None
     # Context variables to attach to logging.
     contextvars: Dict[str, Any] = field(default_factory=dict)
+    # A list of tools the model may call. 
+    tools: Optional[List]= None
+    # Controls which (if any) function is called by the model
+    tool_choice: Optional[str] = None
 
     def __post_init__(self):
         if self.best_of is None:

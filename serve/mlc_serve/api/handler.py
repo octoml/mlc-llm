@@ -2,9 +2,10 @@ import time
 import uuid
 import json
 import os
+import re
 
 from http import HTTPStatus
-from typing import Annotated, AsyncIterator, List, Optional
+from typing import Annotated, AsyncIterator, List, Optional, Union
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -22,6 +23,8 @@ from ..api.protocol import (
     ErrorResponse,
     Logprobs,
     UsageInfo,
+    ToolMessage,
+    Function,
 )
 from ..engine import (
     DebugOptions,
@@ -42,6 +45,27 @@ def create_error_response(status_code: HTTPStatus, message: str) -> JSONResponse
         status_code=status_code.value,
     )
 
+
+def parse_function_text(input_text):
+    try:
+        function_pattern = re.compile(r'"name"\s*:\s*"([^"]+)"')
+        function_name_match = function_pattern.search(input_text)
+        function_name = function_name_match.group(1) if function_name_match else None
+
+        # Use regex to extract arguments JSON string if necessary
+        arguments_pattern = re.compile(r'"arguments"\s*:\s*({[^}]+})')
+        arguments_match = arguments_pattern.search(input_text)
+        arguments_str = arguments_match.group(1) if arguments_match else '{}'
+
+        # Parse arguments as JSON
+        arguments = json.loads(arguments_str)
+
+        # result = [{'name': function_name, 'arguments': arguments}]
+        function_instance = Function(name=function_name, arguments=str(arguments))
+        func_list = [ToolMessage(function=function_instance, type='function')]
+        return func_list
+    except:
+        return False
 
 router = APIRouter()
 
@@ -112,7 +136,13 @@ async def request_completion(
 
     request_id = f"cmpl-{random_uuid()}"
     model_name = request.model
-
+    
+    if "mistral" not in model_name and request.tools:
+        return create_error_response(status_code=HTTPStatus(400), message="Tools is only supported for Mistral type model")
+    
+    if request.stream and request.tools and request.tool_choice !="none":
+        return create_error_response(status_code=HTTPStatus(400), message="Setting both Tools and Stream is not supported yet. Please pick one.")
+    
     model_artifact_config = async_engine_connector.engine.model_artifact_config
     try:
         sampling_params = _get_sampling_params(request, model_artifact_config)
@@ -142,12 +172,14 @@ async def request_completion(
             max_tokens=request.max_tokens, stop_sequences=stop_sequences
         ),
         debug_options=DebugOptions(ignore_eos=ignore_eos),
+        tools=request.tools,
+        tool_choice=request.tool_choice,
     )
     if isinstance(request.messages, str):
         text_generation_request.debug_options.prompt = request.messages
 
     result_generator = async_engine_connector.generate(text_generation_request)
-
+    is_tools = True if request.tools else False
     if request.stream:
         return StreamingResponse(
             generate_completion_stream(
@@ -157,7 +189,7 @@ async def request_completion(
         )
     else:
         return await collect_result_stream(
-            request_id, model_name, request.n, result_generator
+            request_id, model_name, request.n, result_generator, is_tools, request.tool_choice
         )
 
 
@@ -223,6 +255,8 @@ async def collect_result_stream(
     model_name: str,
     num_sequences: int,
     result_generator: AsyncIterator[RequestOutput],
+    is_tools: bool = False,
+    tool_choice: Optional[Union[str, object]] = None
 ) -> ChatCompletionResponse:
     created_time = int(time.time())
     sequences: List[List[str]] = [[] for _ in range(num_sequences)]
@@ -260,9 +294,20 @@ async def collect_result_stream(
         if logprob_info_seq != []:
             logprobs = Logprobs(content=logprob_info_seq)
 
+        content="".join(chunks)
+        tool_calls = []
+        if is_tools and tool_choice != "none":
+            parsed_function_response = parse_function_text(content)
+            if parsed_function_response:
+                content = ""
+                tool_calls = parsed_function_response
+                print(content)
+                print(tool_calls)
+                print(type(tool_calls))
+
         choice = ChatCompletionResponseChoice(
             index=index,
-            message=ChatMessage(role="assistant", content="".join(chunks)),
+            message=ChatMessage(role="assistant", content=content, tool_calls=tool_calls),
             finish_reason=finish_reason,
             logprobs=logprobs,
         )

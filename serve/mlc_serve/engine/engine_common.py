@@ -7,7 +7,7 @@ import time
 from typing import Tuple, Deque, Dict, Optional, Union, Callable, List
 from collections import deque
 from threading import Condition, Lock
-
+import json
 import structlog
 
 from .base import (
@@ -34,6 +34,7 @@ from .model_module import (
 from ..model.base import ModelArtifactConfig
 from ..openai_logprob_protocol import LogprobsContent, TopLogprobs
 from .constrained_sampling import JSONLogitsProcessor
+from ..api.protocol import B_FUNC, E_FUNC
 
 LOG = structlog.stdlib.get_logger(__name__)
 
@@ -46,11 +47,15 @@ def get_new_request_state(
     else:
         if request.debug_options.prompt is not None:
             prompt = request.debug_options.prompt
+            if request.tools and request.tool_choice != "none":
+                B_INST, E_INST = "[INST] ", " [/INST]" #Llama and Mistral style
+                function_list = json.dumps(request.tools, indent=4)
+                prompt = f"{B_INST}{B_FUNC}{function_list.strip()}{E_FUNC}{prompt.strip()}{E_INST}\n\n"
         else:
-            prompt = conversation_template.apply(request.messages)
+            prompt = conversation_template.apply(request.messages, request.tools, request.tool_choice)
 
         prompt_token_ids = tokenizer.encode(prompt)
-
+    LOG.info(f"The prompt is: {prompt}")
     validation_err = None
     if request.validate_tokens is not None:
         validation_err = request.validate_tokens(request, prompt_token_ids)
