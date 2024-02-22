@@ -503,7 +503,9 @@ class LlamaModel(nn.Module):
         self.layers = ModuleList(
             [LlamaDecoderLayerBatched(config, kv_type) for _ in range(config.num_hidden_layers)]
         )
-        self.norm = LlamaRMSNorm(config.hidden_size, dtype=config.dtype, eps=config.rms_norm_eps)
+        weight_offset = 1 if isinstance(self.config, GemmaConfig) else 0
+        self.norm = LlamaRMSNorm(config.hidden_size, dtype=config.dtype, eps=config.rms_norm_eps,
+                                 weight_offset=weight_offset)
 
     def forward(
         self,

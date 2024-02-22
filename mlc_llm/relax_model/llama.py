@@ -141,9 +141,10 @@ class Embedding(nn.Module):
 
 
 class LlamaRMSNorm(nn.Module):
-    def __init__(self, hidden_size, dtype, eps=1e-6):
+    def __init__(self, hidden_size, dtype, eps=1e-6, weight_offset=0):
         self.weight = nn.Parameter((hidden_size,), dtype=dtype, name="rms_norm_weight")
         self.variance_epsilon = tvm.tir.const(eps, dtype)
+        self.weight_offset = weight_offset
 
     def forward(self, hidden_states):
         from tvm import te, tir
@@ -183,7 +184,7 @@ class LlamaRMSNorm(nn.Module):
 
                 return te.compute(
                     x.shape,
-                    lambda i, k: f_mul_cast(weight(k), f_div_cast_2d(i, k)),
+                    lambda i, k: f_mul_cast(weight(k) + self.weight_offset, f_div_cast_2d(i, k)),
                     name="rms_norm",
                 )
             else:
@@ -195,7 +196,7 @@ class LlamaRMSNorm(nn.Module):
 
                 return te.compute(
                     x.shape,
-                    lambda bsz, i, k: f_mul_cast(weight(k), f_div_cast_3d(bsz, i, k)),
+                    lambda bsz, i, k: f_mul_cast(weight(k) + self.weight_offset, f_div_cast_3d(bsz, i, k)),
                     name="rms_norm",
                 )
 
