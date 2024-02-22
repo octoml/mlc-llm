@@ -96,6 +96,14 @@ class MixtralConfig(LlamaConfig):
         self.quantization_scheme = kwargs["quantization_scheme"]
 
 
+class GemmaConfig(LlamaConfig):
+    def __init__(
+        self,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+
+
 class Linear(nn.Module):
     def __init__(self, in_features, out_features, dtype: str, bias=True):
         self.in_features = in_features

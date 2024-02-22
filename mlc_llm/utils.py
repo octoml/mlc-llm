@@ -27,6 +27,7 @@ supported_model_types = set(
         "mistral",
         "mixtral",
         "stablelm_epoch",
+        "gemma",
     ]
 )
 

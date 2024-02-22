@@ -19,6 +19,7 @@ from .param_manager import ParamManager
 from .llama import (
     LlamaConfig,
     MixtralConfig,
+    GemmaConfig,
     Linear,
     Embedding,
     LlamaRMSNorm,
@@ -492,6 +493,7 @@ class LlamaModel(nn.Module):
         kv_type: KVCacheType,
         sep_embed: bool = False,
     ):
+        self.config = config
         self.padding_idx = config.pad_token_id
         self.embed_tokens = None
 
@@ -518,6 +520,9 @@ class LlamaModel(nn.Module):
             inputs_embeds = inputs
 
         hidden_states = inputs_embeds
+
+        if isinstance(self.config, GemmaConfig):
+            hidden_states = nn.emit(hidden_states * relax.const(self.config.hidden_size**0.5, dtype="float16"))
 
         new_kvs = ()
 
@@ -1041,6 +1046,16 @@ def get_model(args, hf_config):
             num_shards=args.num_shards,
             build_model_only=args.build_model_only,
             quantization_scheme=args.quantization,
+        )
+    elif "gemma" in args.model.lower():
+        config = GemmaConfig(
+            **hf_config,
+            dtype=dtype,
+            max_sequence_length=hf_config["max_position_embeddings"],
+            position_embedding_base=position_embedding_base,
+            combine_matmul=True,
+            num_shards=args.num_shards,
+            build_model_only=args.build_model_only,
         )
     elif "max_sequence_length" in hf_config:
         config = LlamaConfig(

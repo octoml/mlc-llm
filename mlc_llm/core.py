@@ -892,6 +892,7 @@ def build_model_from_args(args: argparse.Namespace):
             model_generators["llama"] = llama_batched_vllm
             model_generators["mistral"] = llama_batched_vllm
             model_generators["mixtral"] = llama_batched_vllm
+            model_generators["gemma"] = llama_batched_vllm
 
         assert args.model_category in model_generators, f"Model {args.model} not supported"
 
