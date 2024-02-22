@@ -17,6 +17,8 @@ from .param_manager import ParamManager
 
 @dataclass
 class LlamaConfig:
+    rms_norm_weight_offset = 0.0
+
     def __init__(
         self,
         dtype="float32",
@@ -97,6 +99,8 @@ class MixtralConfig(LlamaConfig):
 
 
 class GemmaConfig(LlamaConfig):
+    rms_norm_weight_offset = 1.0
+
     head_dim: int
 
     def __init__(
@@ -144,7 +148,7 @@ class Embedding(nn.Module):
 
 
 class LlamaRMSNorm(nn.Module):
-    def __init__(self, hidden_size, dtype, eps=1e-6, weight_offset=0):
+    def __init__(self, hidden_size, dtype, eps=1e-6, weight_offset=0.0):
         self.weight = nn.Parameter((hidden_size,), dtype=dtype, name="rms_norm_weight")
         self.variance_epsilon = tvm.tir.const(eps, dtype)
         self.weight_offset = weight_offset
@@ -185,9 +189,12 @@ class LlamaRMSNorm(nn.Module):
                     name=x.op.name + "red_temp",
                 )
 
-                return te.compute(
+                output = te.compute(
                     x.shape,
-                    lambda i, k: f_mul_cast(weight(k) + self.weight_offset, f_div_cast_2d(i, k)),
+                    lambda i, k: f_mul_cast(
+                        weight(k) + T.cast(self.weight_offset, weight.dtype),
+                        f_div_cast_2d(i, k),
+                    ),
                     name="rms_norm",
                 )
             else:
@@ -197,11 +204,16 @@ class LlamaRMSNorm(nn.Module):
                     name=x.op.name + "red_temp",
                 )
 
-                return te.compute(
+                output = te.compute(
                     x.shape,
-                    lambda bsz, i, k: f_mul_cast(weight(k) + self.weight_offset, f_div_cast_3d(bsz, i, k)),
+                    lambda bsz, i, k: f_mul_cast(
+                        weight(k) + T.cast(self.weight_offset, weight.dtype),
+                        f_div_cast_3d(bsz, i, k),
+                    ),
                     name="rms_norm",
                 )
+
+            return output
 
         return nn.emit_te(f_rms_norm, hidden_states, self.weight, primfunc_name_hint="rms_norm")
 
@@ -225,8 +237,7 @@ class LlamaMLP(nn.Module):
             self.down_proj = Linear(intermediate_size, hidden_size, dtype=dtype, bias=False)
             self.up_proj = Linear(hidden_size, intermediate_size, dtype=dtype, bias=False)
 
-        self.act = {"silu": relax.op.nn.silu,
-                    "gelu": relax.op.nn.gelu}[config.hidden_act]
+        self.act = {"silu": relax.op.nn.silu, "gelu": relax.op.nn.gelu}[config.hidden_act]
 
     def forward(self, x):
         if self.combine_matmul:
@@ -342,7 +353,10 @@ class LlamaAttentionBase(nn.Module):
             self.v_proj.weight.shard_dim = 0
 
         self.o_proj = Linear(
-            self.head_dim * self.num_query_heads, self.hidden_size, dtype=dtype, bias=config.attention_bias
+            self.head_dim * self.num_query_heads,
+            self.hidden_size,
+            dtype=dtype,
+            bias=config.attention_bias,
         )
         self.o_proj.weight.shard_dim = 1
         self.o_proj.weight.shard_strategy = "shard_o_proj_k"
@@ -618,10 +632,16 @@ class LlamaDecoderLayer(nn.Module):
             self.use_moe = False
             self.mlp = LlamaMLP(config)
         self.input_layernorm = LlamaRMSNorm(
-            config.hidden_size, dtype=config.dtype, eps=config.rms_norm_eps
+            config.hidden_size,
+            dtype=config.dtype,
+            eps=config.rms_norm_eps,
+            weight_offset=config.rms_norm_weight_offset,
         )
         self.post_attention_layernorm = LlamaRMSNorm(
-            config.hidden_size, dtype=config.dtype, eps=config.rms_norm_eps
+            config.hidden_size,
+            dtype=config.dtype,
+            eps=config.rms_norm_eps,
+            weight_offset=config.rms_norm_weight_offset,
         )
 
     def post_self_attn(self, hidden_states, residual):
