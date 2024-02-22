@@ -556,7 +556,12 @@ class LlamaForCausalLM(nn.Module):
         self.num_shards = config.num_shards
         self.cpu_device = cpu_device
         self.model = LlamaModel(config, vocab_size_var, kv_type, sep_embed)
-        self.lm_head = Linear(config.hidden_size, vocab_size_var, dtype=config.dtype, bias=False)
+
+        if isinstance(config, GemmaConfig):
+            assert self.model.embed_tokens is not None
+            self.lm_head = lambda hidden: nn.emit(relax.op.linear(hidden, self.model.embed_tokens.weight))
+        else:
+            self.lm_head = Linear(config.hidden_size, vocab_size_var, dtype=config.dtype, bias=False)
 
         ############ Rotary embedding constants ############
         assert config.hidden_size % config.num_attention_heads == 0
