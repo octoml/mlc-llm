@@ -566,8 +566,11 @@ class LlamaForCausalLM(nn.Module):
             self.lm_head = Linear(config.hidden_size, vocab_size_var, dtype=config.dtype, bias=False)
 
         ############ Rotary embedding constants ############
-        assert config.hidden_size % config.num_attention_heads == 0
-        head_dim = config.hidden_size // config.num_attention_heads
+        if hasattr(config, "head_dim"):
+            head_dim = config.head_dim
+        else:
+            assert config.hidden_size % config.num_attention_heads == 0
+            head_dim = config.hidden_size // config.num_attention_heads
 
         # Set the cached sin/cos to the maximum of 2048 and max seq len.
         # This will be eliminated further with online rotary embedding calculation.
@@ -715,7 +718,11 @@ def get_inputs(
         num_blocks = tvm.tir.Var("num_blocks", "int64")
 
         num_key_value_heads = config.get_num_key_value_heads() // config.num_shards
-        head_size = hidden_size // config.num_attention_heads
+
+        if hasattr(config, "head_dim"):
+            head_size = config.head_dim
+        else:
+            head_size = config.hidden_size // config.num_attention_heads
 
         if kv_type == KVCacheType.VLLM:
             block_size = VllmAttention.block_size

@@ -162,7 +162,7 @@ class Model:
         self.num_shards = config.num_shards
 
         # TODO(@sunggg): Find a better way
-        if config.model_type in ["llama", "mistral", "mixtral"]:
+        if config.model_type in ["llama", "mistral", "mixtral", "gemma"]:
             self.torch_dtype = torch.float32
         else:
             assert 0, f"{config.model_type} is NOT supported yet"
@@ -253,7 +253,9 @@ class Model:
 
         vm_alloc_after = self.get_used_memory()
 
-        LOG.info(f"peak memory during profling: {(vm_alloc_after - vm_alloc_before) / 1e9} GB")
+        LOG.info(
+            f"peak memory during profling: {(vm_alloc_after - vm_alloc_before) / 1e9} GB"
+        )
 
         return self.get_param_nbytes() + (vm_alloc_after - vm_alloc_before)
 

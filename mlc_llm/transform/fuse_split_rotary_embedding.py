@@ -461,10 +461,8 @@ def apply_rewrite(mod, split_rotary, get_pattern_func):
 
 
 def fuse_split_rotary_embedding(
-    num_query_heads, num_kv_heads, hidden_size, position_embedding_base, batched=False
+    num_query_heads, num_kv_heads, hidden_size, head_dim, position_embedding_base, batched=False
 ):
-    head_dim = hidden_size // num_query_heads
-
     @tvm.ir.transform.module_pass(opt_level=0, name="fuse_split_rotary_embedding")
     def ir_module_pass(mod: tvm.IRModule, _pass_context) -> tvm.IRModule:
         split_rotary = get_dynamic_split_rotary()

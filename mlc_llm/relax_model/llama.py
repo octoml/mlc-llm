@@ -97,11 +97,14 @@ class MixtralConfig(LlamaConfig):
 
 
 class GemmaConfig(LlamaConfig):
+    head_dim: int
+
     def __init__(
         self,
         **kwargs,
     ):
         super().__init__(**kwargs)
+        self.head_dim = kwargs["head_dim"]
 
 
 class Linear(nn.Module):
@@ -289,7 +292,12 @@ class LlamaAttentionBase(nn.Module):
         self.hidden_size = config.hidden_size
         self.num_key_value_heads = config.get_num_key_value_heads() // config.num_shards
         self.num_query_heads = config.num_attention_heads // self.num_shards
-        self.head_dim = self.hidden_size // config.num_attention_heads
+
+        if hasattr(config, "head_dim"):
+            self.head_dim = config.head_dim
+        else:
+            self.head_dim = config.hidden_size // config.num_attention_heads
+
         self.position_embedding_base = config.position_embedding_base
 
         self.combine_matmul = config.combine_matmul
@@ -1340,6 +1348,11 @@ def setup_params(mod, param_manager, dtype, config, args):
             assert relax_pname.endswith("scales")
             return qscale
 
+    if hasattr(config, "head_dim"):
+        head_dim = config.head_dim
+    else:
+        head_dim = config.hidden_size // config.num_attention_heads
+
     def f_compute_relax_param(relax_pname: str, torch_params: List[Any]):
         # Expected to enter this function only for the combined linear matmul weights.
         # Other weights are supposed to be loaded in `f_convert_param_bkwd` since
@@ -1374,8 +1387,8 @@ def setup_params(mod, param_manager, dtype, config, args):
                 "Matmul combination is not turned on, and the function "
                 "is not expected to be entered"
             )
+
         hidden_size = config.hidden_size
-        head_dim = config.hidden_size // config.num_attention_heads
 
         if "query_key_value_proj" in relax_pname:
             q_heads = config.num_attention_heads
@@ -1410,7 +1423,6 @@ def setup_params(mod, param_manager, dtype, config, args):
     device = tvm.cpu()
     param_list = [None] * param_manager.nparam_to_load
 
-    head_dim = config.hidden_size / config.num_attention_heads
     inv_freq = 1.0 / (
         config.position_embedding_base ** (np.arange(0, head_dim, 2).astype("float32") / head_dim)
     )

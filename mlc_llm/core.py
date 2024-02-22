@@ -644,11 +644,18 @@ def mod_transform_before_build(
 
         if max_seq_len:
             num_key_value_heads = config.get_num_key_value_heads()
+            num_query_heads = config.num_attention_heads // args.num_shards
+            hidden_size = config.hidden_size // args.num_shards
+            if getattr(config, "head_dim"):
+                head_dim = config.head_dim
+            else:
+                head_dim = hidden_size // num_query_heads
             # pylint: disable=no-value-for-parameter
             mod = fuse_split_rotary_embedding(
-                config.num_attention_heads // args.num_shards,
+                num_query_heads,
                 num_key_value_heads // args.num_shards,
-                config.hidden_size // args.num_shards,
+                hidden_size,
+                head_dim,
                 config.position_embedding_base,
                 batched=args.enable_batching,
             )(mod)
