@@ -192,7 +192,7 @@ class LlamaRMSNorm(nn.Module):
                 output = te.compute(
                     x.shape,
                     lambda i, k: f_mul_cast(
-                        weight(k) + T.cast(self.weight_offset, weight.dtype),
+                        weight(k),
                         f_div_cast_2d(i, k),
                     ),
                     name="rms_norm",
@@ -207,7 +207,7 @@ class LlamaRMSNorm(nn.Module):
                 output = te.compute(
                     x.shape,
                     lambda bsz, i, k: f_mul_cast(
-                        weight(k) + T.cast(self.weight_offset, weight.dtype),
+                        weight(k),
                         f_div_cast_3d(bsz, i, k),
                     ),
                     name="rms_norm",
@@ -215,7 +215,30 @@ class LlamaRMSNorm(nn.Module):
 
             return output
 
-        return nn.emit_te(f_rms_norm, hidden_states, self.weight, primfunc_name_hint="rms_norm")
+        # Currently, the cutlass.rms_norm assumes that
+        # `cutlass::rmsnorm` can be used in place of any PrimFunc that
+        # is named `rms_norm`.  As a result, non-zero `weight_offset`
+        # applied inside the TE kernel definition would produce
+        # incorrect results.  Applying the `weight_offset` outside the
+        # `nn.emit_te` is required for correct results.  (It's also
+        # preferable for performance, so that the `weight_offset` can
+        # be preprocessed.)
+        #
+        # TODO(Lunderberg): Change the "cutlass.rms_norm" pattern to
+        # verify the function that it calls.
+        if self.weight_offset == 0:
+            rms_weights = self.weight
+        else:
+            rms_weights = nn.emit(
+                self.weight + R.const(self.weight_offset, dtype=self.weight.struct_info.dtype),
+                name_hint="rms_weights",
+            )
+        return nn.emit_te(
+            f_rms_norm,
+            hidden_states,
+            rms_weights,
+            primfunc_name_hint="rms_norm",
+        )
 
 
 class LlamaMLP(nn.Module):
