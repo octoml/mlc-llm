@@ -225,6 +225,9 @@ class LlamaMLP(nn.Module):
             self.down_proj = Linear(intermediate_size, hidden_size, dtype=dtype, bias=False)
             self.up_proj = Linear(hidden_size, intermediate_size, dtype=dtype, bias=False)
 
+        self.act = {"silu": relax.op.nn.silu,
+                    "gelu": relax.op.nn.gelu}[config.hidden_act]
+
     def forward(self, x):
         if self.combine_matmul:
             gate_up_results = nn.emit(
@@ -240,7 +243,7 @@ class LlamaMLP(nn.Module):
             gate_result = self.gate_proj(x)
             up_result = self.up_proj(x)
 
-        result = self.down_proj(relax.op.nn.silu(gate_result) * up_result)
+        result = self.down_proj(self.act(gate_result) * up_result)
         return result
 
 
