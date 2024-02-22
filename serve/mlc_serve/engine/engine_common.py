@@ -400,7 +400,6 @@ class EngineBase:
     def __init__(self, model_module: ModelModule):
         self.text_generator = model_module.text_generator
         self.tokenizer = model_module.tokenizer
-        mlc_path = Path(__file__).resolve().parent.parent.parent.parent
         self.conversation_template = model_module.conversation_template
         self.cache_manager = model_module.cache_manager
         self.model_artifact_config = model_module.model_artifact_config
@@ -412,7 +411,7 @@ class EngineBase:
            self.model_artifact_config.model_artifact_path
         ), "model artifact path need to be defined"
         self.regex_fsm_cache = FSMCache(
-            Path(mlc_path, self.model_artifact_config.model_artifact_path, "model"),
+            Path(self.model_artifact_config.model_artifact_path, "model"),
             {
                 "tokenizer_mode": "auto",
                 "trust_remote_code": False,
