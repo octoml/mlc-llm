@@ -25,6 +25,7 @@ class ModelArtifactConfig:
     num_attention_heads: Optional[int] = None
     num_hidden_layers: Optional[int] = None
     hidden_size: Optional[int] = None
+    head_dim: Optional[int] = None
 
     @classmethod
     def _from_json(config_cls, json_obj: dict):

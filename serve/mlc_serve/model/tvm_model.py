@@ -563,9 +563,7 @@ def init_tvm_model(
     num_kv_heads = (
         model_artifact_config.num_key_value_heads // model_artifact_config.num_shards
     )
-    head_size = (
-        model_artifact_config.hidden_size // model_artifact_config.num_attention_heads
-    )
+    head_size = model_artifact_config.head_dim
 
     if model_artifact_config.paged_kv_cache_type == "flash-decoding":
         allocate_func_name = "tvm.contrib.flash_attn.allocate_kv_cache"

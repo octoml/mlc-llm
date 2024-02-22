@@ -21,10 +21,12 @@ def _test(args: argparse.Namespace):
 
     sampling_params_greedy = SamplingParams(
         temperature=0.0,
+        vocab_size=engine.model_artifact_config.vocab_size,
     )
     sampling_params_random = SamplingParams(
         temperature=1.0,
         top_p=1.0,
+        vocab_size=engine.model_artifact_config.vocab_size,
     )
 
     num_sequences = args.num_sequences_to_sample
