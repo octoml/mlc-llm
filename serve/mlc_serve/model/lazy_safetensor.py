@@ -8,8 +8,11 @@ import typing
 from typing import Union, Dict, List
 
 import numpy as np
+import structlog
 
 import tvm
+
+LOG = structlog.stdlib.get_logger(__name__)
 
 # Safetensor names are defined by their enum name in the Rust
 # implementation at
@@ -132,6 +135,10 @@ class LazySafetensor:
         self.shape = shape
         self.data_offset_in_file = data_offset_in_file
 
+    @property
+    def num_bytes(self) -> int:
+        return np.prod(self.shape) * tvm.runtime.DataType(self.dtype).bits // 8
+
     def as_tvm_array(self) -> tvm.runtime.NDArray:
         # The `safetensors.safe_open` function is almost what we need,
         # but would either (a) require an extra data copy if going
@@ -143,7 +150,7 @@ class LazySafetensor:
 
         byte_ptr_type = ctypes.POINTER(ctypes.c_byte)
 
-        data_len = np.prod(self.shape) * tvm.runtime.DataType(self.dtype).bits // 8
+        data_len = self.num_bytes
 
         data_ptr = ctypes.cast(arr.handle.contents.data, byte_ptr_type)
 
@@ -173,6 +180,17 @@ class LazySafetensor:
         return arr
 
 
+get_free_memory_func = tvm.get_global_func("runtime.GetCudaFreeMemory")
+
+
+def get_free_memory():
+    text = get_free_memory_func()
+    words = text.split()
+    free = int(words[4])
+    total = int(words[9])
+    return free, total
+
+
 @tvm.register_func("mlc_serve.model.define_safetensors_get_item")
 def define_safetensors_get_item(
     safetensors_dir: str,
@@ -183,8 +201,39 @@ def define_safetensors_get_item(
 
     safetensors = LazySafetensorDir(safetensors_dir)
 
+    pid = os.getpid()
+
     @tvm.register_func("get_item", override=True)
     def get_item(i):
         safetensor = safetensors[param_names[i]]
+
+        bytes_free, bytes_total = get_free_memory()
+        LOG.debug(
+            "Starting to load tensor to GPU",
+            pid=pid,
+            param=i,
+            param_name=param_names[i],
+            param_shape=safetensor.shape,
+            param_dtype=safetensor.dtype,
+            param_bytes=safetensor.num_bytes,
+            bytes_free=bytes_free,
+            bytes_total=bytes_total,
+        )
+
         tvm_on_cpu = safetensor.as_tvm_array()
-        return tvm.nd.array(tvm_on_cpu, dev)
+        tvm_on_gpu = tvm.nd.array(tvm_on_cpu, dev)
+
+        bytes_free, bytes_total = get_free_memory()
+        LOG.debug(
+            "Finished loading tensor to GPU",
+            pid=pid,
+            param=i,
+            param_name=param_names[i],
+            param_shape=safetensor.shape,
+            param_dtype=safetensor.dtype,
+            param_bytes=safetensor.num_bytes,
+            bytes_free=bytes_free,
+            bytes_total=bytes_total,
+        )
+
+        return tvm_on_gpu
