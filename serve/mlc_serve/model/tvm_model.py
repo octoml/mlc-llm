@@ -583,6 +583,7 @@ def init_tvm_model(
                 model_artifact_config.num_hidden_layers,
                 num_kv_heads,
                 head_size,
+                engine_config.gpu_memory_utilization,
             )
         except tvm.error.InternalError:
             raise RuntimeError(

@@ -28,6 +28,7 @@ def get_default_mlc_serve_argparser(description="", allow_override=False):
     parser.add_argument("--max-num-batched-tokens", type=int, default=4096)
     parser.add_argument("--min-decode-steps", type=int, default=32)
     parser.add_argument("--max-decode-steps", type=int, default=56)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--debug-logging", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     return parser
@@ -54,6 +55,7 @@ def create_mlc_engine(args: argparse.Namespace, start_engine=True) -> InferenceE
             "max_num_batched_tokens": args.max_num_batched_tokens,
             "min_decode_steps": args.min_decode_steps,
             "max_decode_steps": args.max_decode_steps,
+            "gpu_memory_utilization": args.gpu_memory_utilization,
         }
     )
     model_artifact_config = get_model_artifact_config(args.model_artifact_path)
