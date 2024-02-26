@@ -229,7 +229,7 @@ class StagingInferenceEngine(ScopedInferenceEngine):
 
                     gen_seq = state.generation_sequences[seq_output.id.sequence_index]
                     new_token_ids = seq_output.new_tokens
-                    LOG.debug(f"New token ids: {new_token_ids}")
+                    # LOG.debug(f"New token ids: {new_token_ids}")
                     if new_token_ids:
                         delta, logprob_info = prepare_output(
                             gen_seq,

@@ -285,18 +285,6 @@ class Model:
             # Use `vocab_size` as a padding
             past_decode_tokens.append([self.vocab_size, *request.queries.token_ids])
 
-        # Prepare sampling tensors in another stream to overlap
-        # CPU<->GPU data transfer with GPU computation in forward pass.
-        with torch.cuda.stream(self._copy_stream):
-            sampling_state = SamplingState.from_sampling_params(
-                sampling_params,
-                past_decode_tokens,
-                prompt_masks,
-                self.torch_dtype,
-                self.torch_dev,
-                self.vocab_size,
-            )
-
         (
             input_ids,
             positions,
@@ -334,6 +322,18 @@ class Model:
             permute_map,
             self.params,
         )
+
+        # Prepare sampling tensors in another stream to overlap
+        # CPU<->GPU data transfer with GPU computation in forward pass.
+        with torch.cuda.stream(self._copy_stream):
+            sampling_state = SamplingState.from_sampling_params(
+                sampling_params,
+                past_decode_tokens,
+                prompt_masks,
+                self.torch_dtype,
+                self.torch_dev,
+                self.vocab_size,
+            )
 
         if self.disco_session:
             logits, _ = out.debug_get_from_remote(0)
@@ -415,18 +415,6 @@ class Model:
             all_token_ids.append(request.token_ids)
             sampling_params.append(request.sampling_params)
 
-        # Prepare sampling tensors in another stream to overlap
-        # CPU<->GPU data transfer with GPU computation in forward pass.
-        with torch.cuda.stream(self._copy_stream):
-            sampling_state = SamplingState.from_sampling_params(
-                sampling_params,
-                past_decode_tokens,
-                prompt_masks,
-                self.torch_dtype,
-                self.torch_dev,
-                self.vocab_size,
-            )
-
         (
             input_ids,
             positions,
@@ -507,6 +495,18 @@ class Model:
                     block_tables,
                     self.params,
                 )
+
+        # Prepare sampling tensors in another stream to overlap
+        # CPU<->GPU data transfer with GPU computation in forward pass.
+        with torch.cuda.stream(self._copy_stream):
+            sampling_state = SamplingState.from_sampling_params(
+                sampling_params,
+                past_decode_tokens,
+                prompt_masks,
+                self.torch_dtype,
+                self.torch_dev,
+                self.vocab_size,
+            )
 
         if self.disco_session:
             logits, _ = out.debug_get_from_remote(0)
