@@ -76,6 +76,9 @@ class LlamaConfig:
 
         return self.num_key_value_heads
 
+    def get_head_dim(self):
+        return self.hidden_size // self.num_attention_heads
+
 
 class MixtralConfig(LlamaConfig):
     num_experts_per_tok: int
@@ -109,6 +112,9 @@ class GemmaConfig(LlamaConfig):
     ):
         super().__init__(**kwargs)
         self.head_dim = kwargs["head_dim"]
+
+    def get_head_dim(self):
+        return self.head_dim
 
 
 class Linear(nn.Module):
@@ -329,12 +335,7 @@ class LlamaAttentionBase(nn.Module):
         self.hidden_size = config.hidden_size
         self.num_key_value_heads = config.get_num_key_value_heads() // config.num_shards
         self.num_query_heads = config.num_attention_heads // self.num_shards
-
-        if hasattr(config, "head_dim"):
-            self.head_dim = config.head_dim
-        else:
-            self.head_dim = config.hidden_size // config.num_attention_heads
-
+        self.head_dim = config.get_head_dim()
         self.position_embedding_base = config.position_embedding_base
 
         self.combine_matmul = config.combine_matmul
@@ -1394,10 +1395,7 @@ def setup_params(mod, param_manager, dtype, config, args):
             assert relax_pname.endswith("scales")
             return qscale
 
-    if hasattr(config, "head_dim"):
-        head_dim = config.head_dim
-    else:
-        head_dim = config.hidden_size // config.num_attention_heads
+    head_dim = config.get_head_dim()
 
     def f_compute_relax_param(relax_pname: str, torch_params: List[Any]):
         # Expected to enter this function only for the combined linear matmul weights.

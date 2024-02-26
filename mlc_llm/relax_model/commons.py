@@ -32,7 +32,7 @@ def create_metadata_func(
 def _get_shard_strategies(
     model_config, num_shards: int, param_shape_is_already_sharded: bool
 ) -> Dict[str, tvm.tir.PrimFunc]:
-    head_dim = model_config.hidden_size // model_config.num_attention_heads
+    head_dim = model_config.get_head_dim()
     q_heads = model_config.num_attention_heads
     kv_heads = model_config.get_num_key_value_heads()
 
