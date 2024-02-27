@@ -664,7 +664,9 @@ class MistralEmbedTokensWrapper(nn.Module):
 
 
 class MistralModel(nn.Module):
-    def __init__(self, config: MistralConfig, vocab_size_var: tvm.tir.SizeVar, sep_embed: bool = False):
+    def __init__(
+        self, config: MistralConfig, vocab_size_var: tvm.tir.SizeVar, sep_embed: bool = False
+    ):
         self.num_shards = config.num_shards
         self.padding_idx = config.pad_token_id
         self.embed_tokens = None
@@ -730,7 +732,9 @@ class MistralModel(nn.Module):
 
 
 class MistralForCausalLM(nn.Module):
-    def __init__(self, config: MistralConfig, vocab_size_var: tvm.tir.SizeVar, sep_embed: bool = False):
+    def __init__(
+        self, config: MistralConfig, vocab_size_var: tvm.tir.SizeVar, sep_embed: bool = False
+    ):
         self.model = MistralModel(config, vocab_size_var, sep_embed)
         self.lm_head = Linear(config.hidden_size, vocab_size_var, dtype=config.dtype, bias=False)
 
@@ -827,13 +831,13 @@ def create_encoding_func(
 
     bsz = 1
     seq_len = tvm.tir.SizeVar("n", "int64")  # number of tokens for the input
-    rolling_cache_len = tvm.tir.SizeVar("c", "int64")  # rolling_cache_len captures number of elements in the cache
+    rolling_cache_len = tvm.tir.SizeVar(
+        "c", "int64"
+    )  # rolling_cache_len captures number of elements in the cache
     kv_seq_len = tvm.tir.SizeVar(
         "k", "int64"
     )  # kv_seq_len captures number of elements in cache + seq_len
-    cache_offset = tvm.tir.SizeVar(
-        "o", "int64"
-    )  # slidinf window kv cache offset
+    cache_offset = tvm.tir.SizeVar("o", "int64")  # slidinf window kv cache offset
 
     hidden_size = config.hidden_size
     with bb.function(func_name):
@@ -888,13 +892,13 @@ def create_decoding_func(
     func_name = "decode"
 
     bsz = 1
-    rolling_cache_len = tvm.tir.SizeVar("c", "int64")  # rolling_cache_len captures number of elements in the cache
+    rolling_cache_len = tvm.tir.SizeVar(
+        "c", "int64"
+    )  # rolling_cache_len captures number of elements in the cache
     kv_seq_len = tvm.tir.SizeVar(
         "k", "int64"
     )  # kv_seq_len captures number of elements in cache + seq_len
-    cache_offset = tvm.tir.SizeVar(
-        "o", "int64"
-    )  # sliding window kv cache offset
+    cache_offset = tvm.tir.SizeVar("o", "int64")  # sliding window kv cache offset
 
     with bb.function(func_name):
         model = MistralForCausalLM(config, tvm.tir.SizeVar("vocab_size", "int64"))
