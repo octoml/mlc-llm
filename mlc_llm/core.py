@@ -491,7 +491,7 @@ def _parse_args(parsed) -> argparse.Namespace:
     artifact_tag = parsed.artifact_tag if parsed.artifact_tag else "-".join(model_name)
     parsed.artifact_path = os.path.join(parsed.artifact_path, artifact_tag)
 
-    parsed.lib_name = f"{parsed.model}-{parsed.quantization.name}-{parsed.target_kind}.{parsed.lib_format}"
+    parsed.lib_name = f"{os.path.split(parsed.model)[1]}-{parsed.quantization.name}-{parsed.target_kind}.{parsed.lib_format}"
     parsed.lib_path = os.path.join(parsed.artifact_path, parsed.lib_name)
 
     return parsed
