@@ -1185,36 +1185,24 @@ def generate_mod_transform(model_generators, args, config):
 
         is_bfloat16_dtype = bb.add_func(is_bfloat16_dtype, "is_bfloat16_dtype")
 
-        @R.function(private=True)
-        def as_float16_1d(A: R.Tensor(["n"])) -> R.Tensor(["n"], "float16"):
-            n = T.int64()
+        def as_float16(arg):
+            ndim = arg.struct_info.ndim
+            shape = [tvm.tir.Var(f"dim{i}", "int64") for i in range(ndim)]
 
-            is_bfloat16 = is_bfloat16_dtype(A)
+            @R.function(private=True)
+            def as_float16(A: R.Tensor(shape)) -> R.Tensor(shape, dtype="float16"):
+                is_bfloat16 = is_bfloat16_dtype(A)
 
-            if is_bfloat16:
-                A = R.match_cast(A, R.Tensor([n], "bfloat16"))
-                B = A.astype("float16")
-            else:
-                B = R.match_cast(A, R.Tensor([n], "float16"))
-            return B
+                if is_bfloat16:
+                    A = R.match_cast(A, R.Tensor(shape, "bfloat16"))
+                    B = A.astype("float16")
+                else:
+                    B = R.match_cast(A, R.Tensor(shape, "float16"))
+                return B
 
-        as_float16_1d = bb.add_func(as_float16_1d, "as_float16_1d")
+            as_float16 = bb.add_func(as_float16, f"as_float16_{ndim}d")
+            return as_float16(arg)
 
-        @R.function(private=True)
-        def as_float16_2d(A: R.Tensor(["m", "n"])) -> R.Tensor(["m", "n"], "float16"):
-            m = T.int64()
-            n = T.int64()
-
-            is_bfloat16 = is_bfloat16_dtype(A)
-
-            if is_bfloat16:
-                A = R.match_cast(A, R.Tensor([m, n], "bfloat16"))
-                B = A.astype("float16")
-            else:
-                B = R.match_cast(A, R.Tensor([m, n], "float16"))
-            return B
-
-        as_float16_2d = bb.add_func(as_float16_2d, "as_float16_2d")
 
         float16_params = manager_transform["transform_params"].params
         either_float16_params = [
@@ -1228,14 +1216,12 @@ def generate_mod_transform(model_generators, args, config):
         with bb.function("transform_params", either_float16_params, attrs={"num_input": 0}):
             with bb.dataflow():
                 float16_exprs = []
-                for input_param in either_float16_params:
-                    if input_param.struct_info.ndim == 1:
-                        float16_expr = as_float16_1d(input_param)
-                    else:
-                        float16_expr = as_float16_2d(input_param)
 
+                for input_param in either_float16_params:
+                    float16_expr = as_float16(input_param)
                     float16_expr = bb.emit(float16_expr, input_param.name_hint + ".float16")
                     float16_exprs.append(float16_expr)
+
                 bb.emit_output(float16_exprs)
 
             bb.emit_func_output(float16_exprs)
