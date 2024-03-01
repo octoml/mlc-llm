@@ -522,9 +522,7 @@ def _parse_args(parsed) -> argparse.Namespace:
     artifact_tag = parsed.artifact_tag if parsed.artifact_tag else "-".join(_gen_model_name())
     parsed.artifact_path = os.path.join(parsed.artifact_path, artifact_tag)
 
-    parsed.lib_name = (
-        f"{os.path.split(parsed.model)[1]}-{parsed.quantization.name}-{parsed.target_kind}.{parsed.lib_format}"
-    )
+    parsed.lib_name = f"{os.path.split(parsed.model)[1]}-{parsed.quantization.name}-{parsed.target_kind}.{parsed.lib_format}"
     parsed.lib_path = os.path.join(parsed.artifact_path, parsed.lib_name)
 
     return parsed
@@ -1200,7 +1198,6 @@ def generate_mod_transform(model_generators, args, config):
             as_float16 = bb.add_func(as_float16, f"as_float16_{ndim}d")
             return as_float16(arg)
 
-
         float16_params = manager_transform["transform_params"].params
         either_float16_params = [
             relax.Var(
@@ -1224,7 +1221,6 @@ def generate_mod_transform(model_generators, args, config):
             bb.emit_func_output(float16_exprs)
 
         parameter_transforms.append(bb.get())
-
 
     # If the model provided constants, bind them to the transform_params.
     # This ensures that the generated function can reproduce the same
