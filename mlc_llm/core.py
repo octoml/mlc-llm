@@ -1150,10 +1150,7 @@ def generate_mod_transform(model_generators, args, config):
     # While the entire model could be computed in bfloat16, not all
     # operators support it.  For now, reproducing the ParamManager's
     # conversion of bfloat16 to float16.
-    if config["torch_dtype"] != model_config.dtype:
-        assert config["torch_dtype"] == "bfloat16"
-        assert model_config.dtype == "float16"
-
+    if model_config.dtype == "bfloat16" or model_config.dtype == "float16":
         bb = relax.BlockBuilder()
 
         from tvm.script import tir as T, relax as R
