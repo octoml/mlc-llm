@@ -386,16 +386,12 @@ class MixtralExpertsFP8(
 
         # TODO(csullivan): use the fp16 group gemm for calibration
         output = nn.op.extern(
-            f"cutlass.moe_gemm_{a_format}_{w_format}_fp16",
+            f"cutlass.group_gemm_{a_format}_{w_format}_fp16",
             [
                 x,
                 self.q_weight,
                 indptr,
                 workspace,
-                batch_size,
-                out_features,
-                in_features,
-                num_local_experts,
             ],
             out=nn.Tensor.placeholder(
                 (batch_size, out_features),
