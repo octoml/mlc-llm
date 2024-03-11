@@ -14,11 +14,83 @@ def json_logging_enabled() -> bool:
     return _JSON
 
 
+def _pathname(module, frame_info) -> Any:
+    return frame_info.filename
+
+
+def _filename(module, frame_info) -> Any:
+    import os
+
+    return os.path.basename(frame_info.filename)
+
+
+def _module(module, frame_info) -> Any:
+    import os
+
+    return os.path.splitext(os.path.basename(frame_info.filename))[0]
+
+
+def _func_name(module, frame_info) -> Any:
+    return frame_info.function
+
+
+def _lineno(module, frame_info) -> Any:
+    return frame_info.lineno
+
+
+def _thread(module, frame_info) -> Any:
+    import threading
+
+    return threading.get_ident()
+
+
+def _thread_name(module, frame_info) -> Any:
+    import threading
+
+    return threading.current_thread().name
+
+
+def _process(module, frame_info) -> Any:
+    import os
+
+    return os.getpid()
+
+
+def _process_name(module, frame_info) -> Any:
+    from structlog.processors import get_processname
+
+    return get_processname()
+
+
+def _monkey_patch_callsite_parameter_adder():
+    """Monkey-patch to allow CallsiteParameterAdder to be pickled.
+
+    Pickle-able configs are required for compatibibility with TVM
+    PRhttps://github.com/apache/tvm/pull/16618.
+
+    Monkey-patch can be removed after structlog
+    https://github.com/hynek/structlog/pull/603 is available.
+    """
+    structlog.processors.CallsiteParameterAdder._handlers = {
+        structlog.processors.CallsiteParameter.PATHNAME: _pathname,
+        structlog.processors.CallsiteParameter.FILENAME: _filename,
+        structlog.processors.CallsiteParameter.MODULE: _module,
+        structlog.processors.CallsiteParameter.FUNC_NAME: _func_name,
+        structlog.processors.CallsiteParameter.LINENO: _lineno,
+        structlog.processors.CallsiteParameter.THREAD: _thread,
+        structlog.processors.CallsiteParameter.THREAD_NAME: _thread_name,
+        structlog.processors.CallsiteParameter.PROCESS: _process,
+        structlog.processors.CallsiteParameter.PROCESS_NAME: _process_name,
+    }
+
+
 def configure_logging(enable_json_logs: bool = False, log_level: str = "INFO"):
     """Configure logging to use structlog and include additional info."""
     global _JSON
     if enable_json_logs:
         _JSON = True
+
+    _monkey_patch_callsite_parameter_adder()
 
     timestamper = structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S")
 
