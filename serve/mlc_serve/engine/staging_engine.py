@@ -131,6 +131,7 @@ class StagingInferenceEngine(ScopedInferenceEngine):
                 )
                 new_request_states.append(state)
             except Exception as e:
+                LOG.warn("Failed to add a request", request_id=req.request_id)
                 with self.requests_to_be_cancelled_lock:
                     self.requests_to_be_cancelled[req.request_id] = str(e)
 
