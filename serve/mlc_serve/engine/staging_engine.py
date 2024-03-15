@@ -57,9 +57,6 @@ class StagingInferenceEngine(ScopedInferenceEngine):
         self.next_generation_output = None
         self.requests_lock = Lock()
         self.requests = dict[RequestId, RequestState]()
-        self.requests_to_be_cancelled_lock = Lock()
-        # Error message for each request that fails to be added to the engine
-        self.requests_to_be_cancelled = dict[RequestId, str]()
 
         # TODO(@team): This is a temporary solution to expose model config to higher API layer.
         #   Follow-up with the proper solution
@@ -122,18 +119,13 @@ class StagingInferenceEngine(ScopedInferenceEngine):
                 assert isinstance(req.stopping_criteria.stop_sequences, list)
 
             # If the request violates the tokenization, this returns None, so skip.
-            try:
-                state = get_new_request_state(
-                    req,
-                    self.conversation_template,
-                    self.tokenizer,
-                    self.model_artifact_config.vocab_size,
-                )
-                new_request_states.append(state)
-            except Exception as e:
-                LOG.warn("Failed to add a request", request_id=req.request_id)
-                with self.requests_to_be_cancelled_lock:
-                    self.requests_to_be_cancelled[req.request_id] = str(e)
+            state = get_new_request_state(
+                req,
+                self.conversation_template,
+                self.tokenizer,
+                self.model_artifact_config.vocab_size,
+            )
+            new_request_states.append(state)
 
         self.command_queue.put(AddRequestsCommand(request_states=new_request_states))
 
@@ -179,25 +171,11 @@ class StagingInferenceEngine(ScopedInferenceEngine):
             has_pending_requests=self.has_pending_requests(),
         )
 
-        outputs = list[RequestOutput]()
-
-        with self.requests_to_be_cancelled_lock:
-            if len(self.requests_to_be_cancelled) > 0:
-                for req_id, err_msg in self.requests_to_be_cancelled.items():
-                    outputs.append(
-                        RequestOutput(
-                            req_id,
-                            sequences=[],
-                            error=err_msg,
-                        )
-                    )
-                self.requests_to_be_cancelled.clear()
-
         if not self._is_ready_to_serve():
             raise RuntimeError("GenerationLoopWorker process is not running")
 
         if not self.has_pending_requests():
-            return InferenceStepResult(outputs)
+            return InferenceStepResult([])
 
         if self.next_generation_output is None:
             generation_output = self.result_queue.get()
@@ -209,6 +187,8 @@ class StagingInferenceEngine(ScopedInferenceEngine):
             raise RuntimeError(
                 f"Error from GenerationLoopWorker process: {generation_output.error}"
             ) from generation_output.error
+
+        outputs = list[RequestOutput]()
 
         with self.requests_lock:
             LOG.debug(
