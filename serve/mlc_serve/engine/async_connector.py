@@ -150,10 +150,7 @@ class AsyncEngineConnector:
         queue = asyncio.Queue()
         self.result_queues[request.request_id] = queue
 
-        try:
-            await asyncio.to_thread(self.engine.add, [request])
-        except TextGenerationError as e:
-            raise asyncio.CancelledError(e)
+        await asyncio.to_thread(self.engine.add, [request])
 
         return queue
 
