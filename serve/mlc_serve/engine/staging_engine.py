@@ -21,9 +21,9 @@ from .base import (
     ScopedInferenceEngine,
     SequenceOutput,
 )
+from .error import TextGenerationError
 from .engine_common import get_new_request_state, prepare_output
 from .model_module import ModelModule, TokenizerModule
-from ..model.base import get_model_artifact_config
 from .staging_engine_worker import (
     AddRequestsCommand,
     CancelRequestCommand,
@@ -119,13 +119,17 @@ class StagingInferenceEngine(ScopedInferenceEngine):
                 assert isinstance(req.stopping_criteria.stop_sequences, list)
 
             # If the request violates the tokenization, this returns None, so skip.
-            state = get_new_request_state(
-                req,
-                self.conversation_template,
-                self.tokenizer,
-                self.model_artifact_config.vocab_size,
-            )
-            new_request_states.append(state)
+            try:
+                state = get_new_request_state(
+                    req,
+                    self.conversation_template,
+                    self.tokenizer,
+                    self.model_artifact_config.vocab_size,
+                )
+                new_request_states.append(state)
+            except Exception as e:
+                LOG.warn("Failed to add a request", request_id=req.request_id)
+                raise TextGenerationError(str(e))
 
         self.command_queue.put(AddRequestsCommand(request_states=new_request_states))
 
