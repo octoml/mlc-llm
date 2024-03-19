@@ -337,8 +337,7 @@ class PerTensorQuantizeLinear(nn.Module):
         if "shard_strategy" in src.weight.attrs:
             shard = src.weight.attrs["shard_strategy"]
             apply_sharding(shard, f"{shard.name}_q_weight", quantized_linear.q_weight)
-            if not config.no_scale:
-                apply_sharding(shard, f"{shard.name}_q_scale", quantized_linear.q_scale)
+            # scale doesn't need to be sharded since it's the same for all shards
         return quantized_linear
 
     def forward(self, x: nn.Tensor) -> nn.Tensor:  # pylint: disable=invalid-name
