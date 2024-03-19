@@ -71,6 +71,12 @@ class EvalMultiQueryRequest:
     sampling_params: SamplingParams
 
 
+@dataclass
+class FailedRequest:
+    request_id: RequestId
+    error: Exception
+
+
 RequestType = Union[PrefillRequest, DecodeRequest, EvalMultiQueryRequest]
 
 
