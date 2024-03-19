@@ -233,7 +233,17 @@ class GenerationLoopWorker(EngineBase):
                 )
             return result
 
-        requests, is_prompt_batch = self._get_requests_to_process()
+        requests, failed_requests, is_prompt_batch = self._get_requests_to_process()
+
+        if len(failed_requests) > 0:
+            states = []
+
+            for request in failed_requests:
+                states.append(self.current_batch[request.request_id])
+                states[-1].validation_err = ValidationError(str(request.error))
+
+            outputs += self.create_aborted_outputs(states, finish_reason=FinishReason.Cancelled)
+
         results = self.text_generator.generate(requests, self.cache_manager.get_cache())
         LOG.debug("Finished text generation.")
 
@@ -334,8 +344,8 @@ class GenerationLoopWorker(EngineBase):
                 num_new_batched_tokens = self.try_grow_batch(num_new_batched_tokens)
 
     def _get_requests_to_process(self):
-        requests, is_prompt_batch, token_counts = get_requests_to_process(
-            self.current_batch.values(), self.cache_manager, self.regex_fsm_cache, self.tokenizer
+        requests, failed_requests, is_prompt_batch, token_counts = get_requests_to_process(
+            self.current_batch.values(), self.cache_manager, self.regex_fsm_cache,
         )
 
         if is_prompt_batch:
@@ -343,7 +353,7 @@ class GenerationLoopWorker(EngineBase):
         else:
             self.prom_metrics.histogram(BATCHED_DECODE_TOKENS).observe(token_counts)
 
-        return requests, is_prompt_batch
+        return requests, failed_requests, is_prompt_batch
 
     def _has_request_to_process(self) -> bool:
         return bool(self.queue or self.current_batch)
