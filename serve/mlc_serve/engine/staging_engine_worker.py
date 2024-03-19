@@ -240,7 +240,7 @@ class GenerationLoopWorker(EngineBase):
 
             for request in failed_requests:
                 states.append(self.current_batch[request.request_id])
-                states[-1].validation_err = str(request.error)
+                states[-1].validation_err = ValidationError(str(request.error))
 
             outputs += self.create_aborted_outputs(states, finish_reason=FinishReason.Cancelled)
 
