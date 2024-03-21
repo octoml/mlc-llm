@@ -5,6 +5,7 @@ from .awq_quantization import AWQQuantize
 from .ft_quantization import FTQuantize
 from .group_quantization import GroupQuantize
 from .no_quantization import NoQuantize
+from .per_tensor_quantization import PerTensorQuantize
 
 Quantization = Any
 """Quantization is an object that represents an quantization algorithm. It is required to
@@ -116,5 +117,88 @@ QUANTIZATION: Dict[str, Quantization] = {
         quantize_dtype="int4",
         storage_dtype="int8",
         model_dtype="float16",
+    ),
+    "qf8f16_e4m3_0": GroupQuantize(
+        name="qf8f16_e4m3_0",
+        kind="group-quant",
+        group_size=64,
+        quantize_dtype="e4m3_float8",
+        storage_dtype="uint32",
+        model_dtype="float16",
+        linear_weight_layout="NK",
+    ),
+    "qf8f16_e5m2_0": GroupQuantize(
+        name="qf8f16_e5m2_0",
+        kind="group-quant",
+        group_size=64,
+        quantize_dtype="e5m2_float8",
+        storage_dtype="uint32",
+        model_dtype="float16",
+        linear_weight_layout="NK",
+    ),
+    "fp8_e5m2_e5m2": GroupQuantize(
+        name="fp8_e5m2_e5m2",
+        kind="group-quant",  # TODO(csullivan): Can I change this and still use GroupQuantize?
+        group_size=64,
+        quantize_dtype="e5m2_float8",
+        storage_dtype="uint32",
+        model_dtype="float16",
+        linear_weight_layout="NK",
+    ),
+    "fp8_e4m3_e4m3": GroupQuantize(
+        name="fp8_e4m3_e4m3",
+        kind="group-quant",  # TODO(csullivan): Can I change this and still use GroupQuantize?
+        group_size=64,
+        quantize_dtype="e4m3_float8",
+        storage_dtype="uint32",
+        model_dtype="float16",
+        linear_weight_layout="NK",
+    ),
+    "fp8_e4m3_e5m2": GroupQuantize(
+        name="fp8_e4m3_e5m2",
+        kind="group-quant",  # TODO(csullivan): Can I change this and still use GroupQuantize?
+        group_size=64,
+        quantize_dtype="e5m2_float8",
+        storage_dtype="uint32",
+        model_dtype="float16",
+        linear_weight_layout="NK",
+    ),
+    "fp8_e4m3_e5m2_max_calibration": PerTensorQuantize(
+        name="fp8_e4m3_e5m2_max_calibration",
+        kind="per-tensor-quant",
+        activation_dtype="e4m3_float8",
+        weight_dtype="e5m2_float8",
+        storage_dtype="uint32",
+        model_dtype="float16",
+        no_scale=True,
+        quantize_embedding=False,
+    ),
+    "fp8_e4m3_e5m2_max": PerTensorQuantize(
+        name="fp8_e4m3_e5m2_max",
+        kind="per-tensor-quant",
+        activation_dtype="e4m3_float8",
+        weight_dtype="e5m2_float8",
+        storage_dtype="uint32",
+        model_dtype="float16",
+        no_scale=True,
+        quantize_embedding=False,
+    ),
+    "fp8_e4m3_e4m3_max_calibration": PerTensorQuantize(
+        name="fp8_e4m3_e4m3_max_calibration",
+        kind="per-tensor-quant",
+        activation_dtype="e4m3_float8",
+        weight_dtype="e4m3_float8",
+        storage_dtype="uint32",
+        model_dtype="float16",
+        quantize_embedding=False,
+    ),
+    "fp8_e4m3_e4m3_max": PerTensorQuantize(
+        name="fp8_e4m3_e4m3_max",
+        kind="per-tensor-quant",
+        activation_dtype="e4m3_float8",
+        weight_dtype="e4m3_float8",
+        storage_dtype="uint32",
+        model_dtype="float16",
+        quantize_embedding=False,
     ),
 }
