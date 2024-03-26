@@ -7,6 +7,7 @@ from tvm import relax
 from tvm.relax.frontend import nn
 from tvm.runtime import Device
 from tvm.target import Target
+from mlc_chat.support import tensor_parallel as tp
 
 
 def _sharded_param_name(param_name, worker_id):
@@ -122,8 +123,9 @@ def apply_preshard(
             # create shard functions
             param_to_shard_func[name] = shard_strategy.name
             if shard_strategy.name not in shard_func_names:
-                create_shard_func(bb, param, tensor_parallel_shards)
-                shard_func_names.add(shard_strategy.name)
+                if not isinstance(shard_strategy, tp.ShardScalar):
+                    create_shard_func(bb, param, tensor_parallel_shards)
+                    shard_func_names.add(shard_strategy.name)
 
     mod = bb.finalize()
     vm = _compile_shard_funcs(mod, args.device)
