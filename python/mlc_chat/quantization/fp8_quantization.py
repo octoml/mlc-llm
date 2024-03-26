@@ -357,15 +357,35 @@ class MixtralExpertsFP8(
 
     def forward(self, x: nn.Tensor, indptr: nn.Tensor) -> nn.Tensor:  # pylint: disable=invalid-name
         if self.runtime == "max-calibration":
-            x, local_scale = nn.op.quantize(
-                x,
-                quantize_dtype=self.activation_dtype,
-                kind="fp8-max",
-                max_int_value=self.max_int_value,
-            )
-
             if self.tensor_parallel_shards > 1:
+                # Calculate the scale and the reduce accross
+                # shards before quantizing
+                # TODO(csullivan): Replace with per shard scales
+                # like what is done with weights via tp.ShardScalar
+                local_scale = nn.op.quantize(
+                    x,
+                    quantize_dtype=self.activation_dtype,
+                    kind="fp8-max",
+                    compute_scale_only=True,
+                    max_int_value=self.max_int_value["x"],
+                )
                 local_scale = nn.op.ccl_allreduce(local_scale, op_type="max")
+                x = nn.op.quantize(
+                    x,
+                    quantize_dtype=self.activation_dtype,
+                    scale_tensor=local_scale,
+                    kind="fp8-max",
+                    max_int_value=self.max_int_value["x"],
+                )
+
+            else:
+                x, local_scale = nn.op.quantize(
+                    x,
+                    quantize_dtype=self.activation_dtype,
+                    kind="fp8-max",
+                    max_int_value=self.max_int_value["x"],
+                )
+
             local_scale = nn.op.maximum_inplace(local_scale, self.q_calibration_scale)
             # Calibration done in fp16 mma
             x = nn.op.astype(x, dtype="float16")
