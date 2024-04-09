@@ -1,5 +1,6 @@
 """Flags for overriding model config."""
 import dataclasses
+import enum
 import re
 from io import StringIO
 from typing import Optional
@@ -10,6 +11,15 @@ from mlc_chat.support.config import ConfigOverrideBase
 logger = logging.getLogger(__name__)
 
 
+class IPCAllReduceStrategyType(enum.IntEnum):
+    """The all-reduce strategy."""
+
+    NONE = 0
+    ONESHOT = 1
+    TWOSHOT = 2
+    AUTO = 3
+
+
 @dataclasses.dataclass
 class OptimizationFlags:
     """Optimization flags"""
@@ -18,6 +28,7 @@ class OptimizationFlags:
     cublas_gemm: bool = False
     faster_transformer: bool = False
     cudagraph: bool = False
+    ipc_allreduce_strategy: IPCAllReduceStrategyType = IPCAllReduceStrategyType.NONE
 
     def __repr__(self) -> str:
         out = StringIO()
@@ -25,6 +36,7 @@ class OptimizationFlags:
         print(f";cublas_gemm={int(self.cublas_gemm)}", file=out, end="")
         print(f";faster_transformer={int(self.faster_transformer)}", file=out, end="")
         print(f";cudagraph={int(self.cudagraph)}", file=out, end="")
+        print(f";ipc_allreduce_strategy={self.ipc_allreduce_strategy.name}", file=out, end="")
         return out.getvalue().rstrip()
 
     @staticmethod
@@ -46,12 +58,19 @@ class OptimizationFlags:
         parser.add_argument("--cublas_gemm", type=boolean, default=False)
         parser.add_argument("--faster_transformer", type=boolean, default=False)
         parser.add_argument("--cudagraph", type=boolean, default=False)
+        parser.add_argument(
+            "--ipc_allreduce_strategy",
+            type=str,
+            choices=["NONE", "ONESHOT", "TWOSHOT", "AUTO"],
+            default="NONE",
+        )
         results = parser.parse_args([f"--{i}" for i in source.split(";") if i])
         return OptimizationFlags(
             flashinfer=results.flashinfer,
             cublas_gemm=results.cublas_gemm,
             faster_transformer=results.faster_transformer,
             cudagraph=results.cudagraph,
+            ipc_allreduce_strategy=IPCAllReduceStrategyType[results.ipc_allreduce_strategy],
         )
 
     def update(self, target, quantization) -> None:
