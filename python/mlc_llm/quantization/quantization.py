@@ -7,6 +7,7 @@ from .group_quantization import GroupQuantize
 from .no_quantization import NoQuantize
 from .per_tensor_quantization import PerTensorQuantize
 from .smooth_quantization import SmoothQuantize
+from .preprocess_smooth_quantization import PreprocessSmoothQuantize
 
 Quantization = Any
 """Quantization is an object that represents an quantization algorithm. It is required to
@@ -230,5 +231,30 @@ QUANTIZATION: Dict[str, Quantization] = {
         quantize_embedding=False,
         quantize_linear=False,
         no_scale=True,
+    ),
+    # preprocessing steps to speedup smoothquant calibration
+    "q0f16_smooth_smooth": PreprocessSmoothQuantize(
+        name="q0f16_preprocess",
+        kind="smooth-preprocess",
+        model_dtype="float16",
+        dump_calibration="",
+    ),
+    "q0f32_smooth_smooth": PreprocessSmoothQuantize(
+        name="q0f32_preprocess",
+        kind="smooth-preprocess",
+        model_dtype="float32",
+        dump_calibration="",
+    ),
+    "q0f16_smooth_quantize": PreprocessSmoothQuantize(
+        name="q0f16_preprocess",
+        kind="quantize-preprocess",
+        model_dtype="float16",
+        dump_calibration="",
+    ),
+    "q0f32_smooth_quantize": PreprocessSmoothQuantize(
+        name="q0f32_preprocess",
+        kind="quantize-preprocess",
+        model_dtype="float32",
+        dump_calibration="",
     ),
 }

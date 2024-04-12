@@ -6,3 +6,4 @@ from .per_tensor_quantization import PerTensorQuantize
 from .no_quantization import NoQuantize
 from .quantization import QUANTIZATION, Quantization
 from .smooth_quantization import SmoothQuantize
+from .preprocess_smooth_quantization import PreprocessSmoothQuantize

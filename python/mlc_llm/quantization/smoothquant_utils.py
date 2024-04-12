@@ -21,8 +21,7 @@ def _accumulate_outlier_stat(stat, data, func: Callable = np.maximum):
 
 
 def _accumulate_act_outlier_stat(stat: List[np.ndarray], data: List[tvm.nd.NDArray]):
-    a_data = data[::2]
-    return _accumulate_outlier_stat(stat, a_data)
+    return _accumulate_outlier_stat(stat, data)
 
 
 def _accumulate_weight_outlier_stat(stat: List[np.ndarray], data: List[tvm.nd.NDArray]):
@@ -30,15 +29,12 @@ def _accumulate_weight_outlier_stat(stat: List[np.ndarray], data: List[tvm.nd.ND
     # weights are the same.
     if stat is not None:
         return stat
-    w_data = data[1::2]
-    return _accumulate_outlier_stat(stat, w_data)
+    return _accumulate_outlier_stat(stat, data)
 
 
 def _accumulate_max_min_stat(
     a_max_stat: List[np.ndarray],
     a_min_stat: List[np.ndarray],
-    w_max_stat: List[np.ndarray],
-    w_min_stat: List[np.ndarray],
     data: List[tvm.nd.NDArray],
 ):
     """
@@ -47,21 +43,11 @@ def _accumulate_max_min_stat(
         the output #N.
       - Every second element in the sequence is the minimum values for activations  corresponding to
         the output #N.
-      - Every third element in the sequence is the maximum values for the weights corresponding to
-        the output #N.
-      - Every second element in the sequence is the minimum values for the weights corresponding to
-        the output #N.
     """
-    a_max_stat = _accumulate_outlier_stat(a_max_stat, data[::4], np.maximum)
-    a_min_stat = _accumulate_outlier_stat(a_min_stat, data[1::4], np.minimum)
+    a_max_stat = _accumulate_outlier_stat(a_max_stat, data[::2], np.maximum)
+    a_min_stat = _accumulate_outlier_stat(a_min_stat, data[1::2], np.minimum)
 
-    if w_max_stat is None:
-        w_max_stat = _accumulate_outlier_stat(w_max_stat, data[2::4], np.maximum)
-
-    if w_min_stat is None:
-        w_min_stat =  _accumulate_outlier_stat(w_min_stat, data[3::4], np.minimum)
-
-    return a_max_stat, a_min_stat, w_max_stat, w_min_stat
+    return a_max_stat, a_min_stat
 
 
 def _calculate_scale_params(
@@ -122,6 +108,40 @@ def get_quantization_scheme(qscheme: str):
         return None, None
 
 
+def _calculate_scale_zp(arr_max: np.ndarray, arr_min: np.ndarray, dtype: str, algo: QAlgo):
+    if dtype.startswith("int"):
+        max_value = arr_max.dtype.type(np.iinfo(dtype).max)
+        min_value = arr_max.dtype.type(np.iinfo(dtype).min)
+        zp_type = dtype
+    elif dtype == "e4m3_float8": # based on https://arxiv.org/pdf/2209.05433.pdf
+        max_value = arr_max.dtype.type(448)
+        min_value = arr_max.dtype.type(-448)
+        zp_type = "float16"
+    elif dtype == "e5m2_float8":
+        max_value = arr_max.dtype.type(57344)
+        min_value = arr_max.dtype.type(-57344)
+        zp_type = "float16"
+    size = arr_max.size
+    if algo is QAlgo.PER_TENSOR_SYM:
+        arr = np.maximum(np.abs(arr_max), np.abs(arr_min))
+        scale = np.array([np.max(arr) / max_value] * size)
+        zp = np.zeros_like(scale, dtype=zp_type)
+    elif algo is QAlgo.PER_CHANNEL_SYM:
+        arr = np.maximum(np.abs(arr_max), np.abs(arr_min))
+        scale = arr / max_value
+        zp = np.zeros_like(scale, dtype=zp_type)
+    elif algo is QAlgo.PER_TENSOR_ASYM:
+        scale = np.array([(np.max(arr_max) - np.min(arr_min)) / (max_value - min_value)] * size)
+        zp = (-np.round(np.min(arr_min) / scale) + min_value).astype(zp_type)
+    elif algo is QAlgo.PER_CHANNEL_ASYM:
+        scale = (arr_max - arr_min) / (max_value - min_value)
+        zp = (-np.round(arr_min / scale) + min_value).astype(zp_type)
+    else:
+        assert False, f"Unknown quantization algorithm: {algo}"
+        return None, None
+    return scale, zp
+
+
 def _calculate_quantization_params(
     func_name: str,
     stats: Dict[str, List[np.ndarray]],
@@ -143,39 +163,6 @@ def _calculate_quantization_params(
 
     a_dtype, w_dtype = config["adtype"], config["wdtype"]
     a_qscheme, w_qscheme = get_quantization_scheme(config["qscheme"])
-
-    def _calculate_scale_zp(arr_max: np.ndarray, arr_min: np.ndarray, dtype: str, algo: QAlgo):
-        if dtype.startswith("int"):
-            max_value = arr_max.dtype.type(np.iinfo(dtype).max)
-            min_value = arr_max.dtype.type(np.iinfo(dtype).min)
-            zp_type = dtype
-        elif dtype == "e4m3_float8": # based on https://arxiv.org/pdf/2209.05433.pdf
-            max_value = arr_max.dtype.type(448)
-            min_value = arr_max.dtype.type(-448)
-            zp_type = "float16"
-        elif dtype == "e5m2_float8":
-            max_value = arr_max.dtype.type(57344)
-            min_value = arr_max.dtype.type(-57344)
-            zp_type = "float16"
-        size = arr_max.size
-        if algo is QAlgo.PER_TENSOR_SYM:
-            arr = np.maximum(np.abs(arr_max), np.abs(arr_min))
-            scale = np.array([np.max(arr) / max_value] * size)
-            zp = np.zeros_like(scale, dtype=zp_type)
-        elif algo is QAlgo.PER_CHANNEL_SYM:
-            arr = np.maximum(np.abs(arr_max), np.abs(arr_min))
-            scale = arr / max_value
-            zp = np.zeros_like(scale, dtype=zp_type)
-        elif algo is QAlgo.PER_TENSOR_ASYM:
-            scale = np.array([(np.max(arr_max) - np.min(arr_min)) / (max_value - min_value)] * size)
-            zp = (-np.round(np.min(arr_min) / scale) + min_value).astype(zp_type)
-        elif algo is QAlgo.PER_CHANNEL_ASYM:
-            scale = (arr_max - arr_min) / (max_value - min_value)
-            zp = (-np.round(arr_min / scale) + min_value).astype(zp_type)
-        else:
-            assert False, f"Unknown quantization algorithm: {algo}"
-            return None, None
-        return scale, zp
 
     idx = 0
     qparams = {}
