@@ -2,24 +2,20 @@
 
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Callable, List, Literal, Optional
+from typing import Any, Callable, List, Literal
 
 import tvm
 
-from tvm import relax
-from tvm import DataType, DataTypeCode, IRModule
+from tvm import IRModule, relax
 
 from tvm.script import relax as R
 from tvm.relax.frontend import nn
 from tvm.runtime import NDArray
 from tvm.target import Target
 from tvm import dlight as dl
-from ..loader import QuantizeMapping
-from .smoothquant_utils import _calculate_scale_zp, get_quantization_scheme
-import numpy as np
+from mlc_llm.loader import QuantizeMapping
 import os
 from tvm.contrib import tvmjs
-import matplotlib.pyplot as plt
 
 
 def _compile_quantize_func(mod: IRModule, target, device) -> Callable:
