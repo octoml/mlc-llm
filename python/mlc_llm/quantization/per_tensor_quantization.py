@@ -201,7 +201,9 @@ class PerTensorQuantize:
                 max_int_value=self.max_int_value,
             )
 
-        if self.num_elem_per_storage == 1:
+        if self.weight_dtype == self.storage_dtype:
+            quantized_weight = scaled_weight
+        elif self.num_elem_per_storage == 1:
             quantized_weight = nn.tensor_expr_op(
                 lambda scaled_weight: te.compute(
                     shape=scaled_weight.shape,
@@ -276,7 +278,9 @@ class PerTensorQuantize:
         if out_shape is None:
             out_shape = (*q_weight.shape[:-1], q_weight.shape[-1] * self.num_elem_per_storage)
 
-        if self.num_elem_per_storage == 1:
+        if self.weight_dtype == self.storage_dtype:
+            weight = q_weight.astype(self.model_dtype)
+        elif self.num_elem_per_storage == 1:
             weight = te.compute(
                 shape=out_shape,
                 fcompute=lambda *idx: tir.reinterpret(self.weight_dtype, q_weight(*idx)).astype(
