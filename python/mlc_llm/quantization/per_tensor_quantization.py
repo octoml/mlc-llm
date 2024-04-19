@@ -112,7 +112,10 @@ class PerTensorQuantize:
                 ):
                     self.quant_map.param_map[weight_name] = param_names
                     self.quant_map.map_func[weight_name] = self.config.quantize_weight
-                    return PerTensorQuantizeLinear.from_linear(node, self.config)
+                    op = PerTensorQuantizeLinear.from_linear(node, self.config)
+                    if hasattr(op, "add_calibration_params"):
+                        self.quant_map = op.add_calibration_params(self.quant_map, name)
+                    return op
                 if isinstance(node, nn.Embedding) and self.config.quantize_embedding:
                     self.quant_map.param_map[weight_name] = param_names
                     self.quant_map.map_func[weight_name] = self.config.quantize_weight
@@ -352,6 +355,24 @@ class PerTensorQuantizeLinear(nn.Module):
 
     @classmethod
     def from_linear(cls, src: nn.Linear, config: PerTensorQuantize) -> "PerTensorQuantizeLinear":
+
+        if (
+            DataType(config.weight_dtype).type_code
+            in [
+                DataTypeCode.E4M3Float,
+                DataTypeCode.E5M2Float,
+            ]
+            # Activation calibration
+            and any(q_kind in config.name for q_kind in ["max", "cast"])
+        ):
+            from .fp8_quantization import PTQLinearFP8
+
+            quantized_linear = PTQLinearFP8.from_linear(
+                src,
+                config,
+            )
+            return quantized_linear
+
         # For dynamic shape, src.out_features is `"name"`; src.weight.shape[0] is `tir.Var("name")`
         out_features, in_features = src.weight.shape
         quantized_linear = cls(
