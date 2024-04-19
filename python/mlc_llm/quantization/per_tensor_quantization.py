@@ -573,15 +573,12 @@ class PerTensorQuantizeMixtralExperts(nn.Module):  # pylint: disable=too-many-in
         ]:
             from .fp8_quantization import MixtralExpertsFP8
 
-            # TODO(wuwei): refactor this interface to only pass the conifg
             quantized_mixtral_experts = MixtralExpertsFP8.from_mixtral_experts(
                 src,
                 config,
-                config.activation_dtype,
-                config.weight_dtype,
-                runtime="max" if "calibration" not in config.name else "max-calibration",
             )
-            quantized_mixtral_experts.no_scale = config.no_scale
+            # TODO(csullivan): Confirm with @vinx13 and delete this before merge
+            # quantized_mixtral_experts.no_scale = config.no_scale
         else:
             raise NotImplementedError()
         return quantized_mixtral_experts

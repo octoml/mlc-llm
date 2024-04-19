@@ -237,82 +237,6 @@ nn.op.dequantize = dequantize
 nn.op.maximum_inplace = inplace_maximum
 
 
-class GroupQuantizeLinearFP8E4M3CutlassScaleOnly(
-    gq.GroupQuantizeLinear,
-):  # pylint: disable=too-many-instance-attributes
-    """An nn.Linear module with group quantization"""
-
-    def forward(self, x: nn.Tensor) -> nn.Tensor:  # pylint: disable=invalid-name
-        """
-        Forward method for group quantized linear layer.
-
-        Parameters
-        ----------
-        x : nn.Tensor
-            The input tensor.
-
-        Returns
-        -------
-        ret : nn.Tensor
-            The output tensor for the group quantized linear layer.
-        """
-        assert self.config.fp8_quant
-        assert DataType(self.config.quantize_dtype).type_code == DataTypeCode.E4M3Float
-        # For cutlass mixed-dtype gemm activation layout is row major w/ shape (M, K)
-        # and weight layout column major w/ shape (N, K) so no permute dims is needed
-        assert self.config.linear_weight_layout == "NK"
-
-        # TODO(csullivan): Add a workspace for static allocation and planning
-        # tmp_out = op.wrap_nested(
-        #     relax.op.builtin.alloc_tensor(
-        #         relax.ShapeExpr(
-        #             (num_tokens, num_q_heads, self.max_num_partitions, head_dim)
-        #         ),
-        #         dtype=query._expr.struct_info.dtype,
-        #         runtime_device_index=0,
-        #     ),
-        #     "relax.alloc_tensor",
-        # )
-
-        M, K = x.shape
-        N, _ = self.q_weight.shape
-        if self.bias:
-            return nn.op.extern(
-                "cutlass.mixed_dtype_gemm_fp16_fp8_scale",
-                [
-                    x,
-                    self.q_weight,
-                    self.bias,
-                    self.q_scale,
-                    M,
-                    N,
-                    K,
-                    1,
-                    self.config.group_size
-                    # tmp_out,
-                ],
-                x,
-            )
-        else:
-            return nn.op.extern(
-                "cutlass.mixed_dtype_matmul_fp16_fp8_scale",
-                [
-                    x,
-                    self.q_weight,
-                    self.q_scale,
-                    M,
-                    N,
-                    K,
-                    1,
-                    self.config.group_size
-                    # tmp_out,
-                ],
-                out=nn.Tensor.placeholder(
-                    (M, N), dtype=self.out_dtype if self.out_dtype else self.config.model_dtype
-                ),
-            )
-
-
 class MixtralExpertsFP8(
     ptq.PerTensorQuantizeMixtralExperts
 ):  # pylint: disable=too-many-instance-attributes
@@ -337,6 +261,7 @@ class MixtralExpertsFP8(
             for key, dtype in zip(["x", "w"], [self.activation_dtype, self.weight_dtype])
         }
 
+        # TODO(csullivan): Delete this as it is no longer necessary
         self.tensor_parallel_shards = tensor_parallel_shards
 
         if "max" in self.runtime:
@@ -368,9 +293,6 @@ class MixtralExpertsFP8(
     def from_mixtral_experts(
         src: "MixtralExperts",
         weight_config: ptq.PerTensorQuantize,
-        activation_dtype: str = None,
-        weight_dtype: str = None,
-        runtime: str = "cast",
     ) -> "MixtralExpertsFP8":
         """
         Converts a non-quantized MixtralExperts to a per-tensor quantized MixtralExperts.
@@ -388,14 +310,15 @@ class MixtralExpertsFP8(
         ret : MixtralExpertsFP8
             The per-tensor quantized MixtralExperts.
         """
+
         quantized_mistral_experts = MixtralExpertsFP8(
             num_local_experts=src.num_local_experts,
             in_features=src.in_features,
             out_features=src.out_features,
             weight_config=weight_config,
-            activation_dtype=activation_dtype,
-            weight_dtype=weight_dtype,
-            runtime=runtime,
+            activation_dtype=weight_config.activation_dtype,
+            weight_dtype=weight_config.weight_dtype,
+            runtime="max" if "calibration" not in weight_config.name else "max-calibration",
             tensor_parallel_shards=src.tensor_parallel_shards,
         )
 
@@ -407,7 +330,7 @@ class MixtralExpertsFP8(
                 f"{shard.name}_q_scale",
                 quantized_mistral_experts.q_scale,
             )
-            if "max" in runtime:
+            if "max" in quantized_mistral_experts.runtime:
                 apply_sharding(
                     tp.ShardScalar(name=shard.name),
                     f"{shard.name}_q_calibration_scale",
