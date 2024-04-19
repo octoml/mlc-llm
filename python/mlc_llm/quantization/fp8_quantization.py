@@ -16,6 +16,7 @@ from mlc_llm.loader import QuantizeMapping
 from mlc_llm.nn import MixtralExperts
 from mlc_llm.support import logging
 from mlc_llm.support import tensor_parallel as tp
+import mlc_llm.op as op_ext
 
 from . import group_quantization as gq
 from . import per_tensor_quantization as ptq
@@ -395,7 +396,26 @@ class MixtralExpertsFP8(
         num_local_experts, out_features, _ = self.q_weight.shape
 
         if self.runtime == "max-calibration":
-            func = "cutlass.group_gemm_scale_fp16_sm90"
+            extern_modules = op_ext.get_store()
+            if extern_modules.cutlass_group_gemm:
+                func = "cutlass.group_gemm_scale_fp16_sm90"
+            elif extern_modules.faster_transformer:
+                # sm80 FT template does not have fused dequant, so we add explicit dequant for scales
+                '''
+                dequant_func = self.config._dequantize_float8
+                x_dq = nn.op.tensor_expr_op(  # pylint: disable=invalid-name
+                    lambda tensor, scale: dequant_func(  # pylint: disable=protected-access
+                        tensor,
+                        scale,
+                        out_shape=x.shape,
+                    ),
+                    name_hint="dequantize_activations",
+                    args=[x, self.q_calibration_scale],
+                )'''
+                x_dq = nn.op.multiply(x, self.q_calibration_scale)
+                return op_ext.faster_transformer_moe_gemm(x_dq, w, indptr)
+            else:
+                raise NotImplementedError("No enabled kernel for running fp8 group gemm in max-calibration")
         else:
             a_format = self.activation_dtype.split("_")[0]
             w_format = self.weight_dtype.split("_")[0]

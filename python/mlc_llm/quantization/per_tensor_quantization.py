@@ -43,6 +43,7 @@ class PerTensorQuantize:
     num_storage_per_group: int = 0
     max_int_value: int = 0
     no_scale: bool = False
+    use_ft_moe: bool = False
 
     def __post_init__(self):
         assert self.kind == "per-tensor-quant"
