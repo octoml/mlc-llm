@@ -128,6 +128,7 @@ class GenerationConfig:  # pylint: disable=too-many-instance-attributes
         return GenerationConfig(**json.loads(json_str))
 
 
+<<<<<<< HEAD
 class KVStateKind(enum.IntEnum):  # pylint: disable=too-few-public-methods
     """Possible kinds of KV state."""
 
@@ -135,6 +136,8 @@ class KVStateKind(enum.IntEnum):  # pylint: disable=too-few-public-methods
     RNNSTATE = 1
 
 
+=======
+>>>>>>> wip
 class SpeculativeMode(enum.IntEnum):
     """The speculative mode."""
 
@@ -148,7 +151,11 @@ class SpeculativeMode(enum.IntEnum):
 
 @tvm._ffi.register_object("mlc.serve.EngineConfig")  # pylint: disable=protected-access
 class EngineConfig(tvm.runtime.Object):
+<<<<<<< HEAD
     """The class of MLCEngine execution configuration.
+=======
+    """The class of LLMEngine execution configuration.
+>>>>>>> wip
 
     Parameters
     ----------
@@ -164,6 +171,7 @@ class EngineConfig(tvm.runtime.Object):
     additional_model_lib_paths : List[str]
         The path to the additional models' libraries.
 
+<<<<<<< HEAD
     kv_cache_page_size : int
         The number of consecutive tokens handled in each page in paged KV cache.
 
@@ -194,19 +202,55 @@ class EngineConfig(tvm.runtime.Object):
         The number of tokens to generate in speculative proposal (draft).
     """
 
+=======
+    device : tvm.runtime.Device
+        The device where the models run.
+
+    kv_cache_page_size : int
+        The number of consecutive tokens handled in each page in paged KV cache.
+
+    max_num_sequence : int
+        The maximum number of sequences that are allowed to be
+        processed by the KV cache at any time.
+
+    max_total_sequence_length : int
+        The maximum length allowed for a single sequence in the engine.
+
+    max_single_sequence_length : int
+        The maximum total number of tokens whose KV data are allowed
+        to exist in the KV cache at any time.
+
+    prefill_chunk_size : int
+        The maximum total sequence length in a prefill.
+
+    speculative_mode : SpeculativeMode
+        The speculative mode.
+
+    spec_draft_length : int
+        The number of tokens to generate in speculative proposal (draft).
+    """
+
+>>>>>>> wip
     def __init__(  # pylint: disable=too-many-arguments
         self,
         model: str,
         model_lib_path: str,
         additional_models: List[str],
         additional_model_lib_paths: List[str],
+<<<<<<< HEAD
+=======
+        device: tvm.runtime.Device,
+>>>>>>> wip
         kv_cache_page_size: int,
         max_num_sequence: int,
         max_total_sequence_length: int,
         max_single_sequence_length: int,
         prefill_chunk_size: int,
+<<<<<<< HEAD
         max_history_size: int,
         kv_state_kind: KVStateKind,
+=======
+>>>>>>> wip
         speculative_mode: SpeculativeMode,
         spec_draft_length: int,
     ) -> None:
@@ -216,13 +260,20 @@ class EngineConfig(tvm.runtime.Object):
             model_lib_path,
             additional_models,
             additional_model_lib_paths,
+<<<<<<< HEAD
+=======
+            device,
+>>>>>>> wip
             kv_cache_page_size,
             max_num_sequence,
             max_total_sequence_length,
             max_single_sequence_length,
             prefill_chunk_size,
+<<<<<<< HEAD
             max_history_size,
             kv_state_kind,
+=======
+>>>>>>> wip
             speculative_mode,
             spec_draft_length,
         )

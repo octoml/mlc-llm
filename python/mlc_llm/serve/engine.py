@@ -37,10 +37,10 @@ class Chat:  # pylint: disable=too-few-public-methods
     """The proxy class to direct to chat completions."""
 
     def __init__(self, engine: weakref.ReferenceType) -> None:
-        assert isinstance(engine(), (AsyncMLCEngine, MLCEngine))
+        assert isinstance(engine(), (AsyncLLMEngine, LLMEngine))
         self.completions = (
             AsyncChatCompletion(engine)  # type: ignore
-            if isinstance(engine(), AsyncMLCEngine)
+            if isinstance(engine(), AsyncLLMEngine)
             else ChatCompletion(engine)  # type: ignore
         )
 
@@ -49,7 +49,7 @@ class AsyncChatCompletion:  # pylint: disable=too-few-public-methods
     """The proxy class to direct to async chat completions."""
 
     if sys.version_info >= (3, 9):
-        engine: weakref.ReferenceType["AsyncMLCEngine"]
+        engine: weakref.ReferenceType["AsyncLLMEngine"]
     else:
         engine: weakref.ReferenceType
 
@@ -61,8 +61,8 @@ class AsyncChatCompletion:  # pylint: disable=too-few-public-methods
         self,
         *,
         messages: List[Dict[str, Any]],
+        model: str,
         stream: Literal[True],
-        model: Optional[str] = None,
         frequency_penalty: float = 0.0,
         presence_penalty: float = 0.0,
         logprobs: bool = False,
@@ -111,7 +111,7 @@ class AsyncChatCompletion:  # pylint: disable=too-few-public-methods
         self,
         *,
         messages: List[Dict[str, Any]],
-        model: Optional[str] = None,
+        model: str,
         frequency_penalty: float = 0.0,
         presence_penalty: float = 0.0,
         logprobs: bool = False,
@@ -160,7 +160,7 @@ class AsyncChatCompletion:  # pylint: disable=too-few-public-methods
         self,
         *,
         messages: List[Dict[str, Any]],
-        model: Optional[str] = None,
+        model: str,
         frequency_penalty: float = 0.0,
         presence_penalty: float = 0.0,
         logprobs: bool = False,
@@ -226,7 +226,7 @@ class ChatCompletion:  # pylint: disable=too-few-public-methods
     """The proxy class to direct to chat completions."""
 
     if sys.version_info >= (3, 9):
-        engine: weakref.ReferenceType["MLCEngine"]
+        engine: weakref.ReferenceType["LLMEngine"]
     else:
         engine: weakref.ReferenceType
 
@@ -238,8 +238,8 @@ class ChatCompletion:  # pylint: disable=too-few-public-methods
         self,
         *,
         messages: List[Dict[str, Any]],
+        model: str,
         stream: Literal[True],
-        model: Optional[str] = None,
         frequency_penalty: float = 0.0,
         presence_penalty: float = 0.0,
         logprobs: bool = False,
@@ -288,7 +288,11 @@ class ChatCompletion:  # pylint: disable=too-few-public-methods
         self,
         *,
         messages: List[Dict[str, Any]],
+<<<<<<< HEAD
         model: Optional[str] = None,
+=======
+        model: str,
+>>>>>>> wip
         frequency_penalty: float = 0.0,
         presence_penalty: float = 0.0,
         logprobs: bool = False,
@@ -335,7 +339,11 @@ class ChatCompletion:  # pylint: disable=too-few-public-methods
         self,
         *,
         messages: List[Dict[str, Any]],
+<<<<<<< HEAD
         model: Optional[str] = None,
+=======
+        model: str,
+>>>>>>> wip
         frequency_penalty: float = 0.0,
         presence_penalty: float = 0.0,
         logprobs: bool = False,
@@ -401,7 +409,11 @@ class AsyncCompletion:  # pylint: disable=too-few-public-methods
     """The proxy class to direct to async completions."""
 
     if sys.version_info >= (3, 9):
+<<<<<<< HEAD
         engine: weakref.ReferenceType["AsyncMLCEngine"]
+=======
+        engine: weakref.ReferenceType["AsyncLLMEngine"]
+>>>>>>> wip
     else:
         engine: weakref.ReferenceType
 
@@ -412,9 +424,9 @@ class AsyncCompletion:  # pylint: disable=too-few-public-methods
     async def create(  # pylint: disable=too-many-arguments,too-many-locals
         self,
         *,
+        model: str,
         prompt: Union[str, List[int]],
         stream: Literal[True],
-        model: Optional[str] = None,
         best_of: int = 1,
         echo: bool = False,
         frequency_penalty: float = 0.0,
@@ -463,8 +475,8 @@ class AsyncCompletion:  # pylint: disable=too-few-public-methods
     async def create(  # pylint: disable=too-many-arguments,too-many-locals
         self,
         *,
+        model: str,
         prompt: Union[str, List[int]],
-        model: Optional[str] = None,
         best_of: int = 1,
         echo: bool = False,
         frequency_penalty: float = 0.0,
@@ -511,8 +523,8 @@ class AsyncCompletion:  # pylint: disable=too-few-public-methods
     async def create(  # pylint: disable=too-many-arguments,too-many-locals
         self,
         *,
+        model: str,
         prompt: Union[str, List[int]],
-        model: Optional[str] = None,
         best_of: int = 1,
         echo: bool = False,
         frequency_penalty: float = 0.0,
@@ -580,7 +592,7 @@ class Completion:  # pylint: disable=too-few-public-methods
     """The proxy class to direct to completions."""
 
     if sys.version_info >= (3, 9):
-        engine: weakref.ReferenceType["MLCEngine"]
+        engine: weakref.ReferenceType["LLMEngine"]
     else:
         engine: weakref.ReferenceType
 
@@ -591,9 +603,9 @@ class Completion:  # pylint: disable=too-few-public-methods
     def create(  # pylint: disable=too-many-arguments,too-many-locals
         self,
         *,
+        model: str,
         prompt: Union[str, List[int]],
         stream: Literal[True],
-        model: Optional[str] = None,
         best_of: int = 1,
         echo: bool = False,
         frequency_penalty: float = 0.0,
@@ -642,8 +654,8 @@ class Completion:  # pylint: disable=too-few-public-methods
     def create(  # pylint: disable=too-many-arguments,too-many-locals
         self,
         *,
+        model: str,
         prompt: Union[str, List[int]],
-        model: Optional[str] = None,
         best_of: int = 1,
         echo: bool = False,
         frequency_penalty: float = 0.0,
@@ -690,8 +702,8 @@ class Completion:  # pylint: disable=too-few-public-methods
     def create(  # pylint: disable=too-many-arguments,too-many-locals
         self,
         *,
+        model: str,
         prompt: Union[str, List[int]],
-        model: Optional[str] = None,
         best_of: int = 1,
         echo: bool = False,
         frequency_penalty: float = 0.0,
@@ -752,8 +764,8 @@ class Completion:  # pylint: disable=too-few-public-methods
         )
 
 
-class AsyncMLCEngine(engine_base.MLCEngineBase):
-    """The AsyncMLCEngine in MLC LLM that provides the asynchronous
+class AsyncLLMEngine(engine_base.LLMEngineBase):
+    """The AsyncLLMEngine in MLC LLM that provides the asynchronous
     interfaces with regard to OpenAI API.
 
     Parameters
@@ -816,19 +828,16 @@ class AsyncMLCEngine(engine_base.MLCEngineBase):
         It should not exceed the prefill chunk size in model config.
         If not specified, this defaults to the prefill chunk size in model config.
 
-    max_history_size : Optional[int]
-        The maximum history for RNN state.
-
     gpu_memory_utilization : Optional[float]
         A number in (0, 1) denoting the fraction of GPU memory used by the server in total.
         It is used to infer to maximum possible KV cache capacity.
-        When it is unspecified, it defaults to 0.85.
+        When it is unspecified, it defaults to 0.90.
         Under mode "local" or "interactive", the actual memory usage may be
         significantly smaller than this number. Under mode "server", the actual
         memory usage may be slightly larger than this number.
 
     engine_config : Optional[EngineConfig]
-        The MLCEngine execution configuration.
+        The LLMEngine execution configuration.
         Currently speculative decoding mode is specified via engine config.
         For example, you can use "--engine-config='spec_draft_length=4;speculative_mode=EAGLE'"
         to specify the eagle-style speculative decoding.
@@ -849,7 +858,6 @@ class AsyncMLCEngine(engine_base.MLCEngineBase):
         max_batch_size: Optional[int] = None,
         max_total_sequence_length: Optional[int] = None,
         prefill_chunk_size: Optional[int] = None,
-        max_history_size: Optional[int] = None,
         gpu_memory_utilization: Optional[float] = None,
         speculative_mode: SpeculativeMode = SpeculativeMode.DISABLE,
         spec_draft_length: int = 4,
@@ -865,7 +873,6 @@ class AsyncMLCEngine(engine_base.MLCEngineBase):
             max_batch_size=max_batch_size,
             max_total_sequence_length=max_total_sequence_length,
             prefill_chunk_size=prefill_chunk_size,
-            max_history_size=max_history_size,
             gpu_memory_utilization=gpu_memory_utilization,
             speculative_mode=speculative_mode,
             spec_draft_length=spec_draft_length,
@@ -888,7 +895,7 @@ class AsyncMLCEngine(engine_base.MLCEngineBase):
         self,
         *,
         messages: List[Dict[str, Any]],
-        model: Optional[str] = None,
+        model: str,
         frequency_penalty: float = 0.0,
         presence_penalty: float = 0.0,
         logprobs: bool = False,
@@ -1008,8 +1015,13 @@ class AsyncMLCEngine(engine_base.MLCEngineBase):
     async def _completion(  # pylint: disable=too-many-arguments,too-many-locals
         self,
         *,
+<<<<<<< HEAD
         prompt: Union[str, List[int]],
         model: Optional[str] = None,
+=======
+        model: str,
+        prompt: Union[str, List[int]],
+>>>>>>> wip
         best_of: int = 1,
         echo: bool = False,
         frequency_penalty: float = 0.0,
@@ -1194,7 +1206,10 @@ class AsyncMLCEngine(engine_base.MLCEngineBase):
             request,
             request_id,
             self.state,
+<<<<<<< HEAD
             self.model_config_dicts[0],
+=======
+>>>>>>> wip
             self.tokenizer,
             self.max_input_sequence_length,
         )
@@ -1233,7 +1248,11 @@ class AsyncMLCEngine(engine_base.MLCEngineBase):
         generation_config: GenerationConfig,
         request_id: str,
     ) -> AsyncGenerator[List[engine_base.CallbackStreamOutput], Any]:
+<<<<<<< HEAD
         """Internal asynchronous text generation interface of AsyncMLCEngine.
+=======
+        """Internal asynchronous text generation interface of AsyncLLMEngine.
+>>>>>>> wip
         The method is a coroutine that streams a list of CallbackStreamOutput
         at a time via yield. The returned list length is the number of
         parallel generations specified by `generation_config.n`.
@@ -1303,8 +1322,13 @@ class AsyncMLCEngine(engine_base.MLCEngineBase):
         self._ffi["abort_request"](request_id)
 
 
+<<<<<<< HEAD
 class MLCEngine(engine_base.MLCEngineBase):
     """The MLCEngine in MLC LLM that provides the synchronous
+=======
+class LLMEngine(engine_base.LLMEngineBase):
+    """The LLMEngine in MLC LLM that provides the synchronous
+>>>>>>> wip
     interfaces with regard to OpenAI API.
 
     Parameters
@@ -1370,13 +1394,21 @@ class MLCEngine(engine_base.MLCEngineBase):
     gpu_memory_utilization : Optional[float]
         A number in (0, 1) denoting the fraction of GPU memory used by the server in total.
         It is used to infer to maximum possible KV cache capacity.
+<<<<<<< HEAD
         When it is unspecified, it defaults to 0.85.
+=======
+        When it is unspecified, it defaults to 0.90.
+>>>>>>> wip
         Under mode "local" or "interactive", the actual memory usage may be
         significantly smaller than this number. Under mode "server", the actual
         memory usage may be slightly larger than this number.
 
     engine_config : Optional[EngineConfig]
+<<<<<<< HEAD
         The MLCEngine execution configuration.
+=======
+        The LLMEngine execution configuration.
+>>>>>>> wip
         Currently speculative decoding mode is specified via engine config.
         For example, you can use "--engine-config='spec_draft_length=4;speculative_mode=EAGLE'"
         to specify the eagle-style speculative decoding.
@@ -1397,7 +1429,10 @@ class MLCEngine(engine_base.MLCEngineBase):
         max_batch_size: Optional[int] = None,
         max_total_sequence_length: Optional[int] = None,
         prefill_chunk_size: Optional[int] = None,
+<<<<<<< HEAD
         max_history_size: Optional[int] = None,
+=======
+>>>>>>> wip
         gpu_memory_utilization: Optional[float] = None,
         speculative_mode: SpeculativeMode = SpeculativeMode.DISABLE,
         spec_draft_length: int = 4,
@@ -1413,7 +1448,10 @@ class MLCEngine(engine_base.MLCEngineBase):
             max_batch_size=max_batch_size,
             max_total_sequence_length=max_total_sequence_length,
             prefill_chunk_size=prefill_chunk_size,
+<<<<<<< HEAD
             max_history_size=max_history_size,
+=======
+>>>>>>> wip
             gpu_memory_utilization=gpu_memory_utilization,
             speculative_mode=speculative_mode,
             spec_draft_length=spec_draft_length,
@@ -1436,7 +1474,11 @@ class MLCEngine(engine_base.MLCEngineBase):
         self,
         *,
         messages: List[Dict[str, Any]],
+<<<<<<< HEAD
         model: Optional[str] = None,
+=======
+        model: str,
+>>>>>>> wip
         frequency_penalty: float = 0.0,
         presence_penalty: float = 0.0,
         logprobs: bool = False,
@@ -1556,8 +1598,13 @@ class MLCEngine(engine_base.MLCEngineBase):
     def _completion(  # pylint: disable=too-many-arguments,too-many-locals
         self,
         *,
+<<<<<<< HEAD
         prompt: Union[str, List[int]],
         model: Optional[str] = None,
+=======
+        model: str,
+        prompt: Union[str, List[int]],
+>>>>>>> wip
         best_of: int = 1,
         echo: bool = False,
         frequency_penalty: float = 0.0,
@@ -1737,7 +1784,10 @@ class MLCEngine(engine_base.MLCEngineBase):
             request,
             request_id,
             self.state,
+<<<<<<< HEAD
             self.model_config_dicts[0],
+=======
+>>>>>>> wip
             self.tokenizer,
             self.max_input_sequence_length,
         )
@@ -1774,7 +1824,11 @@ class MLCEngine(engine_base.MLCEngineBase):
         generation_config: GenerationConfig,
         request_id: str,
     ) -> Iterator[List[engine_base.CallbackStreamOutput]]:
+<<<<<<< HEAD
         """Internal synchronous text generation interface of AsyncMLCEngine.
+=======
+        """Internal synchronous text generation interface of AsyncLLMEngine.
+>>>>>>> wip
         The method is a coroutine that streams a list of CallbackStreamOutput
         at a time via yield. The returned list length is the number of
         parallel generations specified by `generation_config.n`.
@@ -1828,7 +1882,11 @@ class MLCEngine(engine_base.MLCEngineBase):
     def _request_stream_callback_impl(
         self, delta_outputs: List[data.RequestStreamOutput]
     ) -> List[List[engine_base.CallbackStreamOutput]]:
+<<<<<<< HEAD
         """The underlying implementation of request stream callback of MLCEngine."""
+=======
+        """The underlying implementation of request stream callback of LLMEngine."""
+>>>>>>> wip
         batch_outputs: List[List[engine_base.CallbackStreamOutput]] = []
         for delta_output in delta_outputs:
             request_id, stream_outputs = delta_output.unpack()

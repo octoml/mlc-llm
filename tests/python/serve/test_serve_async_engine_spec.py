@@ -3,7 +3,7 @@
 import asyncio
 from typing import List
 
-from mlc_llm.serve import AsyncMLCEngine, GenerationConfig, SpeculativeMode
+from mlc_llm.serve import AsyncLLMEngine, GenerationConfig, SpeculativeMode
 
 prompts = [
     "What is the meaning of life?",
