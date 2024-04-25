@@ -381,51 +381,57 @@ class MixtralExpertsFP8(
             raise NotImplementedError(
                 f"Only max and cast runtimes are supported for FP8 activations, {self.runtime} is unsupported."
             )
+        if indptr.ndim == 2:
+            assert indptr.shape[0] == 1
+            from mlc_llm.op import moe_matmul
 
-        workspace = nn.op.wrap_nested(
-            relax.op.builtin.alloc_tensor(
-                relax.ShapeExpr((4096 * 1024,)),
-                dtype="uint8",
-                runtime_device_index=0,
-            ),
-            "relax.alloc_tensor",
-        )
-
-        batch_size, in_features = x.shape
-        num_local_experts, out_features, _ = self.q_weight.shape
-
-        if self.runtime == "max-calibration":
-            func = "cutlass.group_gemm_scale_fp16_sm90"
+            print(x.dtype, self.q_weight.dtype, indptr.dtype)
+            return moe_matmul.gemv(x, self.q_weight, indptr)
         else:
-            a_format = self.activation_dtype.split("_")[0]
-            w_format = self.weight_dtype.split("_")[0]
-            func = f"cutlass.group_gemm_{a_format}_{w_format}_fp16"
+            workspace = nn.op.wrap_nested(
+                relax.op.builtin.alloc_tensor(
+                    relax.ShapeExpr((4096 * 1024,)),
+                    dtype="uint8",
+                    runtime_device_index=0,
+                ),
+                "relax.alloc_tensor",
+            )
 
-        if self.runtime == "cast":
-            func = func + "_host_scale"
-            total_scale = 1.0
-        else:
-            if self.runtime != "max-calibration" and self.weight_dtype == "e4m3_float8":
-                # for calibration, q_scale is already used to dequantize the weights
-                total_scale = local_scale * self.q_scale
+            batch_size, in_features = x.shape
+            num_local_experts, out_features, _ = self.q_weight.shape
+
+            if self.runtime == "max-calibration":
+                func = "cutlass.group_gemm_scale_fp16_sm90"
             else:
-                total_scale = local_scale
-            total_scale = nn.op.astype(total_scale, dtype="float32")
+                a_format = self.activation_dtype.split("_")[0]
+                w_format = self.weight_dtype.split("_")[0]
+                func = f"cutlass.group_gemm_{a_format}_{w_format}_fp16"
 
-        return nn.op.extern(
-            func,
-            [
-                x,
-                w,
-                indptr,
-                workspace,
-                total_scale,
-            ],
-            out=nn.Tensor.placeholder(
-                (batch_size, out_features),
-                dtype=self.weight_config.model_dtype,
-            ),
-        )
+            if self.runtime == "cast":
+                func = func + "_host_scale"
+                total_scale = 1.0
+            else:
+                if self.runtime != "max-calibration" and self.weight_dtype == "e4m3_float8":
+                    # for calibration, q_scale is already used to dequantize the weights
+                    total_scale = local_scale * self.q_scale
+                else:
+                    total_scale = local_scale
+                total_scale = nn.op.astype(total_scale, dtype="float32")
+
+            return nn.op.extern(
+                func,
+                [
+                    x,
+                    w,
+                    indptr,
+                    workspace,
+                    total_scale,
+                ],
+                out=nn.Tensor.placeholder(
+                    (batch_size, out_features),
+                    dtype=self.weight_config.model_dtype,
+                ),
+            )
 
 
 # TODO(csullivan): Refactor Linear and MixtralExperts to shared base with common code
