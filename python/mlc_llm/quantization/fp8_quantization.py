@@ -385,8 +385,16 @@ class MixtralExpertsFP8(
             assert indptr.shape[0] == 1
             from mlc_llm.op import moe_matmul
 
-            print(x.dtype, self.q_weight.dtype, indptr.dtype)
-            return moe_matmul.gemv(x, self.q_weight, indptr)
+            out = moe_matmul.gemv(x, w, indptr)
+            fp32_out = nn.op.astype(out, dtype="float32")
+            if self.runtime != "max-calibration" and self.weight_dtype == "e4m3_float8":
+                # for calibration, q_scale is already used to dequantize the weights
+                total_scale = local_scale * self.q_scale
+            else:
+                total_scale = local_scale
+            total_scale = nn.op.astype(total_scale, dtype="float32")
+            scaled_out = fp32_out * total_scale
+            return nn.op.astype(scaled_out, dtype="float16")
         else:
             workspace = nn.op.wrap_nested(
                 relax.op.builtin.alloc_tensor(

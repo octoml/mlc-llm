@@ -357,7 +357,6 @@ class PerTensorQuantizeLinear(nn.Module):
 
     @classmethod
     def from_linear(cls, src: nn.Linear, config: PerTensorQuantize) -> "PerTensorQuantizeLinear":
-
         if (
             DataType(config.weight_dtype).type_code
             in [
