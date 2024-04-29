@@ -2,11 +2,14 @@
 
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, List, Literal, Optional, Tuple, Union
+from typing import Any, Callable, List, Literal, Optional, Tuple, Union
 
-from tvm import DataType, DataTypeCode, IRModule, relax, te, tir, topi
+from tvm import DataType, DataTypeCode, IRModule
+from tvm import dlight as dl
+from tvm import relax, te, tir, topi
 from tvm.relax.frontend import nn
 from tvm.runtime import NDArray
+from tvm.target import Target
 
 from mlc_llm.loader import QuantizeMapping
 from mlc_llm.nn import MixtralExperts
@@ -361,6 +364,7 @@ class GroupQuantize:  # pylint: disable=too-many-instance-attributes
         shape = weight.shape  # pylint: disable=invalid-name
         axis = axis if axis >= 0 else len(shape) + axis
         k = shape[axis]
+        quantize_dtype = DataType(self.quantize_dtype)
         # compute scale per group
         r = te.reduce_axis((0, self.group_size), name="r")  # pylint: disable=invalid-name
         num_group = tir.ceildiv(k, self.group_size)
@@ -398,15 +402,23 @@ class GroupQuantize:  # pylint: disable=too-many-instance-attributes
             ).astype(self.storage_dtype),
         )
         # compute quantized weight per storage
+        r = te.reduce_axis((0, self.num_elem_per_storage), name="r")  # pylint: disable=invalid-name
         num_storage = self.num_storage_per_group * num_group
         quantized_weight_shape = (*shape[:axis], num_storage, *shape[axis + 1 :])
-        quantized_weight = pack_weight(
-            scaled_weight,
-            axis=axis,
-            num_elem_per_storage=self.num_elem_per_storage,
-            weight_dtype=self.quantize_dtype,
-            storage_dtype=self.storage_dtype,
-            out_shape=quantized_weight_shape,
+        quantized_weight = te.compute(
+            shape=quantized_weight_shape,
+            fcompute=lambda *idx: tir.sum(
+                tir.if_then_else(
+                    idx[axis] * self.num_elem_per_storage + r < k,
+                    scaled_weight(
+                        *idx[:axis], idx[axis] * self.num_elem_per_storage + r, *idx[axis + 1 :]
+                    )
+                    << (r * quantize_dtype.bits),
+                    0,
+                ),
+                axis=r,
+            ),
+            name="weight",
         )
         if output_transpose:
             if len(quantized_weight.shape) != 2 or len(scale.shape) != 2:
@@ -929,7 +941,7 @@ class GroupQuantizeMixtralExperts(nn.Module):  # pylint: disable=too-many-instan
         ret : nn.Tensor
             The output tensor for the group quantized mistral experts layer.
         """
-        from mlc_llm.op import moe_matmul  # pylint: disable=import-outside-toplevel
+        from mlc_chat.op import moe_matmul  # pylint: disable=import-outside-toplevel
 
         assert x.ndim == 2
         if indptr.ndim == 2:  # single-batch

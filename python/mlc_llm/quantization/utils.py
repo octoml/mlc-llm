@@ -6,7 +6,7 @@ from tvm import IRModule
 from tvm import dlight as dl
 from tvm import relax, te, tir
 from tvm.relax.frontend import nn
-from tvm.runtime import DataType, DataTypeCode
+from tvm.runtime import DataType
 from tvm.target import Target
 
 from mlc_llm.support import tensor_parallel as tp
@@ -99,7 +99,7 @@ def is_moe_gate(name: str) -> bool:
 def compile_quantize_func(mod: IRModule, device) -> Callable:
     """Compile a quantization function for a given device."""
     device_type = device.MASK2STR[device.device_type]
-    if device_type in ["cuda", "rocm", "metal", "vulkan", "opencl"]:
+    if device_type in ["cuda", "rocm", "metal", "vulkan"]:
         target = Target.current()
         if target is None:
             target = Target.from_device(device)
@@ -162,12 +162,10 @@ def pack_weight(
     """
     assert weight.dtype == storage_dtype
     shape = weight.shape
-    if axis < 0:
-        axis += len(shape)
     k = shape[axis]
     axis = axis if axis >= 0 else len(shape) + axis
     if out_shape is None:
-        out_shape = (*shape[:axis], tir.ceildiv(k, num_elem_per_storage), *shape[axis + 1 :])
+        out_shape = (*shape[axis], tir.ceildiv(k, num_elem_per_storage), *shape[axis + 1 :])
     r = te.reduce_axis((0, num_elem_per_storage), name="r")  # pylint: disable=invalid-name
     packed_weight = te.compute(
         shape=out_shape,
