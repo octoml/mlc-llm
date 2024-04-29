@@ -381,17 +381,24 @@ class MixtralExpertsFP8(
             raise NotImplementedError(
                 f"Only max and cast runtimes are supported for FP8 activations, {self.runtime} is unsupported."
             )
+        
+        def get_total_scale(runtime, weight_dtype, q_scale=None):
+            if runtime != "max-calibration" and weight_dtype == "e4m3_float8":
+                assert q_scale is not None
+                # for calibration, q_scale is already used to dequantize the weights
+                total_scale = local_scale * q_scale
+            else:
+                total_scale = local_scale
+            return total_scale
+        
         if indptr.ndim == 2:
+            # Single batch specialization. Use gemv kernels instead
             assert indptr.shape[0] == 1
             from mlc_llm.op import moe_matmul
 
             out = moe_matmul.gemv(x, w, indptr)
             fp32_out = nn.op.astype(out, dtype="float32")
-            if self.runtime != "max-calibration" and self.weight_dtype == "e4m3_float8":
-                # for calibration, q_scale is already used to dequantize the weights
-                total_scale = local_scale * self.q_scale
-            else:
-                total_scale = local_scale
+            total_scale = get_total_scale(self.runtime, self.weight_dtype, self.q_scale)
             total_scale = nn.op.astype(total_scale, dtype="float32")
             scaled_out = fp32_out * total_scale
             return nn.op.astype(scaled_out, dtype="float16")
@@ -419,11 +426,7 @@ class MixtralExpertsFP8(
                 func = func + "_host_scale"
                 total_scale = 1.0
             else:
-                if self.runtime != "max-calibration" and self.weight_dtype == "e4m3_float8":
-                    # for calibration, q_scale is already used to dequantize the weights
-                    total_scale = local_scale * self.q_scale
-                else:
-                    total_scale = local_scale
+                total_scale = get_total_scale(self.runtime, self.weight_dtype, self.q_scale)
                 total_scale = nn.op.astype(total_scale, dtype="float32")
 
             return nn.op.extern(
