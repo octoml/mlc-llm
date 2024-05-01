@@ -37,9 +37,6 @@ STORE: ExternModuleStore = ExternModuleStore()
 
 def enable(target: Target, flashinfer: bool, faster_transformer: bool, cutlass: bool) -> None:
     """Enable external modules. It should be called before any compilation happens."""
-    print(f"extern enable; cutlass arg = {cutlass}")
-    flag = cutlass and target.kind.name == "cuda" and target.attrs.get("arch", "") == "sm_90a"
-    print(f"cutlas flag = {flag}")
     global STORE  # pylint: disable=global-statement
     STORE = ExternModuleStore(
         configured=False,
