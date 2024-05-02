@@ -401,17 +401,6 @@ class MixtralExpertsFP8(
                 func = "cutlass.group_gemm_scale_fp16_sm90"
             elif extern_modules.faster_transformer:
                 # sm80 FT template does not have fused dequant, so we add explicit dequant for scales
-                '''
-                dequant_func = self.config._dequantize_float8
-                x_dq = nn.op.tensor_expr_op(  # pylint: disable=invalid-name
-                    lambda tensor, scale: dequant_func(  # pylint: disable=protected-access
-                        tensor,
-                        scale,
-                        out_shape=x.shape,
-                    ),
-                    name_hint="dequantize_activations",
-                    args=[x, self.q_calibration_scale],
-                )'''
                 x_dq = nn.op.multiply(x, self.q_calibration_scale)
                 return op_ext.faster_transformer_moe_gemm(x_dq, w, indptr)
             else:
