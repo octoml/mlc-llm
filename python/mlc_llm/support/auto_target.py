@@ -293,7 +293,7 @@ def _build_default():
     return build
 
 
-def detect_cuda_arch_list(target: Target) -> List[str]:
+def detect_cuda_arch_list(target: Target) -> List[int]:
     """Detect the CUDA architecture list from the target."""
 
     def convert_to_num(arch_str):
