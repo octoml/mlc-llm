@@ -260,7 +260,7 @@ Array<NDArray> LoadMultiGPUPresharded(const std::string& model_path, Module rela
 }
 
 TVM_REGISTER_GLOBAL("mlc.loader.LoadMultiGPU").set_body_typed(LoadMultiGPU);
-TVM_REGISTER_GLOBAL("mlc.loader.LoadMultiGPUPresharded").set_body_typed(LoadMultiGPUPresharded);
+// TVM_REGISTER_GLOBAL("mlc.loader.LoadMultiGPUPresharded").set_body_typed(LoadMultiGPUPresharded);
 
 }  // namespace loader
 }  // namespace llm

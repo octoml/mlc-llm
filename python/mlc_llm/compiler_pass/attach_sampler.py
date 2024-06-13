@@ -16,12 +16,12 @@ class AttachGPUSamplingFunc:  # pylint: disable=too-few-public-methods
 
     def __init__(self, target: tvm.target.Target, variable_bounds: Dict[str, int]):
         # Specifically for RWKV workloads, which contains -1 max_seq_len
-        max_batch_size = variable_bounds["batch_size"]
-        self.variable_bounds = {
-            "batch_size": max_batch_size,
-            "num_samples": max_batch_size,
-            "num_positions": 6 * max_batch_size,
-        }
+        # max_batch_size = variable_bounds["batch_size"]
+        # self.variable_bounds = {
+        #     "batch_size": max_batch_size,
+        #     "num_samples": max_batch_size,
+        #     "num_positions": 6 * max_batch_size,
+        # }
         self.non_negative_var = ["vocab_size"]
         self.target = target
 
@@ -54,12 +54,12 @@ class AttachGPUSamplingFunc:  # pylint: disable=too-few-public-methods
         ]
 
         mod = bb.finalize()
-        for gv_name in gv_names:
-            mod[gv_name] = (
-                mod[gv_name]
-                .with_attr("tir_var_upper_bound", self.variable_bounds)
-                .with_attr("tir_non_negative_var", self.non_negative_var)
-            )
+        # for gv_name in gv_names:
+        #     mod[gv_name] = (
+        #         mod[gv_name]
+        #         .with_attr("tir_var_upper_bound", self.variable_bounds)
+        #         .with_attr("tir_non_negative_var", self.non_negative_var)
+        #     )
         return mod
 
 

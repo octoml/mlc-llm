@@ -175,7 +175,7 @@ def _create_smoothquant_func(
     return func_names
 
 def gen_smoothquant(named_params: Dict[str, nn.Parameter], tensor_parallel_shards: int, args: Any):
-    model_config = args.model.config.from_file(args.config)
+    model_config = args.model_config# args.model.config.from_file(args.model_config)
     model_config.tensor_parallel_shards = tensor_parallel_shards
     model = args.model.model(model_config)
     model.to(args.quantization.model_dtype)

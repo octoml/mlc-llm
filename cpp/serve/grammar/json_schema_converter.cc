@@ -888,8 +888,9 @@ std::string JSONSchemaToEBNFConverter::VisitObject(const picojson::object& schem
   std::vector<std::pair<std::string, picojson::value>> properties;
   if (schema.count("properties")) {
     auto properties_obj = schema.at("properties").get<picojson::object>();
-    for (const auto& key : properties_obj.ordered_keys()) {
-      properties.push_back({key, properties_obj.at(key)});
+    for (const auto& [key, value] : properties_obj) {
+    // for (const auto& key : properties_obj.keys()) {
+      properties.push_back({key, value});
     }
   }
 
