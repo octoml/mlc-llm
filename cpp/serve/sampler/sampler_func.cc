@@ -24,47 +24,54 @@ using namespace tvm::runtime;
 TVM_REGISTER_OBJECT_TYPE(SamplerNode);
 TVM_REGISTER_OBJECT_TYPE(GPUSamplerNode);
 
-GPUSampler::GPUSampler(int vocab_size, DLDevice device, FunctionTable& ft) {
+GPUSamplerTest::GPUSamplerTest(int vocab_size, DLDevice device, FunctionTable& ft) {
   ObjectPtr<GPUSamplerNode> n = make_object<GPUSamplerNode>();
-
   n->vocab_size = vocab_size;
-  n->gpu_sampler = Sampler::CreateGPUSampler(1, vocab_size, &ft, device, {});
-  n->generation_cfg.Create("{top_p: 0.7}");
+  n->gpu_sampler = Sampler::CreateGPUSampler(64, vocab_size, &ft, device, {});
+  std::string err = "";
   data_ = std::move(n);
   // 
 }
 
-std::vector<SampleResult> GPUSamplerNode::BatchDecode(NDArray probs)
-{
-    // std::vector<int> sample_indices(num_rsentries);
-    // std::iota(sample_indices.begin(), sample_indices.end(), 0);
-    // std::vector<SampleResult> sample_results = data_->IsInstance<GPUSamplerNode>()
-    // .BatchSampleTokensWithProbBeforeTopP(
-    //     probs_on_device, sample_indices, request_ids, generation_cfg, rngs);
-  return std::vector<SampleResult>();
-}
+// std::vector<SampleResult> GPUSamplerNode::BatchDecode(NDArray probs)
+// {
+//     // std::vector<int> sample_indices(num_rsentries);
+//     // std::iota(sample_indices.begin(), sample_indices.end(), 0);
+//     // std::vector<SampleResult> sample_results = data_->IsInstance<GPUSamplerNode>()
+//     // .BatchSampleTokensWithProbBeforeTopP(
+//     //     probs_on_device, sample_indices, request_ids, generation_cfg, rngs);
+//   return std::vector<SampleResult>();
+// }
 
-TVM_REGISTER_GLOBAL("mlc.serve.GPUSamplerBatchDecode").set_body_typed([](GPUSampler sampler, NDArray samples) {
+TVM_REGISTER_GLOBAL("mlc.serve.GPUSamplerBatchDecode").set_body_typed([](GPUSamplerTest sampler, NDArray samples) {
   int num_rsentries = samples->shape[0]; // to check
   std::cout << "HERE!\n";
+  static const String conf_string = "{\"top_p\": 5, \"temperature\": 0.7, \"frequency_penalty\": 0.0, \"presence_penalty\": 0.0}";
+  static GenerationConfig generation_config(conf_string);
   std::vector<RandomGenerator*> rngs;
   Array<String> request_ids;
   Array<GenerationConfig> generation_cfg;
   rngs.reserve(num_rsentries);
   generation_cfg.reserve(num_rsentries);
+  request_ids.reserve(num_rsentries);
   std::vector<int> sample_indices(num_rsentries);
   std::iota(sample_indices.begin(), sample_indices.end(), 0);
   // RandomGenerator rng;
   for (size_t i = 0; i < num_rsentries; ++i) {
-     rngs.push_back(&sampler->rng);
-     generation_cfg.push_back(sampler->generation_cfg);
+     rngs.push_back(const_cast<RandomGenerator*>(&sampler->rng));
+     generation_cfg.push_back(generation_config);
+     request_ids.push_back(std::to_string(i));
   }
+  std::cout << "1!\n";
   auto res = sampler->gpu_sampler->BatchSampleTokensWithProbBeforeTopP(
         samples, sample_indices, request_ids, generation_cfg, rngs);
+  std::cout << "2!\n";
+  // std::cout << "tokens "<<  res.size() << "\n";
 });
 
 
 TVM_REGISTER_GLOBAL("mlc.serve.GPUSampler").set_body_typed([](int vocab_size, DLDevice device) {
+  
   // /home/sshtin/dev/ollm/deps/mlc-llm/cpp/serve/function_table.h
   std::string reload_lib_path = "/home/sshtin/dev/ollm/mlc-serve/dist/Mistral-7B-Instruct-v0.2-q0f16-vllm-1gpu/Mistral-7B-Instruct-v0.2-q0f16-vllm-1gpu-allreduce_AUTO.so";
   auto executable = tvm::runtime::Module::LoadFromFile(reload_lib_path);
@@ -79,10 +86,10 @@ TVM_REGISTER_GLOBAL("mlc.serve.GPUSampler").set_body_typed([](int vocab_size, DL
   ft.gpu_sampler_take_probs_func_ = local_vm->GetFunction("sampler_take_probs", true);
   ft.gpu_verify_draft_tokens_func_ = local_vm->GetFunction("sampler_verify_draft_tokens", true);
   ft.gpu_renormalize_by_top_p_func_ = local_vm->GetFunction("renormalize_by_top_p", true);
-  // std::cout << "device " << device << "\n";
-  // std::cout << "ft.gpu_multinomial_from_uniform_func_ " << ft.gpu_multinomial_from_uniform_func_.defined() << "\n";
-  // std::cout << " ft.gpu_argsort_probs_func_ " <<  ft.gpu_argsort_probs_func_.defined() << "\n";
-  return GPUSampler(vocab_size, device, ft);
+  std::cout << "device " << device << "\n";
+  std::cout << "ft.gpu_multinomial_from_uniform_func_ " << ft.gpu_multinomial_from_uniform_func_.defined() << "\n";
+  std::cout << " ft.gpu_argsort_probs_func_ " <<  ft.gpu_argsort_probs_func_.defined() << "\n";
+  return GPUSamplerTest(vocab_size, device, ft);
 });
 
 }  // namespace serve
