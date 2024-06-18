@@ -1,15 +1,3 @@
-
-
-// #include <chrono>
-// #include <iostream>
-// #include <map>
-// #include <memory>
-// #include <optional>
-// #include <queue>
-// #include <string>
-// #include <unordered_set>
-// #include <vector>
-
 #include "sampler_func.h"
 #include <tvm/runtime/registry.h>
 #include <tvm/runtime/memory/memory_manager.h>
@@ -20,49 +8,36 @@ namespace serve {
 
 using namespace tvm::runtime;
 
-#pragma message("YYYYYYYYYYYYYYYYYYYYYYY")
 
 TVM_REGISTER_OBJECT_TYPE(SamplerNode);
 TVM_REGISTER_OBJECT_TYPE(GPUSamplerNode);
+
 
 GPUSamplerTest::GPUSamplerTest(int vocab_size, DLDevice device, FunctionTable& ft) {
   ObjectPtr<GPUSamplerNode> n = make_object<GPUSamplerNode>();
   n->vocab_size = vocab_size;
   n->gpu_sampler = Sampler::CreateGPUSampler(64, vocab_size, &ft, device, {});
   data_ = std::move(n);
-  // 
 }
 
-// std::vector<SampleResult> GPUSamplerNode::BatchDecode(NDArray probs)
-// {
-//     // std::vector<int> sample_indices(num_rsentries);
-//     // std::iota(sample_indices.begin(), sample_indices.end(), 0);
-//     // std::vector<SampleResult> sample_results = data_->IsInstance<GPUSamplerNode>()
-//     // .BatchSampleTokensWithProbBeforeTopP(
-//     //     probs_on_device, sample_indices, request_ids, generation_cfg, rngs);
-//   return std::vector<SampleResult>();
-// }
-
-TVM_REGISTER_GLOBAL("mlc.serve.GPUSamplerBatchDecode").set_body_typed([](GPUSamplerTest sampler, NDArray samples) {
+TVM_REGISTER_GLOBAL("mlc.serve.GPUSamplerBatchDecode").set_body([](TVMArgs args, TVMRetValue* ret) {
+  GPUSamplerTest sampler = args[0];
+  NDArray samples = args[1];
   int num_rsentries = samples->shape[0]; // to check
-  static const String conf_string = "{\"top_p\": 5, \"temperature\": 0.7, \"frequency_penalty\": 0.0, \"presence_penalty\": 0.0}";
+  static const String conf_string = "{\"top_p\": 5, \"temperature\": 0.7, \"frequency_penalty\": 0.7, \"presence_penalty\": 0.7}";
   static GenerationConfig generation_config(conf_string);
-  std::vector<RandomGenerator*> rngs;
   Array<String> request_ids;
   Array<GenerationConfig> generation_cfg;
-  rngs.reserve(num_rsentries);
   generation_cfg.reserve(num_rsentries);
   request_ids.reserve(num_rsentries);
   std::vector<int> sample_indices(num_rsentries);
   std::iota(sample_indices.begin(), sample_indices.end(), 0);
-  // RandomGenerator rng;
   for (size_t i = 0; i < num_rsentries; ++i) {
-     rngs.push_back(const_cast<RandomGenerator*>(&sampler->rng));
      generation_cfg.push_back(generation_config);
      request_ids.push_back(std::to_string(i));
   }
-  auto res = sampler->gpu_sampler->BatchSampleTokensWithProbBeforeTopP(
-        samples, sample_indices, request_ids, generation_cfg, rngs);
+  auto result = sampler->gpu_sampler->BatchRenormalizeProbsByTopP(samples, sample_indices, request_ids, generation_cfg);
+  *ret = result;
 });
 
 class GPUSamplerInstance
@@ -89,6 +64,9 @@ public:
       ft_.gpu_sampler_take_probs_func_ = local_vm_->GetFunction("sampler_take_probs", true);
       ft_.gpu_verify_draft_tokens_func_ = local_vm_->GetFunction("sampler_verify_draft_tokens", true);
       ft_.gpu_renormalize_by_top_p_func_ = local_vm_->GetFunction("renormalize_by_top_p", true);
+      ft_.apply_logit_bias_func_ = local_vm_->GetFunction("apply_logit_bias_inplace", true);
+      ft_.apply_penalty_func_ = local_vm_->GetFunction("apply_penalty_inplace", true);
+      ft_.apply_bitmask_func_ = local_vm_->GetFunction("apply_bitmask_inplace", true);
       initialized_ = true;
     }
     return ft_;
@@ -108,11 +86,62 @@ private:
 };
 
 TVM_REGISTER_GLOBAL("mlc.serve.GPUSampler").set_body_typed([](int vocab_size, DLDevice device) {
-  
-  // /home/sshtin/dev/ollm/deps/mlc-llm/cpp/serve/function_table.h
-  std::cout << "device " << device << "\n";
-  // local_gpu_device = device;
   return GPUSamplerTest(vocab_size, device, GPUSamplerInstance::GPUInstance().getTable(device));
+});
+
+TVM_REGISTER_OBJECT_TYPE(LogitsProcessorNode);
+TVM_REGISTER_OBJECT_TYPE(GPULogitsProcessorNode);
+
+GPULogitsProcessorTest::GPULogitsProcessorTest(int max_num_token, int vocab_size, DLDevice device) {
+  ObjectPtr<GPULogitsProcessorNode> n = make_object<GPULogitsProcessorNode>();
+  n->vocab_size_ = vocab_size;
+  n->max_num_token_ = max_num_token;
+  n->logits_processor_ = LogitProcessor(max_num_token, vocab_size, &GPUSamplerInstance::GPUInstance().getTable(device), device, {});
+  data_ = std::move(n);
+}
+
+TVM_REGISTER_GLOBAL("mlc.serve.ComputeProbsFromLogits").set_body([](TVMArgs args, TVMRetValue* ret) {
+  GPULogitsProcessorTest unit = args[0];
+  NDArray logits_for_sample = args[1];
+  std::cout << "Here!\n";
+  // int num_rsentries = logits_for_sample->shape[0]; // to check
+
+  // static const String conf_string = "{\"top_p\": 5, \"temperature\": 0.7, \"frequency_penalty\": 0.7, \"presence_penalty\": 0.7}";
+  // static GenerationConfig generation_config(conf_string);
+  // Array<RequestModelState> mstates;
+  // mstates.reserve(num_rsentries);
+  // for (size_t i = 0; i < num_rsentries; ++i) {
+
+  // }
+  // unit->logit_processor_->InplaceUpdateLogits(logits_for_sample, generation_cfg, mstates_for_logitproc,
+  //                                         request_ids);
+
+
+  //   NDArray probs_on_device =
+  //       logit_processor_->ComputeProbsFromLogits(logits_for_sample, generation_cfg, request_ids);
+
+    // - Sample tokens.
+  // GPUSamplerTest sampler = args[0];
+  // NDArray samples = args[1];
+  // int num_rsentries = samples->shape[0]; // to check
+  // static const String conf_string = "{\"top_p\": 5, \"temperature\": 0.7, \"frequency_penalty\": 0.7, \"presence_penalty\": 0.7}";
+  // static GenerationConfig generation_config(conf_string);
+  // Array<String> request_ids;
+  // Array<GenerationConfig> generation_cfg;
+  // generation_cfg.reserve(num_rsentries);
+  // request_ids.reserve(num_rsentries);
+  // std::vector<int> sample_indices(num_rsentries);
+  // std::iota(sample_indices.begin(), sample_indices.end(), 0);
+  // for (size_t i = 0; i < num_rsentries; ++i) {
+  //    generation_cfg.push_back(generation_config);
+  //    request_ids.push_back(std::to_string(i));
+  // }
+  // auto result = sampler->gpu_sampler->BatchRenormalizeProbsByTopP(samples, sample_indices, request_ids, generation_cfg);
+  *ret = logits_for_sample;
+});
+
+TVM_REGISTER_GLOBAL("mlc.serve.GPULogitsProcessor").set_body_typed([](int max_num_token, int vocab_size, DLDevice device) {
+  return GPULogitsProcessorTest(max_num_token, vocab_size, device);
 });
 
 }  // namespace serve
