@@ -12,6 +12,7 @@
 
 #include "sampler_func.h"
 #include <tvm/runtime/registry.h>
+#include <tvm/runtime/memory/memory_manager.h>
 
 namespace mlc {
 namespace llm {
@@ -28,7 +29,6 @@ GPUSamplerTest::GPUSamplerTest(int vocab_size, DLDevice device, FunctionTable& f
   ObjectPtr<GPUSamplerNode> n = make_object<GPUSamplerNode>();
   n->vocab_size = vocab_size;
   n->gpu_sampler = Sampler::CreateGPUSampler(64, vocab_size, &ft, device, {});
-  std::string err = "";
   data_ = std::move(n);
   // 
 }
@@ -45,7 +45,6 @@ GPUSamplerTest::GPUSamplerTest(int vocab_size, DLDevice device, FunctionTable& f
 
 TVM_REGISTER_GLOBAL("mlc.serve.GPUSamplerBatchDecode").set_body_typed([](GPUSamplerTest sampler, NDArray samples) {
   int num_rsentries = samples->shape[0]; // to check
-  std::cout << "HERE!\n";
   static const String conf_string = "{\"top_p\": 5, \"temperature\": 0.7, \"frequency_penalty\": 0.0, \"presence_penalty\": 0.0}";
   static GenerationConfig generation_config(conf_string);
   std::vector<RandomGenerator*> rngs;
@@ -62,34 +61,58 @@ TVM_REGISTER_GLOBAL("mlc.serve.GPUSamplerBatchDecode").set_body_typed([](GPUSamp
      generation_cfg.push_back(generation_config);
      request_ids.push_back(std::to_string(i));
   }
-  std::cout << "1!\n";
   auto res = sampler->gpu_sampler->BatchSampleTokensWithProbBeforeTopP(
         samples, sample_indices, request_ids, generation_cfg, rngs);
-  std::cout << "2!\n";
-  // std::cout << "tokens "<<  res.size() << "\n";
 });
 
+class GPUSamplerInstance
+{
+public:
+  static GPUSamplerInstance& GPUInstance()
+  {
+    static GPUSamplerInstance singleton;
+    return singleton;
+  }
+  FunctionTable& getTable(DLDevice device) {
+    if (!initialized_) {
+      auto executable = tvm::runtime::Module::LoadFromFile(reload_lib_path);
+      device_ = device;
+      auto fload_exec = executable->GetFunction("vm_load_executable");
+      local_vm_ = fload_exec();
+      local_vm_->GetFunction("vm_initialization")(
+        static_cast<int>(device.device_type), device.device_id,
+        static_cast<int>(tvm::runtime::memory::AllocatorType::kPooled), static_cast<int>(kDLCPU), 0,
+        static_cast<int>(tvm::runtime::memory::AllocatorType::kPooled));
+      ft_.gpu_multinomial_from_uniform_func_ = local_vm_->GetFunction("multinomial_from_uniform", true);
+      ft_.gpu_argsort_probs_func_ = local_vm_->GetFunction("argsort_probs", true);
+      ft_.gpu_sample_with_top_p_func_ = local_vm_->GetFunction("sample_with_top_p", true);
+      ft_.gpu_sampler_take_probs_func_ = local_vm_->GetFunction("sampler_take_probs", true);
+      ft_.gpu_verify_draft_tokens_func_ = local_vm_->GetFunction("sampler_verify_draft_tokens", true);
+      ft_.gpu_renormalize_by_top_p_func_ = local_vm_->GetFunction("renormalize_by_top_p", true);
+      initialized_ = true;
+    }
+    return ft_;
+  }
+private:
+  GPUSamplerInstance() {
+  }
+  ~GPUSamplerInstance() {
+  }
+  GPUSamplerInstance(const GPUSamplerInstance&);
+  GPUSamplerInstance& operator=(const GPUSamplerInstance&);
+  FunctionTable ft_;
+  tvm::runtime::Module local_vm_{nullptr};
+  DLDevice device_;
+  bool initialized_{false};
+  const std::string reload_lib_path = "/home/sshtin/dev/ollm/mlc-serve/dist/Mistral-7B-Instruct-v0.2-q0f16-vllm-1gpu/Mistral-7B-Instruct-v0.2-q0f16-vllm-1gpu-allreduce_AUTO.so";
+};
 
 TVM_REGISTER_GLOBAL("mlc.serve.GPUSampler").set_body_typed([](int vocab_size, DLDevice device) {
   
   // /home/sshtin/dev/ollm/deps/mlc-llm/cpp/serve/function_table.h
-  std::string reload_lib_path = "/home/sshtin/dev/ollm/mlc-serve/dist/Mistral-7B-Instruct-v0.2-q0f16-vllm-1gpu/Mistral-7B-Instruct-v0.2-q0f16-vllm-1gpu-allreduce_AUTO.so";
-  auto executable = tvm::runtime::Module::LoadFromFile(reload_lib_path);
-  auto fload_exec = executable->GetFunction("vm_load_executable");
-
-  FunctionTable ft;
-  tvm::runtime::Module local_vm = fload_exec();
-  // local_gpu_device = device;
-  ft.gpu_multinomial_from_uniform_func_ = local_vm->GetFunction("multinomial_from_uniform", true);
-  ft.gpu_argsort_probs_func_ = local_vm->GetFunction("argsort_probs", true);
-  ft.gpu_sample_with_top_p_func_ = local_vm->GetFunction("sample_with_top_p", true);
-  ft.gpu_sampler_take_probs_func_ = local_vm->GetFunction("sampler_take_probs", true);
-  ft.gpu_verify_draft_tokens_func_ = local_vm->GetFunction("sampler_verify_draft_tokens", true);
-  ft.gpu_renormalize_by_top_p_func_ = local_vm->GetFunction("renormalize_by_top_p", true);
   std::cout << "device " << device << "\n";
-  std::cout << "ft.gpu_multinomial_from_uniform_func_ " << ft.gpu_multinomial_from_uniform_func_.defined() << "\n";
-  std::cout << " ft.gpu_argsort_probs_func_ " <<  ft.gpu_argsort_probs_func_.defined() << "\n";
-  return GPUSamplerTest(vocab_size, device, ft);
+  // local_gpu_device = device;
+  return GPUSamplerTest(vocab_size, device, GPUSamplerInstance::GPUInstance().getTable(device));
 });
 
 }  // namespace serve
