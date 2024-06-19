@@ -82,7 +82,7 @@ private:
   tvm::runtime::Module local_vm_{nullptr};
   DLDevice device_;
   bool initialized_{false};
-  const std::string reload_lib_path = "/home/sshtin/dev/ollm/mlc-serve/dist/Mistral-7B-Instruct-v0.2-q0f16-vllm-1gpu/Mistral-7B-Instruct-v0.2-q0f16-vllm-1gpu-allreduce_AUTO.so";
+  const std::string reload_lib_path = "/home/sshtin/dev/ollm/mlc-serve/dist/Mistral-7B-Instruct-v0.2-q0f16-vllm-1gpu/Mistral-7B-Instruct-v0_2-q0f16-vllm-1gpu-allreduce_AUTO.so";
 };
 
 TVM_REGISTER_GLOBAL("mlc.serve.GPUSampler").set_body_typed([](int vocab_size, DLDevice device) {
@@ -104,10 +104,17 @@ TVM_REGISTER_GLOBAL("mlc.serve.ComputeProbsFromLogits").set_body([](TVMArgs args
   GPULogitsProcessorTest unit = args[0];
   NDArray logits_for_sample = args[1];
   std::cout << "Here!\n";
-  // int num_rsentries = logits_for_sample->shape[0]; // to check
+  int num_rsentries = logits_for_sample->shape[0]; // to check
 
-  // static const String conf_string = "{\"top_p\": 5, \"temperature\": 0.7, \"frequency_penalty\": 0.7, \"presence_penalty\": 0.7}";
-  // static GenerationConfig generation_config(conf_string);
+  static const String conf_string = "{\"top_p\": 5, \"temperature\": 0.7, \"frequency_penalty\": 0.7, \"presence_penalty\": 0.7}";
+  static GenerationConfig generation_config(conf_string);
+  // explicit Request(String id, Array<Data> inputs, GenerationConfig generation_cfg);
+// class RequestModelState : public ObjectRef {
+//  public:
+//   explicit RequestModelState(
+//       Request request, int model_id, int64_t internal_id, Array<Data> inputs,
+//       const std::optional<std::shared_ptr<GrammarStateInitContext>>& grammar_state_init_ctx);
+
   // Array<RequestModelState> mstates;
   // mstates.reserve(num_rsentries);
   // for (size_t i = 0; i < num_rsentries; ++i) {
