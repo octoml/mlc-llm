@@ -50,6 +50,7 @@ class LogitProcessorImpl : public LogitProcessorObj {
         apply_bitmask_func_(ft->apply_bitmask_func_),
         trace_recorder_(std::move(trace_recorder)) {
     DLDevice device_cpu{DLDeviceType::kDLCPU, /*device_id=*/0};
+    std::cout << "max_num_token " << max_num_token << "\n";
     // Initialize auxiliary arrays on CPU.
     seq_ids_host_ = NDArray::Empty({max_num_token}, dtype_i32_, device_cpu);
     pos2seq_id_host_ = NDArray::Empty({max_num_token * vocab_size}, dtype_i32_, device_cpu);
@@ -106,7 +107,7 @@ class LogitProcessorImpl : public LogitProcessorObj {
     CHECK_LE(logits->shape[0], max_num_token_);
     int num_total_token = logits->shape[0];
     int num_sequence = generation_cfg.size();
-    std::cout << logits->shape[0] << "x" << logits->shape[1] << ", " << logits->ndim << "num_sequence" << num_sequence<<  "\n";
+    // std::cout << logits->shape[0] << "x" << logits->shape[1] << ", " << logits->ndim << "num_sequence" << num_sequence<<  "\n";
     CHECK((cum_num_token == nullptr) == (draft_tokens == nullptr));
     if (cum_num_token != nullptr) {
       CHECK_EQ(draft_tokens->size(), num_sequence);
@@ -180,8 +181,8 @@ class LogitProcessorImpl : public LogitProcessorObj {
     SyncCopyStream(device_, compute_stream_, copy_stream_);
 
     // - Call kernel.
-    NDArray probs = softmax_func_(logits.CreateView({num_total_token, 1, vocab_size_}, dtype_f32_),
-                                  temperature_device);
+    auto logits_view = logits.CreateView({num_total_token, 1, vocab_size_}, dtype_f32_);
+    NDArray probs = softmax_func_(logits_view, temperature_device, logits_view);
     ICHECK_EQ(probs->ndim, 3);
     ICHECK_EQ(probs->shape[0], num_total_token);
     ICHECK_EQ(probs->shape[1], 1);

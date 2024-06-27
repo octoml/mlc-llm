@@ -317,9 +317,11 @@ class EngineImpl : public Engine {
 
     static const String conf_string = "{\"top_p\": 5, \"temperature\": 0.7, \"frequency_penalty\": 0.7, \"presence_penalty\": 0.7, \"num_sequence\": 40}";
     static GenerationConfig generation_config(conf_string);
+    RandomGenerator rng(7);
 
+    
     auto num_rsentries = logits_->shape[0];
-    std::cout << logits_->shape[0] << "x" << logits_->shape[1] << ", " << logits_->ndim << "\n";
+    // std::cout << logits_->shape[0] << "x" << logits_->shape[1] << ", " << logits_->ndim << "\n";
     std::vector<int> input_tokens;
     Array<String> request_ids;
     std::vector<int64_t> request_internal_ids;
@@ -332,19 +334,27 @@ class EngineImpl : public Engine {
     mstates.reserve(num_rsentries);
     generation_cfg.reserve(num_rsentries);
     rngs.reserve(num_rsentries);
-    std::cout << "running_rsentries " << rsentries.size() << "\n";
+    // std::cout << "running_rsentries " << rsentries.size() << "\n";
+    int indx  = 0;
+    int token = 3;
+    Array<Data> inputs;
+    inputs.push_back(TextData("test"));
     for (const RequestStateEntry& rsentry : rsentries) {
-      std::cout << "mstates: " << rsentry->mstates.size() << "\n";
-      std::cout << "tokens: " << rsentry->mstates[0]->committed_tokens.size() << "\n";
-      input_tokens.push_back(rsentry->mstates[0]->committed_tokens.back().sampled_token_id.first);
-      request_ids.push_back(rsentry->request->id);
-      request_internal_ids.push_back(rsentry->mstates[0]->internal_id);
-      mstates.push_back(rsentry->mstates[0]);
-      generation_cfg.push_back(rsentry->request->generation_cfg);
-      rngs.push_back(&rsentry->rng);
+      // std::cout << "mstates: " << rsentry->mstates.size() << "\n";
+      // std::cout << "tokens: " << rsentry->mstates[0]->committed_tokens.size() << "\n";
+      auto str_ind = std::to_string(indx);
+      input_tokens.push_back(token);
+      request_ids.push_back(str_ind);
+      request_internal_ids.push_back(indx);
+      // mstates.push_back(rsentry->mstates[0]);
+      auto request = Request(str_ind, inputs, generation_config);
+      mstates.push_back(RequestModelState(request, indx, indx, inputs, {}));
+      generation_cfg.push_back(generation_config);
+      rngs.push_back(&rng);
+      indx += 1;
     }
     auto logits = logits_.CreateView({num_rsentries, logits_->shape[1]}, logits_->dtype);
-    std::cout << logits->shape[0] << "x" << logits->shape[1] << ", " << logits->ndim << "\n";
+    // std::cout << logits->shape[0] << "x" << logits->shape[1] << ", " << logits->ndim << "\n";
     logit_processor_->InplaceUpdateLogits(logits, generation_cfg, mstates, request_ids);
 
     // - Compute probability distributions.

@@ -114,7 +114,6 @@ RequestStateEntry::RequestStateEntry(
   n->next_callback_token_pos = 0;
   n->tadd = std::chrono::high_resolution_clock::now();
   data_ = std::move(n);
-  std::cout << num_models << " RequestStateEntry\n";
 }
 
 DeltaRequestReturn RequestStateEntryNode::GetReturnTokenIds(const Tokenizer& tokenizer,
