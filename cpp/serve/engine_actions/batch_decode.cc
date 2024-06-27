@@ -35,6 +35,12 @@ class BatchDecodeActionObj : public EngineActionObj {
         sampler_(std::move(sampler)),
         trace_recorder_(std::move(trace_recorder)) {}
 
+  Array<Request> StepDecode(EngineState estate) final {
+    std::cout << "BatchDecodeActionObj\n";
+    Array<Request> res;
+    return res;
+  }
+
   Array<Request> Step(EngineState estate) final {
     // - Do not run decode when there are multiple models or no running requests.
     if (models_.size() > 1 || estate->running_queue.empty()) {

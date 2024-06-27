@@ -33,6 +33,12 @@ class EagleNewRequestPrefillActionObj : public EngineActionObj {
         engine_config_(std::move(engine_config)),
         trace_recorder_(std::move(trace_recorder)) {}
 
+  Array<Request> StepDecode(EngineState estate) final {
+    std::cout << "EagleNewRequestPrefillActionObj\n";
+    Array<Request> res;
+    return res;
+  }
+
   Array<Request> Step(EngineState estate) final {
     // - Find the requests in `waiting_queue` that can prefill in this step.
     std::vector<PrefillInput> prefill_inputs;

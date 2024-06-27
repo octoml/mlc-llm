@@ -44,7 +44,8 @@ class EngineImpl : public Engine {
 
  public:
   /********************** Engine Management **********************/
-
+  LogitProcessor logit_processor_;
+  Sampler sampler_;
   explicit EngineImpl(EngineConfig engine_config, DLDevice device,
                       Optional<PackedFunc> request_stream_callback,
                       Optional<EventTraceRecorder> trace_recorder) {
@@ -71,26 +72,26 @@ class EngineImpl : public Engine {
     }
 
     Optional<Session> session = CreateDiscoSession(model_configs, device);
-
+    std::cout << "Start\n" << std::flush;
     auto f_create_model = [this, &engine_config, &device, &trace_recorder, &model_configs,
                            &session](const String& model_path, const String& model_lib_path,
                                      int model_index) {
       Model model = Model::Create(model_lib_path, std::move(model_path), model_configs[model_index],
                                   device, engine_config->max_num_sequence, session,
                                   /*trace_enabled=*/trace_recorder.defined());
-      model->CreateKVCache(engine_config->kv_cache_page_size, engine_config->max_num_sequence,
-                           engine_config->max_total_sequence_length,
-                           engine_config->prefill_chunk_size, engine_config->max_history_size,
-                           engine_config->kv_state_kind);
+      // model->CreateKVCache(engine_config->kv_cache_page_size, engine_config->max_num_sequence,
+      //                      engine_config->max_total_sequence_length,
+      //                      engine_config->prefill_chunk_size, engine_config->max_history_size,
+      //                      engine_config->kv_state_kind);
       CHECK_GE(model->GetMaxWindowSize(), engine_config->max_single_sequence_length)
           << "The window size of the model, " << model->GetMaxWindowSize()
           << ", is smaller than the pre-defined max single sequence length, "
           << engine_config->max_single_sequence_length;
       this->models_.push_back(model);
-      this->model_workspaces_.push_back(
-          ModelWorkspace{model->AllocEmbeddingTensor(), model->AllocHiddenStatesTensor()});
+      // this->model_workspaces_.push_back(
+      //     ModelWorkspace{model->AllocEmbeddingTensor(), model->AllocHiddenStatesTensor()});
     };
-
+    std::cout << "Start 1\n" << std::flush;
     f_create_model(engine_config->model, engine_config->model_lib_path, /*model_index=*/0);
     CHECK_EQ(engine_config->additional_models.size(),
              engine_config->additional_model_lib_paths.size())
@@ -104,10 +105,16 @@ class EngineImpl : public Engine {
     if (engine_config->speculative_mode != SpeculativeMode::kDisable) {
       max_num_tokens *= engine_config->spec_draft_length + 1;
     }
+    std::cout << "Start 2\n" << std::flush;
     LogitProcessor logit_processor =
         this->models_[0]->CreateLogitProcessor(max_num_tokens, trace_recorder);
+    std::cout << "LogitProcessor\n" << std::flush;
     Sampler sampler = this->models_[0]->CreateSampler(
         max_num_tokens, static_cast<int>(this->models_.size()), trace_recorder);
+    std::cout << "Sampler\n" << std::flush;
+    logit_processor_ = logit_processor;
+    sampler_ = sampler;
+
     // Step 3. Initialize engine actions that represent state transitions.
     if (engine_config->speculative_mode != SpeculativeMode::kDisable) {
       // Speculative decoding is only possible for more than one model.
@@ -296,6 +303,68 @@ class EngineImpl : public Engine {
         << "Internal assumption violated: It is expected that an engine step takes at least one "
            "action (e.g. prefill, decode, etc.) but it does not.";
   }
+  void StepDecode(NDArray logits_) {
+    // auto running_rsentries = GetRunningRequestStateEntries(estate_);
+    
+    std::vector<RequestStateEntry> rsentries;
+    for (size_t i = 0; i < estate_->waiting_queue.size(); ++i) {
+      const RequestStateEntry& rsentry = estate_->GetRequestState(estate_->waiting_queue[i])->entries[0];
+      rsentries.push_back(rsentry);
+    }
+    std::cout << "EngineImpl\nrunning " << estate_->running_queue.size() << "\n";
+    std::cout << "waiting " << estate_->waiting_queue.size() << "\n";
+    std::cout << "states " << estate_->request_states.size() << "\n";
+
+    static const String conf_string = "{\"top_p\": 5, \"temperature\": 0.7, \"frequency_penalty\": 0.7, \"presence_penalty\": 0.7, \"num_sequence\": 40}";
+    static GenerationConfig generation_config(conf_string);
+
+    auto num_rsentries = logits_->shape[0];
+    std::cout << logits_->shape[0] << "x" << logits_->shape[1] << ", " << logits_->ndim << "\n";
+    std::vector<int> input_tokens;
+    Array<String> request_ids;
+    std::vector<int64_t> request_internal_ids;
+    Array<RequestModelState> mstates;
+    Array<GenerationConfig> generation_cfg;
+    std::vector<RandomGenerator*> rngs;
+    input_tokens.reserve(num_rsentries);
+    request_ids.reserve(num_rsentries);
+    request_internal_ids.reserve(num_rsentries);
+    mstates.reserve(num_rsentries);
+    generation_cfg.reserve(num_rsentries);
+    rngs.reserve(num_rsentries);
+    std::cout << "running_rsentries " << rsentries.size() << "\n";
+    for (const RequestStateEntry& rsentry : rsentries) {
+      std::cout << "mstates: " << rsentry->mstates.size() << "\n";
+      std::cout << "tokens: " << rsentry->mstates[0]->committed_tokens.size() << "\n";
+      input_tokens.push_back(rsentry->mstates[0]->committed_tokens.back().sampled_token_id.first);
+      request_ids.push_back(rsentry->request->id);
+      request_internal_ids.push_back(rsentry->mstates[0]->internal_id);
+      mstates.push_back(rsentry->mstates[0]);
+      generation_cfg.push_back(rsentry->request->generation_cfg);
+      rngs.push_back(&rsentry->rng);
+    }
+    auto logits = logits_.CreateView({num_rsentries, logits_->shape[1]}, logits_->dtype);
+    std::cout << logits->shape[0] << "x" << logits->shape[1] << ", " << logits->ndim << "\n";
+    logit_processor_->InplaceUpdateLogits(logits, generation_cfg, mstates, request_ids);
+
+    // - Compute probability distributions.
+    NDArray probs_on_device =
+        logit_processor_->ComputeProbsFromLogits(logits, generation_cfg, request_ids);
+
+    // - Sample tokens.
+    // Fill range [0, num_rsentries) into `sample_indices`.
+    std::vector<int> sample_indices(num_rsentries);
+    std::iota(sample_indices.begin(), sample_indices.end(), 0);
+    std::vector<SampleResult> sample_results = sampler_->BatchSampleTokensWithProbBeforeTopP(
+        probs_on_device, sample_indices, request_ids, generation_cfg, rngs);
+    ICHECK_EQ(sample_results.size(), num_rsentries);
+
+    // - Update the committed tokens of states.
+    for (int i = 0; i < num_rsentries; ++i) {
+      mstates[i]->CommitToken(sample_results[i]);
+    }
+
+  }
 
   /************** Utility Functions **************/
   Optional<Session> CreateDiscoSession(std::vector<picojson::object> model_configs, Device device) {
@@ -422,6 +491,7 @@ class EngineModule : public ModuleNode {
   TVM_MODULE_VTABLE_ENTRY("reset", &EngineModule::Reset);
   TVM_MODULE_VTABLE_ENTRY("get_request_stream_callback", &EngineModule::GetRequestStreamCallback);
   TVM_MODULE_VTABLE_ENTRY("set_request_stream_callback", &EngineModule::SetRequestStreamCallback);
+  TVM_MODULE_VTABLE_ENTRY("step_decode", &EngineModule::StepDecode);
   TVM_MODULE_VTABLE_END();
 
   /*! \brief Initialize the engine with config and other fields. */
@@ -438,6 +508,10 @@ class EngineModule : public ModuleNode {
   void Abort(const String& request_id) { return GetEngine()->AbortRequest(request_id); }
   /*! \brief Redirection to `Engine::Step`. */
   void Step() { return GetEngine()->Step(); }
+  void StepDecode(NDArray logits) {
+    std::cout << "Got into!\n";
+    return GetEngine()->StepDecode(logits);
+  }
   /*! \brief Redirection to `Engine::GetRequestStreamCallback`. */
   Optional<PackedFunc> GetRequestStreamCallback() {
     return GetEngine()->GetRequestStreamCallback();

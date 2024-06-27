@@ -35,6 +35,7 @@ class EngineActionObj : public Object {
    * \return The processed requests in this step.
    */
   virtual Array<Request> Step(EngineState estate) = 0;
+  virtual Array<Request> StepDecode(EngineState estate) = 0;
 
   static constexpr const char* _type_key = "mlc.serve.EngineAction";
   static constexpr const bool _type_has_method_sequal_reduce = false;

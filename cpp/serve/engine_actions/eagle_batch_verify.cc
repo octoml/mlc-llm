@@ -39,6 +39,12 @@ class EagleBatchVerifyActionObj : public EngineActionObj {
         trace_recorder_(std::move(trace_recorder)),
         rng_(RandomGenerator::GetInstance()) {}
 
+  Array<Request> StepDecode(EngineState estate) final {
+    std::cout << "EagleBatchVerifyActionObj\n";
+    Array<Request> res;
+    return res;
+  }
+
   Array<Request> Step(EngineState estate) final {
     // - Only run spec decode when there are two models (llm+ssm) and >=1 running requests.
     if (models_.size() != 2 || estate->running_queue.empty()) {

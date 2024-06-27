@@ -49,6 +49,7 @@ Tokenizer Tokenizer::FromPath(const String& _path) {
   std::filesystem::path sentencepiece;
   std::filesystem::path huggingface;
   std::filesystem::path rwkvworld;
+  path = path/ "model";
   CHECK(std::filesystem::exists(path)) << "Cannot find tokenizer via path: " << _path;
   if (std::filesystem::is_directory(path)) {
     sentencepiece = path / "tokenizer.model";

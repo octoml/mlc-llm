@@ -66,7 +66,8 @@ class ModelImpl : public ModelObj {
     // classes other than basic tvm runtime.
     this->ft_.Init(reload_lib_path, device_, model_config, session);
     // Step 3. Load params in nd-array cache.
-    this->params_ = ft_.LoadParams(model_path, device_);
+    auto params_path = model_path + "/params";
+    this->params_ = ft_.LoadParams(params_path, device_);
     // Step 4. Set max_num_sequence
     this->max_num_sequence_ = max_num_sequence;
     // Step 5. Reset
@@ -929,7 +930,8 @@ class ModelImpl : public ModelObj {
       CHECK(config["prefill_chunk_size"].is<int64_t>());
       this->prefill_chunk_size_ = config["prefill_chunk_size"].get<int64_t>();
     } else {
-      LOG(FATAL) << "Key \"prefill_chunk_size\" not found.";
+      // LOG(FATAL) << "Key \"prefill_chunk_size\" not found.";
+      this->prefill_chunk_size_ = 512;
     }
     if (config.count("vocab_size")) {
       CHECK(config["vocab_size"].is<int64_t>());

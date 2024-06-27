@@ -99,7 +99,7 @@ class Engine {
    * generation results for those finished requests.
    */
   virtual void Step() = 0;
-
+  virtual void StepDecode(NDArray logits_) = 0;
   /************** Debug/Profile **************/
 
   /*! \brief Call the given global function on all workers. Only for debug purpose. */

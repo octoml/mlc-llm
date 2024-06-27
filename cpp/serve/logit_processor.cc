@@ -97,6 +97,7 @@ class LogitProcessorImpl : public LogitProcessorObj {
                            const Array<String>& request_ids,               //
                            const std::vector<int>* cum_num_token,          //
                            const std::vector<std::vector<SampleResult>>* draft_tokens) final {
+    
     NVTXScopedRange nvtx_scope("Logit inplace update");
     CHECK_EQ(logits->ndim, 2);
     CHECK_EQ(logits->shape[1], vocab_size_);
@@ -105,7 +106,7 @@ class LogitProcessorImpl : public LogitProcessorObj {
     CHECK_LE(logits->shape[0], max_num_token_);
     int num_total_token = logits->shape[0];
     int num_sequence = generation_cfg.size();
-
+    std::cout << logits->shape[0] << "x" << logits->shape[1] << ", " << logits->ndim << "num_sequence" << num_sequence<<  "\n";
     CHECK((cum_num_token == nullptr) == (draft_tokens == nullptr));
     if (cum_num_token != nullptr) {
       CHECK_EQ(draft_tokens->size(), num_sequence);

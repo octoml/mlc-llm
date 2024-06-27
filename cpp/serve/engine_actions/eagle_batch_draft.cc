@@ -34,6 +34,12 @@ class EagleBatchDraftActionObj : public EngineActionObj {
     ICHECK_GT(draft_length_, 0);
   }
 
+  Array<Request> StepDecode(EngineState estate) final {
+    std::cout << "EagleBatchDraftActionObj\n";
+    Array<Request> res;
+    return res;
+  }
+
   Array<Request> Step(EngineState estate) final {
     // - Only run spec decode when there are two models (llm+ssm) and >=1 running requests.
     if (models_.size() != 2 || estate->running_queue.empty()) {
