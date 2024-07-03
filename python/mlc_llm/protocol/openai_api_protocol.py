@@ -13,6 +13,7 @@ import shortuuid
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .conversation_protocol import Conversation
+from .debug_protocol import DebugConfig
 from .error_protocol import BadRequestError
 
 ################ Commons ################
@@ -40,17 +41,17 @@ class LogProbs(BaseModel):
     content: List[LogProbsContent]
 
 
-class UsageInfo(BaseModel):
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
+class CompletionUsage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    extra: Optional[Dict[str, Any]] = None
+    """Extra metrics and info that may be returned by debug_config
+    """
 
-    def __init__(self, prompt_tokens: int = 0, completion_tokens: int = 0):
-        super().__init__(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=prompt_tokens + completion_tokens,
-        )
+
+class StreamOptions(BaseModel):
+    include_usage: Optional[bool]
 
 
 ################ v1/models ################
@@ -93,23 +94,24 @@ class CompletionRequest(BaseModel):
     logprobs: bool = False
     top_logprobs: int = 0
     logit_bias: Optional[Dict[int, float]] = None
-    max_tokens: int = 16
+    max_tokens: Optional[int] = None
     n: int = 1
     seed: Optional[int] = None
     stop: Optional[Union[str, List[str]]] = None
     stream: bool = False
+    stream_options: Optional[StreamOptions] = None
     suffix: Optional[str] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     user: Optional[str] = None
-    ignore_eos: bool = False
     response_format: Optional[RequestResponseFormat] = None
+    debug_config: Optional[DebugConfig] = None
 
     @field_validator("frequency_penalty", "presence_penalty")
     @classmethod
-    def check_penalty_range(cls, penalty_value: float) -> float:
+    def check_penalty_range(cls, penalty_value: Optional[float]) -> Optional[float]:
         """Check if the penalty value is in range [-2, 2]."""
-        if penalty_value < -2 or penalty_value > 2:
+        if penalty_value and (penalty_value < -2 or penalty_value > 2):
             raise ValueError("Penalty value should be in range [-2, 2].")
         return penalty_value
 
@@ -156,9 +158,7 @@ class CompletionResponse(BaseModel):
     created: int = Field(default_factory=lambda: int(time.time()))
     model: Optional[str] = None
     object: str = "text_completion"
-    usage: UsageInfo = Field(
-        default_factory=lambda: UsageInfo()  # pylint: disable=unnecessary-lambda
-    )
+    usage: Optional[CompletionUsage] = None
 
 
 ################ v1/chat/completions ################
@@ -211,17 +211,20 @@ class ChatCompletionRequest(BaseModel):
     seed: Optional[int] = None
     stop: Optional[Union[str, List[str]]] = None
     stream: bool = False
+    stream_options: Optional[StreamOptions] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     tools: Optional[List[ChatTool]] = None
     tool_choice: Optional[Union[Literal["none", "auto"], Dict]] = None
     user: Optional[str] = None
-    ignore_eos: bool = False
     response_format: Optional[RequestResponseFormat] = None
+    # NOTE: debug_config is not part of OpenAI protocol
+    # we add it to enable extra debug options
+    debug_config: Optional[DebugConfig] = None
 
     @field_validator("frequency_penalty", "presence_penalty")
     @classmethod
-    def check_penalty_range(cls, penalty_value: float) -> float:
+    def check_penalty_range(cls, penalty_value: Optional[float]) -> Optional[float]:
         """Check if the penalty value is in range [-2, 2]."""
         if penalty_value and (penalty_value < -2 or penalty_value > 2):
             raise ValueError("Penalty value should be in range [-2, 2].")
@@ -250,6 +253,32 @@ class ChatCompletionRequest(BaseModel):
             raise ValueError('"top_logprobs" must be in range [0, 5]')
         if not self.logprobs and self.top_logprobs > 0:
             raise ValueError('"logprobs" must be True to support "top_logprobs"')
+        return self
+
+    @model_validator(mode="after")
+    def check_stream_options(self) -> "ChatCompletionRequest":
+        """Check stream options"""
+        if self.stream_options is None:
+            return self
+        if not self.stream:
+            raise ValueError("stream must be set to True when stream_options is present")
+        return self
+
+    @model_validator(mode="after")
+    def check_debug_config(self) -> "ChatCompletionRequest":
+        """Check debug config"""
+        if self.debug_config is None:
+            return self
+
+        if self.debug_config.special_request is None:
+            return self
+
+        if not self.stream:
+            raise ValueError("DebugConfig.special_request requires stream=True")
+
+        if self.stream_options is None or not self.stream_options.include_usage:
+            raise ValueError("DebugConfig.special_request requires include_usage in stream_options")
+
         return self
 
     def check_message_validity(self) -> None:
@@ -298,7 +327,7 @@ class ChatCompletionRequest(BaseModel):
                     ]
                 ):
                     conv_template.use_function_calling = True
-                    conv_template.function_string = tool.function.model_dump_json()
+                    conv_template.function_string = tool.function.model_dump_json(by_alias=True)
                     return
 
             # pylint: disable=unsubscriptable-object
@@ -315,7 +344,7 @@ class ChatCompletionRequest(BaseModel):
         for tool in self.tools:  # pylint: disable=not-an-iterable
             if tool.type != "function":
                 raise BadRequestError("Only 'function' tool type is supported")
-            function_list.append(tool.function.model_dump())
+            function_list.append(tool.function.model_dump(by_alias=True))
 
         conv_template.use_function_calling = True
         conv_template.function_string = json.dumps(function_list)
@@ -346,9 +375,7 @@ class ChatCompletionResponse(BaseModel):
     model: Optional[str] = None
     system_fingerprint: str
     object: Literal["chat.completion"] = "chat.completion"
-    usage: UsageInfo = Field(
-        default_factory=lambda: UsageInfo()  # pylint: disable=unnecessary-lambda
-    )
+    usage: Optional[CompletionUsage] = None
 
 
 class ChatCompletionStreamResponse(BaseModel):
@@ -362,9 +389,7 @@ class ChatCompletionStreamResponse(BaseModel):
     model: Optional[str] = None
     system_fingerprint: str
     object: Literal["chat.completion.chunk"] = "chat.completion.chunk"
-    usage: UsageInfo = Field(
-        default_factory=lambda: UsageInfo()  # pylint: disable=unnecessary-lambda
-    )
+    usage: Optional[CompletionUsage] = None
 
 
 ################################################
@@ -383,49 +408,3 @@ def openai_api_get_unsupported_fields(
         if hasattr(request, field) and getattr(request, field) != value:
             unsupported_fields.append(field)
     return unsupported_fields
-
-
-def openai_api_get_generation_config(
-    request: Union[CompletionRequest, ChatCompletionRequest], model_config: Dict[str, Any]
-) -> Dict[str, Any]:
-    """Create the generation config from the given request."""
-    from ..serve.config import ResponseFormat  # pylint: disable=import-outside-toplevel
-
-    kwargs: Dict[str, Any] = {}
-    arg_names = [
-        "n",
-        "temperature",
-        "top_p",
-        "max_tokens",
-        "frequency_penalty",
-        "presence_penalty",
-        "logprobs",
-        "top_logprobs",
-        "logit_bias",
-        "seed",
-        "ignore_eos",
-    ]
-    for arg_name in arg_names:
-        kwargs[arg_name] = getattr(request, arg_name)
-
-    # If per-request generation config values are missing, try loading from model config.
-    # If still not found, then use the default OpenAI API value
-    if kwargs["temperature"] is None:
-        kwargs["temperature"] = model_config.get("temperature", 1.0)
-    if kwargs["top_p"] is None:
-        kwargs["top_p"] = model_config.get("top_p", 1.0)
-    if kwargs["frequency_penalty"] is None:
-        kwargs["frequency_penalty"] = model_config.get("frequency_penalty", 0.0)
-    if kwargs["presence_penalty"] is None:
-        kwargs["presence_penalty"] = model_config.get("presence_penalty", 0.0)
-    if kwargs["max_tokens"] is None:
-        # Setting to -1 means the generation will not stop until
-        # exceeding model capability or hit any stop criteria.
-        kwargs["max_tokens"] = -1
-    if request.stop is not None:
-        kwargs["stop_strs"] = [request.stop] if isinstance(request.stop, str) else request.stop
-    if request.response_format is not None:
-        kwargs["response_format"] = ResponseFormat(
-            **request.response_format.model_dump(by_alias=True)
-        )
-    return kwargs

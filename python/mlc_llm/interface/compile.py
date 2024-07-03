@@ -1,11 +1,10 @@
 """Python entrypoint of compilation."""
+
 import dataclasses
-import math
 from io import StringIO
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import numpy as np
 from tvm import IRModule, relax, tir
 from tvm.ir.transform import Pass, PassContext
 from tvm.relax.frontend import nn
@@ -84,6 +83,14 @@ def _apply_preproc_to_params(
     return extra_tirs
 
 
+def _infer_kv_state_kind(model_type) -> str:
+    if "rwkv" in model_type:
+        return "rnn_state"
+    if "medusa" in model_type:
+        return "none"
+    return "kv_cache"
+
+
 def _compile(args: CompileArgs, model_config: ConfigBase):
     def _get_variable_bounds(model_config) -> Dict[str, int]:
         if hasattr(model_config, "sliding_window_size"):
@@ -108,23 +115,6 @@ def _compile(args: CompileArgs, model_config: ConfigBase):
             "preprocs": param.attrs["preprocs"],
         }
 
-    def _find_kv_cache_bytes(model: nn.Module, model_config) -> int:
-        all_kv_cache = nn.core._attribute_finder(  # pylint: disable=protected-access
-            model,
-            prefix="",
-            condition_yield=lambda x: isinstance(x, nn.KVCache),
-        )
-        result = 0
-        for _, kv_cache in all_kv_cache:
-            result += math.prod(kv_cache.unit_shape) * np.dtype(kv_cache.dtype).itemsize
-        if getattr(model_config, "sliding_window_size", -1) > 0:
-            window_size = model_config.sliding_window_size
-        elif getattr(model_config, "context_window_size", -1) > 0:
-            window_size = model_config.context_window_size
-        else:
-            window_size = 0
-        return result * window_size
-
     model_config = args.overrides.apply(model_config)
     with args.target:
         op_ext.enable(
@@ -138,20 +128,19 @@ def _compile(args: CompileArgs, model_config: ConfigBase):
         if (
             args.quantization.kind == "ft-quant"
             and hasattr(model_config, "tensor_parallel_shards")
-            and model_config.tensor_parallel_shards > 1
+            and model_config.tensor_parallel_shards > 1  # type: ignore
         ):
             raise NotImplementedError
         if (
             hasattr(args.quantization, "linear_weight_layout")
             and args.quantization.linear_weight_layout == "KN"
             and hasattr(model_config, "tensor_parallel_shards")
-            and model_config.tensor_parallel_shards > 1
+            and model_config.tensor_parallel_shards > 1  # type: ignore
         ):
             raise NotImplementedError(
                 "KN layout (q3f16_0 and q4f16_0) is not supported for tensor parallelism"
             )
         model, _ = args.model.quantize[args.quantization.kind](model_config, args.quantization)
-        kv_cache_bytes = _find_kv_cache_bytes(model, model_config)
         # Step 2. Exporting the model to TVM Unity
         logger.info("Exporting the model to TVM Unity compiler")
         mod, named_params, ext_mods = model.export_tvm(
@@ -162,7 +151,12 @@ def _compile(args: CompileArgs, model_config: ConfigBase):
         logger.info("Running optimizations using TVM Unity")
         additional_tirs = _apply_preproc_to_params(named_params, model_config)
         variable_bounds = _get_variable_bounds(model_config)
-        cuda_graph_symbolic_capture_hints = {"batch_decode": ["batch_size"]}
+        cuda_graph_symbolic_capture_hints = {
+            "batch_decode": ["batch_size"],
+            "batch_decode_to_last_hidden_states": ["batch_size"],
+            "batch_verify": ["batch_size", "seq_len"],
+            "batch_verify_to_last_hidden_states": ["batch_size", "seq_len"],
+        }
         metadata = {
             "model_type": args.model.name,
             "quantization": args.quantization.name,
@@ -171,7 +165,8 @@ def _compile(args: CompileArgs, model_config: ConfigBase):
             "attention_sink_size": getattr(model_config, "attention_sink_size", -1),
             "prefill_chunk_size": model_config.prefill_chunk_size,  # type: ignore
             "tensor_parallel_shards": model_config.tensor_parallel_shards,  # type: ignore
-            "kv_cache_bytes": kv_cache_bytes,
+            "kv_state_kind": _infer_kv_state_kind(args.model.name),
+            "max_batch_size": getattr(model_config, "max_batch_size", 1),
         }
         logger.info("Registering metadata: %s", metadata)
         metadata["params"] = [_get_param_metadata(name, param) for name, param in named_params]

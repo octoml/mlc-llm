@@ -8,7 +8,7 @@ import tvm
 from tvm import rpc, runtime
 from tvm.relax.testing.lib_comparator import LibCompareVMInstrument
 
-from mlc_llm.help import HELP
+from mlc_llm.interface.help import HELP
 from mlc_llm.support.argparse import ArgumentParser
 from mlc_llm.testing.debug_chat import DebugChat
 
@@ -67,31 +67,34 @@ class LibCompare(LibCompareVMInstrument):
         self,
         mod: runtime.Module,
         device: runtime.Device,
-        debug_dir: Path,
+        debug_out: Path,
         time_eval: bool = True,
         rtol: float = 1e-2,
         atol: float = 1,
         skip_rounds: int = 0,
     ):
         super().__init__(mod, device, True, rtol, atol)
+        self.debug_out = debug_out
         self.time_eval = time_eval
         self.time_eval_results: Dict[str, Tuple[float, int]] = {}
         self.visited: Set[str] = set([])
         self.skip_rounds = skip_rounds
         self.counter = 0
+        debug_out.mkdir(exist_ok=True, parents=True)
 
-    def reset(self, debug_dir: Path):  # pylint: disable=unused-argument
+    def reset(self, debug_out: Path):  # pylint: disable=unused-argument
         """Reset the state of the Instrument class
 
         Note
         ----
-        `debug_dir` is not used in this class.
+        `debug_out` is not used in this class.
 
         Parameters
         ----------
         debug_out : Path
             the directory to dump the .npz files
         """
+        self.debug_out = debug_out
         _print_as_table(
             sorted(
                 self.time_eval_results.items(),
@@ -101,6 +104,7 @@ class LibCompare(LibCompareVMInstrument):
         self.time_eval_results = {}
         self.visited = set([])
         self.counter = 0
+        debug_out.mkdir(exist_ok=True, parents=True)
 
     def skip_instrument(self, func, name, before_run, ret_val, *args):
         if name.startswith("shape_func"):
@@ -128,7 +132,12 @@ class LibCompare(LibCompareVMInstrument):
 
         if self.time_eval and name not in self.time_eval_results:
             res = self.mod.time_evaluator(
-                name, self.device, number=20, repeat=3  # , cache_flush_bytes=256 * 10**6
+                name,
+                self.device,
+                number=20,
+                repeat=3,
+                min_repeat_ms=100,
+                # cache_flush_bytes=256 * 10**6
             )(*new_args)
             self.time_eval_results[name] = (res.mean, 1)
             print(f"Time-eval result {name} on {self.device}:\n {res}")
@@ -139,7 +148,7 @@ def get_instrument(args):
     if args.cmp_device is None:
         assert args.cmp_lib_path is None, "cmp_lib_path must be None if cmp_device is None"
         args.cmp_device = args.device
-        args.cmp_lib_path = args.model_lib_path
+        args.cmp_lib_path = args.model_lib
 
     if args.cmp_device == "iphone":
         assert args.cmp_lib_path.endswith(".dylib"), "Require a dylib file for iPhone"
@@ -159,19 +168,14 @@ def get_instrument(args):
         lib = sess.load_module(os.path.basename(args.cmp_lib_path))
         cmp_device = sess.cl(0)
     else:
-        lib = tvm.runtime.load_module(
-            os.path.join(
-                args.artifact_path,
-                f"{args.model}-{args.quantization.name}-{args.cmp_device}.so",
-            )
-        )
+        lib = tvm.runtime.load_module(args.cmp_lib_path)
         cmp_device = tvm.device(args.cmp_device)
 
     return LibCompare(
         lib,
         cmp_device,
         time_eval=args.time_eval,
-        debug_dir=Path(args.debug_dir),
+        debug_out=Path(args.debug_dir),
     )
 
 
@@ -194,7 +198,7 @@ def main():
         required=True,
     )
     parser.add_argument(
-        "--model-lib-path",
+        "--model-lib",
         type=str,
         help="The full path to the model library file to use (e.g. a ``.so`` file).",
         required=True,
@@ -230,7 +234,7 @@ def main():
     instrument = get_instrument(parsed)
     debug_chat = DebugChat(
         model=parsed.model,
-        model_lib_path=parsed.model_lib_path,
+        model_lib=parsed.model_lib,
         debug_dir=Path(parsed.debug_dir),
         device=parsed.device,
         debug_instrument=instrument,
