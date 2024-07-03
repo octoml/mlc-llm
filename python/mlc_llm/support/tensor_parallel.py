@@ -1,5 +1,4 @@
 """Sharding operators for tensor parallelism."""
-
 import dataclasses
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional

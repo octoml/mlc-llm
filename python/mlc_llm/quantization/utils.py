@@ -6,7 +6,7 @@ from tvm import IRModule
 from tvm import dlight as dl
 from tvm import relax, te, tir
 from tvm.relax.frontend import nn
-from tvm.runtime import DataType, DataTypeCode
+from tvm.runtime import DataType
 from tvm.target import Target
 
 from mlc_llm.support import tensor_parallel as tp
@@ -48,21 +48,58 @@ def convert_uint_to_float(  # pylint: disable=too-many-arguments
     )
 
 
+def convert_uint_packed_fp8_to_float(  # pylint: disable=too-many-arguments
+    weight: te.Tensor,
+    bits: int,
+    num_elem_per_storage: int,
+    storage_dtype: str,
+    model_dtype: str,
+    quant_dtype: str,
+    axis: int = -1,
+    out_shape: Optional[List[tir.PrimExpr]] = None,
+    ft_reorder: Optional[bool] = False,
+) -> te.Tensor:
+    """Convert a quantized uint weight tensor to an unquantized e4m3_float8 weight tensor."""
+    # Does *not* have FT reoder support right now, can add back in (need to verify bit-match for fp8)
+    if ft_reorder:
+        raise NotImplementedError()
+    assert quant_dtype in ["e4m3_float8", "e5m2_float8"]
+    elem_storage_dtype = f"uint{bits}"
+    tir_bin_mask = tir.const((1 << bits) - 1, elem_storage_dtype)
+    if out_shape is None:
+        out_shape = weight.shape
+        out_shape[axis] *= num_elem_per_storage
+    axis = axis if axis >= 0 else len(out_shape) + axis
+    return te.compute(
+        shape=out_shape,
+        fcompute=lambda *idx: tir.reinterpret(
+            DataType(quant_dtype),
+            tir.bitwise_and(
+                tir.shift_right(
+                    weight(*idx[:axis], idx[axis] // num_elem_per_storage, *idx[axis + 1 :]),
+                    ((idx[axis] % num_elem_per_storage) * bits).astype(storage_dtype),
+                ).astype(elem_storage_dtype),
+                tir_bin_mask,
+            ),
+        ).astype(model_dtype),
+    )
+
+
 def is_final_fc(name: str) -> bool:
     """Determines whether the parameter is the last layer based on its name."""
     # TODO: use more specious condition to determine final fc  # pylint: disable=fixme
     return name in ["head", "lm_head", "lm_head.linear", "embed_out"]
 
 
-def is_moe_gate(name: str, node: nn.Linear) -> bool:
+def is_moe_gate(name: str) -> bool:
     """Check whether the parameter is the MoE gate layer."""
-    return name.endswith("gate") and isinstance(node.out_features, int) and node.out_features <= 64
+    return name.endswith("gate")
 
 
 def compile_quantize_func(mod: IRModule, device) -> Callable:
     """Compile a quantization function for a given device."""
     device_type = device.MASK2STR[device.device_type]
-    if device_type in ["cuda", "rocm", "metal", "vulkan", "opencl"]:
+    if device_type in ["cuda", "rocm", "metal", "vulkan"]:
         target = Target.current()
         if target is None:
             target = Target.from_device(device)
@@ -82,55 +119,19 @@ def compile_quantize_func(mod: IRModule, device) -> Callable:
     return vm["main"]
 
 
-def apply_sharding(shard_strategy, name: str, weight: nn.Parameter):
-    """Apply sharding strategy to a weight."""
-    if isinstance(shard_strategy, tp.ShardSingleDim):
+def apply_sharding(shard, name: str, weight: nn.Parameter):
+    if isinstance(shard, tp.ShardSingleDim):
         weight.attrs["shard_strategy"] = tp.ShardSingleDim(
             name=name,
-            dim=shard_strategy.dim,
-            segs=shard_strategy.segs,
+            dim=shard.dim,
+            segs=shard.segs,
+        )
+    elif isinstance(shard, tp.ShardScalar):
+        weight.attrs["shard_strategy"] = tp.ShardScalar(
+            name=name,
         )
     else:
-        raise NotImplementedError(f"Unknowing sharding strategy: {shard_strategy}")
-
-
-def convert_uint_packed_fp8_to_float(  # pylint: disable=too-many-arguments
-    weight: te.Tensor,
-    num_elem_per_storage: int,
-    storage_dtype: str,
-    model_dtype: str,
-    quant_dtype: str,
-    axis: int = -1,
-    out_shape: Optional[Sequence[tir.PrimExpr]] = None,
-) -> te.Tensor:
-    """Unpack a fp8 value from the storage dtype and convert to float."""
-    assert quant_dtype in ["e4m3_float8", "e5m2_float8"]
-    assert DataType(storage_dtype).type_code == DataTypeCode.UINT
-    bits = DataType(quant_dtype).bits
-    elem_storage_dtype = DataType(f"uint{bits}")
-    tir_bin_mask = tir.const((1 << bits) - 1, "uint8")
-    if axis < 0:
-        axis += len(weight.shape)
-    if out_shape is None:
-        out_shape = (
-            *weight.shape[:axis],
-            weight.shape[axis] * num_elem_per_storage,
-            *weight.shape[axis + 1 :],
-        )
-    axis = axis if axis >= 0 else len(out_shape) + axis
-    return te.compute(
-        shape=out_shape,
-        fcompute=lambda *idx: tir.reinterpret(
-            quant_dtype,
-            tir.bitwise_and(
-                tir.shift_right(
-                    weight(*idx[:axis], idx[axis] // num_elem_per_storage, *idx[axis + 1 :]),
-                    ((idx[axis] % num_elem_per_storage) * bits).astype(storage_dtype),
-                ).astype(elem_storage_dtype),
-                tir_bin_mask,
-            ),
-        ).astype(model_dtype),
-    )
+        raise NotImplementedError(f"Unknowing sharding strategy: {shard}")
 
 
 def pack_weight(
@@ -161,12 +162,10 @@ def pack_weight(
     """
     assert weight.dtype == storage_dtype
     shape = weight.shape
-    if axis < 0:
-        axis += len(shape)
     k = shape[axis]
     axis = axis if axis >= 0 else len(shape) + axis
     if out_shape is None:
-        out_shape = (*shape[:axis], tir.ceildiv(k, num_elem_per_storage), *shape[axis + 1 :])
+        out_shape = (*shape[axis], tir.ceildiv(k, num_elem_per_storage), *shape[axis + 1 :])
     r = te.reduce_axis((0, num_elem_per_storage), name="r")  # pylint: disable=invalid-name
     packed_weight = te.compute(
         shape=out_shape,
