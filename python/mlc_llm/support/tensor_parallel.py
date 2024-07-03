@@ -1,4 +1,5 @@
 """Sharding operators for tensor parallelism."""
+
 import dataclasses
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
@@ -67,27 +68,6 @@ class ShardSingleDim:
         func = te.create_prim_func([w, o])
         return func
 
-    def gen_shard_info(self, shards: int, weight: nn.Tensor) -> Dict[str, Any]:
-        """Generate shard info for this sharding strategy."""
-        return {
-            "func_name": self.name,
-            "out_shape": (shards, *weight.shape),
-            "out_dtype": weight.dtype,
-        }
-
-@dataclasses.dataclass
-class ShardScalar:
-    """
-    Shard a scalar param into multiple distinct scalars, one for each shard.
-
-
-    Parameters
-    ----------
-    name : str
-        The name of the shard func
-    """
-
-    name: str
     def gen_shard_info(self, shards: int, weight: nn.Tensor) -> Dict[str, Any]:
         """Generate shard info for this sharding strategy."""
         return {
