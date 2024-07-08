@@ -1,12 +1,13 @@
 """The request class in MLC LLM serving"""
 
-from typing import List, Union
+from typing import List
 
 import tvm._ffi
 from tvm.runtime import Object
 
+from mlc_llm.protocol.generation_config import GenerationConfig
+
 from . import _ffi_api
-from .config import GenerationConfig
 from .data import Data
 
 
@@ -16,34 +17,11 @@ class Request(Object):
     a unique request id, a list of multi-modal inputs, a set of
     generation configuration parameters.
 
-    Parameters
-    ----------
-    request_id : str
-        The unique identifier of the request.
-        Different requests should have different ids.
-
-    inputs : List[Data]
-        The user inputs of a request. Input may have multi-modality.
-
-    generation_config : GenerationConfig
-        The sampling configuration which may contain temperature,
-        top_p, repetition_penalty, max_gen_len, etc.
+    Note
+    ----
+    Do not explicitly construct this class.
+    Construct this object via engine.create_request functions.
     """
-
-    def __init__(
-        self,
-        request_id: str,
-        inputs: Union[Data, List[Data]],
-        generation_config: GenerationConfig,
-    ):
-        if not isinstance(inputs, list):
-            inputs = [inputs]
-        self.__init_handle_by_constructor__(
-            _ffi_api.Request,  # type: ignore  # pylint: disable=no-member
-            request_id,
-            inputs,
-            generation_config.asjson(),
-        )
 
     @property
     def inputs(self) -> List[Data]:
@@ -53,6 +31,6 @@ class Request(Object):
     @property
     def generation_config(self) -> GenerationConfig:
         """The generation config of the request."""
-        return GenerationConfig.from_json(
+        return GenerationConfig.model_validate_json(
             _ffi_api.RequestGetGenerationConfigJSON(self)  # type: ignore  # pylint: disable=no-member
         )

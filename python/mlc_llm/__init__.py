@@ -2,9 +2,9 @@
 
 MLC Chat is the app runtime of MLC LLM.
 """
-
-# from . import protocol, serve
-# from .chat_module import ChatConfig, ChatModule, ConvConfig, GenerationConfig
+"""
+# NOTE(@sunggg): These are disabled because we don't use them
+from . import protocol, serve
 from .libinfo import __version__
-
-# from .serve import AsyncLLMEngine, LLMEngine
+from .serve import AsyncMLCEngine, MLCEngine
+"""

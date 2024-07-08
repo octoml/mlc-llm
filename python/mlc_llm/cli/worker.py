@@ -24,6 +24,10 @@ from tvm._ffi import get_global_func
 
 from .. import base  # pylint: disable=unused-import, no-name-in-module
 
+# NOTE(@sunggg): This is disabled because we use a separate calibration runtime that does not require ffi
+# register the calibration functions
+# from ..interface import calibrate  # pylint: disable=unused-import
+
 
 def main():
     """Main worker function"""

@@ -33,11 +33,13 @@ class QWen2Config(ConfigBase):  # pylint: disable=too-many-instance-attributes
     rms_norm_eps: float
     rope_theta: int
     vocab_size: int
+    tie_word_embeddings: bool = False
     context_window_size: int = 0
     prefill_chunk_size: int = 0
     tensor_parallel_shards: int = 1
     head_dim: int = 0
     dtype: str = "float32"
+    max_batch_size: int = 1
     kwargs: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self):
@@ -63,21 +65,19 @@ class QWen2Config(ConfigBase):  # pylint: disable=too-many-instance-attributes
         assert self.head_dim * self.num_attention_heads == self.hidden_size
         if self.prefill_chunk_size == 0:
             logger.info(
-                "%s defaults to %s (%d)",
+                "%s defaults to %d",
                 bold("prefill_chunk_size"),
-                bold("context_window_size"),
-                self.context_window_size,
+                min(self.context_window_size, 2048),
             )
-            self.prefill_chunk_size = self.context_window_size
+            self.prefill_chunk_size = min(self.context_window_size, 2048)
         elif self.prefill_chunk_size > self.context_window_size:
             logger.info(
-                "Overriding %s from %d to %d (%s)",
+                "Overriding %s from %d to %d",
                 bold("prefill_chunk_size"),
                 self.prefill_chunk_size,
-                self.context_window_size,
-                bold("context_window_size"),
+                min(self.context_window_size, 2048),
             )
-            self.prefill_chunk_size = self.context_window_size
+            self.prefill_chunk_size = min(self.context_window_size, 2048)
 
 
 # pylint: disable=invalid-name,missing-docstring,too-many-locals
@@ -86,6 +86,11 @@ class QWen2Config(ConfigBase):  # pylint: disable=too-many-instance-attributes
 class QWen2Attention(nn.Module):  # pylint: disable=too-many-instance-attributes
     def __init__(self, config: QWen2Config):
         self.head_dim = config.head_dim
+        if config.num_key_value_heads % config.tensor_parallel_shards != 0:
+            raise ValueError(
+                f"Cannot split {config.num_key_value_heads} key-value attention heads "
+                f"evenly to {config.tensor_parallel_shards} GPUs."
+            )
         self.num_attention_heads = config.num_attention_heads // config.tensor_parallel_shards
         self.num_key_value_heads = config.num_key_value_heads // config.tensor_parallel_shards
         self.rope_theta = config.rope_theta
@@ -121,8 +126,26 @@ ACT2FN = {
 }
 
 
+class Qwen2Embedding(nn.Embedding):
+    """The embedding module specialized for Qwen2 so that
+    it can be shared with the final lm_head.
+    """
+
+    def lm_head_forward(self, x: nn.Tensor):
+        """The lm_head forwarding, which transposes the weight and multiplies
+        with the input tensor.
+        """
+        weight = nn.op.permute_dims(self.weight)
+        return nn.op.matmul(x, weight, out_dtype="float32")
+
+
 class QWen2MLP(nn.Module):
     def __init__(self, config: QWen2Config):
+        if config.intermediate_size % config.tensor_parallel_shards != 0:
+            raise ValueError(
+                f"Cannot split MLP intermediate size {config.intermediate_size} "
+                f"evenly to {config.tensor_parallel_shards} GPUs."
+            )
         self.intermediate_size = config.intermediate_size // config.tensor_parallel_shards
         self.gate_up_proj = nn.Linear(config.hidden_size, 2 * self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, config.hidden_size, bias=False)
@@ -186,7 +209,7 @@ class QWen2DecoderLayer(nn.Module):
 
 class QWen2Model(nn.Module):
     def __init__(self, config: QWen2Config):
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.embed_tokens = Qwen2Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList(
             [QWen2DecoderLayer(config) for _ in range(config.num_hidden_layers)]
         )
@@ -203,7 +226,9 @@ class QWen2Model(nn.Module):
 class QWen2LMHeadModel(nn.Module):  # pylint: disable=too-many-instance-attributes
     def __init__(self, config: QWen2Config):
         self.model = QWen2Model(config)
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.tie_word_embeddings = config.tie_word_embeddings
+        if not config.tie_word_embeddings:
+            self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.dtype = config.dtype
         self.hidden_size = config.hidden_size
         self.num_hidden_layers = config.num_hidden_layers
@@ -232,7 +257,11 @@ class QWen2LMHeadModel(nn.Module):  # pylint: disable=too-many-instance-attribut
         hidden_states = self.model(input_embeds, paged_kv_cache)
         if logit_positions is not None:
             hidden_states = op.take(hidden_states, logit_positions, axis=1)
-        logits = self.lm_head(hidden_states)
+
+        if self.tie_word_embeddings:
+            logits = self.model.embed_tokens.lm_head_forward(hidden_states)
+        else:
+            logits = self.lm_head(hidden_states)
         if logits.dtype != "float32":
             logits = logits.astype("float32")
         return logits
@@ -251,7 +280,10 @@ class QWen2LMHeadModel(nn.Module):  # pylint: disable=too-many-instance-attribut
 
         hidden_states = self.model(input_embed, paged_kv_cache)
         hidden_states = op.tensor_expr_op(_index, name_hint="index", args=[hidden_states])
-        logits = self.lm_head(hidden_states)
+        if self.tie_word_embeddings:
+            logits = self.model.embed_tokens.lm_head_forward(hidden_states)
+        else:
+            logits = self.lm_head(hidden_states)
         if logits.dtype != "float32":
             logits = logits.astype("float32")
         return logits, paged_kv_cache
@@ -260,7 +292,10 @@ class QWen2LMHeadModel(nn.Module):  # pylint: disable=too-many-instance-attribut
         op_ext.configure()
 
         hidden_states = self.model(input_embed, paged_kv_cache)
-        logits = self.lm_head(hidden_states)
+        if self.tie_word_embeddings:
+            logits = self.model.embed_tokens.lm_head_forward(hidden_states)
+        else:
+            logits = self.lm_head(hidden_states)
         if logits.dtype != "float32":
             logits = logits.astype("float32")
         return logits, paged_kv_cache
@@ -280,9 +315,6 @@ class QWen2LMHeadModel(nn.Module):  # pylint: disable=too-many-instance-attribut
     def batch_verify(self, input_embeds: Tensor, paged_kv_cache: PagedKVCache):
         logits = self.batch_forward(input_embeds, paged_kv_cache)
         return logits, paged_kv_cache
-
-    def softmax_with_temperature(self, logits: Tensor, temperature: Tensor):
-        return op.softmax(logits / op.reshape(temperature, (temperature.shape[0], 1, 1)), axis=-1)
 
     def create_paged_kv_cache(  # pylint: disable=too-many-arguments
         self,
@@ -355,14 +387,6 @@ class QWen2LMHeadModel(nn.Module):  # pylint: disable=too-many-instance-attribut
                 "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
                 "$": {
                     "param_mode": "packed",
-                    "effect_mode": "none",
-                },
-            },
-            "softmax_with_temperature": {
-                "logits": nn.spec.Tensor(["batch_size", 1, "vocab_size"], "float32"),
-                "temperature": nn.spec.Tensor(["batch_size"], "float32"),
-                "$": {
-                    "param_mode": "none",
                     "effect_mode": "none",
                 },
             },

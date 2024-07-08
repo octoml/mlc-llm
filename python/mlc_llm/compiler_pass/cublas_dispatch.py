@@ -1,4 +1,5 @@
 """A compiler pass that dispatches patterns to CUBLAS."""
+
 import tvm
 import tvm.relax.backend.contrib.cublas as _cublas
 from tvm import IRModule, relax
@@ -20,10 +21,15 @@ class CublasDispatch:  # pylint: disable=too-few-public-methods,broad-exception-
         model_names = [
             gv.name_hint for gv, func in mod.functions.items() if isinstance(func, relax.Function)
         ]
+        # exclude single batch decode
+        model_names = [name for name in model_names if "batch" in name or "decode" not in name]
         mod = tvm.transform.Sequential(
             [
                 relax.transform.FuseOpsByPattern(
-                    patterns, bind_constants=False, annotate_codegen=True
+                    patterns,
+                    bind_constants=False,
+                    annotate_codegen=True,
+                    entry_functions=model_names,
                 ),
                 relax.transform.RunCodegen({}, entry_functions=model_names),
             ]

@@ -13,19 +13,21 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 import tvm
 
+from mlc_llm.protocol.generation_config import GenerationConfig
 from mlc_llm.serve import data
-from mlc_llm.serve.config import EngineConfig, GenerationConfig, SpeculativeMode
+from mlc_llm.serve.config import EngineConfig
 from mlc_llm.serve.engine_base import (
-    _infer_kv_cache_config,
+    EngineMetrics,
+    _check_engine_config,
     _parse_models,
+    _print_engine_mode_logging_msg,
     _process_model_args,
     detect_device,
 )
 from mlc_llm.serve.event_trace_recorder import EventTraceRecorder
 from mlc_llm.serve.request import Request
-from mlc_llm.streamer import TextStreamer
 from mlc_llm.support import logging
-from mlc_llm.tokenizer import Tokenizer
+from mlc_llm.tokenizers import TextStreamer, Tokenizer
 
 logging.enable_logging()
 logger = logging.getLogger(__name__)
@@ -58,12 +60,12 @@ class SyncMLCEngine:
 
     Parameters
     ----------
-    models : Union[ModelInfo, List[ModelInfo]]
-        One or a list of model info (specifying which models to load and
-        which device to load to) to launch the engine.
+    engine_config : Optional[EngineConfig]
+        Additional configurable arguments of MLC engine.
+        See class "EngineConfig" for more detail.
 
-    kv_cache_config : KVCacheConfig
-        The configuration of the paged KV cache.
+    enable_tracing : bool
+        A boolean indicating if to enable event logging for requests.
 
     request_stream_callback : Optional[Callable[[str, data.TokenData, Optional[str]], None]]
         The provided callback function to handle the generation
@@ -79,12 +81,6 @@ class SyncMLCEngine:
         be set before the engine executing requests. This can be done via
         the `set_request_stream_callback` method. Otherwise, the engine will raise
         exception.
-
-    engine_config : Optional[EngineConfig]
-        The Engine execution configuration.
-
-    enable_tracing : bool
-        A boolean indicating if to enable event logging for requests.
     """
 
     def __init__(  # pylint: disable=too-many-arguments,too-many-locals
@@ -92,21 +88,24 @@ class SyncMLCEngine:
         model: str,
         device: Union[str, tvm.runtime.Device] = "auto",
         *,
-        model_lib_path: Optional[str] = None,
+        model_lib: Optional[str] = None,
         mode: Literal["local", "interactive", "server"] = "local",
-        additional_models: Optional[List[str]] = None,
-        max_batch_size: Optional[int] = None,
-        max_total_sequence_length: Optional[int] = None,
-        prefill_chunk_size: Optional[int] = None,
-        max_history_size: Optional[int] = None,
-        gpu_memory_utilization: Optional[float] = None,
+        engine_config: Optional[EngineConfig] = None,
         enable_tracing: bool = False,
-        speculative_mode: SpeculativeMode = SpeculativeMode.DISABLE,
-        spec_draft_length: int = 4,
         request_stream_callback: Optional[Callable[[List[data.RequestStreamOutput]], None]] = None,
     ):
+        # - Check the fields fields of `engine_config`.
+        if engine_config is None:
+            engine_config = EngineConfig()
+        _check_engine_config(
+            model,
+            model_lib,
+            mode,
+            engine_config,
+        )
+
         # - Initialize model loading info.
-        models = _parse_models(model, model_lib_path, additional_models)
+        models = _parse_models(model, model_lib, engine_config.additional_models)
         if isinstance(device, str):
             device = detect_device(device)
         assert isinstance(device, tvm.runtime.Device)
@@ -114,36 +113,18 @@ class SyncMLCEngine:
             model_args,
             model_config_paths,
             self.conv_template,
-        ) = _process_model_args(models, device)
+        ) = _process_model_args(models, device, engine_config)
 
         # - Load the raw model config into dict
         self.model_config_dicts = []
         for i, model_info in enumerate(models):
-            model_info.model_lib_path = model_args[i][1]
+            model_info.model_lib = model_args[i][1]
             with open(model_config_paths[i], "r", encoding="utf-8") as file:
                 self.model_config_dicts.append(json.load(file))
 
-        # - Decide the KV cache config based on mode and user input.
-        (
-            max_batch_size,
-            max_total_sequence_length,
-            prefill_chunk_size,
-            max_single_sequence_length,
-            max_history_size,
-            kv_state_kind,
-        ) = _infer_kv_cache_config(
-            mode,
-            max_batch_size,
-            max_total_sequence_length,
-            prefill_chunk_size,
-            max_history_size,
-            gpu_memory_utilization,
-            models,
-            device,
-            self.model_config_dicts,
-            model_config_paths,
-        )
-        self.max_input_sequence_length = min(max_single_sequence_length, max_total_sequence_length)
+        # - Print logging info for regarding the mode selection.
+        if engine_config.verbose:
+            _print_engine_mode_logging_msg(mode)
 
         self._ffi = _create_tvm_module(
             "mlc.serve.create_engine",
@@ -152,30 +133,21 @@ class SyncMLCEngine:
                 "add_request",
                 "abort_request",
                 "step",
-                "stats",
                 "reset",
+                "json_metrics",
                 "get_request_stream_callback",
                 "set_request_stream_callback",
+                "create_request",
             ],
         )
         self.trace_recorder = EventTraceRecorder() if enable_tracing else None
 
+        engine_config.model = model_args[0][0]
+        engine_config.model_lib = model_args[0][1]
+        engine_config.additional_models = model_args[1:]  # type: ignore
+        engine_config.mode = mode
         self._ffi["init"](
-            EngineConfig(
-                model=model_args[0][0],
-                model_lib_path=model_args[0][1],
-                additional_models=[model_arg[0] for model_arg in model_args[1:]],
-                additional_model_lib_paths=[model_arg[1] for model_arg in model_args[1:]],
-                kv_cache_page_size=16,
-                max_num_sequence=max_batch_size,
-                max_total_sequence_length=max_total_sequence_length,
-                max_single_sequence_length=max_single_sequence_length,
-                prefill_chunk_size=prefill_chunk_size,
-                max_history_size=max_history_size,
-                kv_state_kind=kv_state_kind,
-                speculative_mode=speculative_mode,
-                spec_draft_length=spec_draft_length,
-            ),
+            engine_config.asjson(),
             device,
             request_stream_callback,
             self.trace_recorder,
@@ -266,7 +238,7 @@ class SyncMLCEngine:
                 request_id, stream_outputs = delta_output.unpack()
                 rid = int(request_id)
 
-                assert len(stream_outputs) == generation_config[rid].n
+                assert len(stream_outputs) == generation_config[rid].n  # type:ignore
                 for i, (stream_output, text_streamer) in enumerate(
                     zip(stream_outputs, text_streamers[rid])
                 ):
@@ -274,7 +246,7 @@ class SyncMLCEngine:
                         assert stream_output.delta_logprob_json_strs is not None
                         output_logprobs_str[rid][i] += stream_output.delta_logprob_json_strs
 
-                    delta_text = (
+                    delta_text = stream_output.extra_prefix_string + (
                         text_streamer.put(stream_output.delta_token_ids)
                         if len(stream_output.delta_token_ids) > 0
                         else ""
@@ -300,7 +272,7 @@ class SyncMLCEngine:
         for req_id, (prompt, generation_cfg) in enumerate(zip(prompts, generation_config)):
             input_data = convert_to_data(prompt)  # type: ignore
             self.add_request(
-                Request(
+                self.create_request(
                     request_id=str(req_id),
                     inputs=input_data,
                     generation_config=generation_cfg,
@@ -313,6 +285,36 @@ class SyncMLCEngine:
         # Restore the callback function in engine.
         self._ffi["set_request_stream_callback"](original_callback)
         return output_texts, output_logprobs_str
+
+    def create_request(
+        self,
+        request_id: str,
+        inputs: Union[data.Data, List[data.Data]],
+        generation_config: GenerationConfig,
+    ):
+        """Create a new request that can be added to engine.
+
+        Parameters
+        ----------
+        request_id : str
+            The unique identifier of the request.
+            Different requests should have different ids.
+
+        inputs : List[Data]
+            The user inputs of a request. Input may have multi-modality.
+
+        generation_config : GenerationConfig
+            The generation configuration of the request.
+
+        Note
+        ----
+        engine may fill in default generation config of the model.
+        """
+        if not isinstance(inputs, list):
+            inputs = [inputs]
+        return self._ffi["create_request"](
+            request_id, inputs, generation_config.model_dump_json(by_alias=True)
+        )
 
     def add_request(self, request: Request) -> None:
         """Add a new request to the engine.
@@ -349,18 +351,9 @@ class SyncMLCEngine:
         self._ffi["step"]()
 
     def reset(self) -> None:
-        """Reset the engine, clean up all running data and statistics."""
+        """Reset the engine, clean up all running data and metrics."""
         self._ffi["reset"]()
 
-    def stats(self) -> Dict[str, float]:
-        """The engine runtime statistics.
-        We collect the following entries:
-        - single token prefill latency (s/tok): avg latency of processing one token in prefill
-        - single token decode latency (s/tok): avg latency of processing one token in decode
-        - engine time for prefill (sec)
-        - engine time for decode (sec)
-        - total number of processed tokens in prefill.
-        - total number of processed tokens in decode.
-        """
-        stats_json_str = self._ffi["stats"]()
-        return json.loads(stats_json_str)
+    def metrics(self) -> EngineMetrics:
+        """Reset the engine, clean up all running data and metrics."""
+        return EngineMetrics(json.loads(self._ffi["json_metrics"]()))

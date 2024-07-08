@@ -1,11 +1,83 @@
 """Utility functions for MLC Serve engine"""
 
 import uuid
-from typing import Callable, List, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
+from mlc_llm.protocol import error_protocol, openai_api_protocol
+from mlc_llm.protocol.generation_config import GenerationConfig
 from mlc_llm.serve import data
 
-from ..protocol import RequestProtocol, error_protocol, protocol_utils
+RequestProtocol = Union[
+    openai_api_protocol.CompletionRequest, openai_api_protocol.ChatCompletionRequest
+]
+
+
+def get_unsupported_fields(request: RequestProtocol) -> List[str]:
+    """Get the unsupported fields of the request.
+    Return the list of unsupported field names.
+    """
+    if isinstance(
+        request, (openai_api_protocol.CompletionRequest, openai_api_protocol.ChatCompletionRequest)
+    ):
+        return openai_api_protocol.openai_api_get_unsupported_fields(request)
+    raise RuntimeError("Cannot reach here")
+
+
+def openai_api_get_generation_config(request: RequestProtocol) -> Dict[str, Any]:
+    """Create the generation config from the given request."""
+    kwargs: Dict[str, Any] = {}
+    arg_names = [
+        "n",
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "frequency_penalty",
+        "presence_penalty",
+        "logprobs",
+        "top_logprobs",
+        "logit_bias",
+        "seed",
+        "response_format",
+        "debug_config",
+    ]
+    for arg_name in arg_names:
+        kwargs[arg_name] = getattr(request, arg_name)
+    if kwargs["max_tokens"] is None:
+        # Setting to -1 means the generation will not stop until
+        # exceeding model capability or hit any stop criteria.
+        kwargs["max_tokens"] = -1
+    if request.stop is not None:
+        kwargs["stop_strs"] = [request.stop] if isinstance(request.stop, str) else request.stop
+    return kwargs
+
+
+def get_generation_config(
+    request: RequestProtocol,
+    extra_stop_token_ids: Optional[List[int]] = None,
+    extra_stop_str: Optional[List[str]] = None,
+) -> GenerationConfig:
+    """Create the generation config in MLC LLM out from the input request protocol."""
+    kwargs: Dict[str, Any]
+    if isinstance(
+        request, (openai_api_protocol.CompletionRequest, openai_api_protocol.ChatCompletionRequest)
+    ):
+        kwargs = openai_api_get_generation_config(request)
+    else:
+        raise RuntimeError("Cannot reach here")
+
+    if extra_stop_token_ids is not None:
+        stop_token_ids = kwargs.get("stop_token_ids", [])
+        assert isinstance(stop_token_ids, list)
+        stop_token_ids += extra_stop_token_ids
+        kwargs["stop_token_ids"] = stop_token_ids
+
+    if extra_stop_str is not None:
+        stop_strs = kwargs.get("stop_strs", [])
+        assert isinstance(stop_strs, list)
+        stop_strs += extra_stop_str
+        kwargs["stop_strs"] = stop_strs
+
+    return GenerationConfig(**kwargs)
 
 
 def random_uuid() -> str:
@@ -15,7 +87,7 @@ def random_uuid() -> str:
 
 def check_unsupported_fields(request: RequestProtocol) -> None:
     """Check if the request has unsupported fields. Raise BadRequestError if so."""
-    unsupported_fields = protocol_utils.get_unsupported_fields(request)
+    unsupported_fields = get_unsupported_fields(request)
     if len(unsupported_fields) != 0:
         unsupported_fields = [f'"{field}"' for field in unsupported_fields]
         raise error_protocol.BadRequestError(

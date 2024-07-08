@@ -1,153 +1,12 @@
 """Configuration dataclasses used in MLC LLM serving"""
 
-import enum
 import json
 from dataclasses import asdict, dataclass, field
-from typing import Dict, List, Literal, Optional
-
-import tvm
-
-from . import _ffi_api
+from typing import List, Literal, Optional, Tuple, Union
 
 
 @dataclass
-class ResponseFormat:
-    """The response format dataclass.
-
-    Parameters
-    ----------
-    type : Literal["text", "json_object"]
-        The type of response format. Default: "text".
-
-    schema : Optional[str]
-        The JSON schema string for the JSON response format. If None, a legal json string without
-        special restrictions will be generated.
-
-        Could be specified when the response format is "json_object". Default: None.
-    """
-
-    type: Literal["text", "json_object"] = "text"
-    schema: Optional[str] = None
-
-    def __post_init__(self):
-        if self.schema is not None and self.type != "json_object":
-            raise ValueError("JSON schema is only supported in JSON response format")
-
-
-@dataclass
-class GenerationConfig:  # pylint: disable=too-many-instance-attributes
-    """The generation configuration dataclass.
-
-    Parameters
-    ----------
-    n : int
-        How many chat completion choices to generate for each input message.
-
-    temperature : float
-        The value that applies to logits and modulates the next token probabilities.
-
-    top_p : float
-        In sampling, only the most probable tokens with probabilities summed up to
-        `top_p` are kept for sampling.
-
-    frequency_penalty : float
-        Positive values penalize new tokens based on their existing frequency
-        in the text so far, decreasing the model's likelihood to repeat the same
-        line verbatim.
-
-    presence_penalty : float
-        Positive values penalize new tokens based on whether they appear in the text
-        so far, increasing the model's likelihood to talk about new topics.
-
-    repetition_penalty : float
-        The penalty term that applies to logits to control token repetition in generation.
-        It will be suppressed when any of frequency_penalty and presence_penalty is
-        non-zero.
-
-    logprobs : bool
-        Whether to return log probabilities of the output tokens or not.
-        If true, the log probabilities of each output token will be returned.
-
-    top_logprobs : int
-        An integer between 0 and 5 specifying the number of most likely
-        tokens to return at each token position, each with an associated
-        log probability.
-        `logprobs` must be set to True if this parameter is used.
-
-    logit_bias : Optional[Dict[int, float]]
-        The bias logit value added to selected tokens prior to sampling.
-
-    max_tokens : Optional[int]
-        The maximum number of generated tokens,
-        or None, in which case the generation will not stop
-        until exceeding model capability or hit any stop criteria.
-
-    seed : Optional[int]
-        The random seed of the generation.
-        The seed will be a random value if not specified.
-
-    stop_strs : List[str]
-        The list of strings that mark the end of generation.
-
-    stop_token_ids : List[int]
-        The list of token ids that mark the end of generation.
-
-    ignore_eos: bool
-        When it is true, ignore the eos token and generate tokens until `max_tokens`.
-        Default is set to False.
-
-    response_format : ResponseFormat
-        The response format of the generation output.
-    """
-
-    n: int = 1
-    temperature: float = 0.8
-    top_p: float = 0.95
-    frequency_penalty: float = 0.0
-    presence_penalty: float = 0.0
-    repetition_penalty: float = 1.0
-    logprobs: bool = False
-    top_logprobs: int = 0
-    logit_bias: Optional[Dict[int, float]] = field(default_factory=dict)
-
-    max_tokens: Optional[int] = 128
-    seed: Optional[int] = None
-    stop_strs: List[str] = field(default_factory=list)
-    stop_token_ids: List[int] = field(default_factory=list)
-    ignore_eos: bool = False
-
-    response_format: ResponseFormat = field(default_factory=ResponseFormat)
-
-    def asjson(self) -> str:
-        """Return the config in string of JSON format."""
-        return json.dumps(asdict(self))
-
-    @staticmethod
-    def from_json(json_str: str) -> "GenerationConfig":
-        """Construct a config from JSON string."""
-        return GenerationConfig(**json.loads(json_str))
-
-
-class KVStateKind(enum.IntEnum):  # pylint: disable=too-few-public-methods
-    """Possible kinds of KV state."""
-
-    ATTENTION = 0
-    RNNSTATE = 1
-
-
-class SpeculativeMode(enum.IntEnum):
-    """The speculative mode."""
-
-    # Disable speculative decoding.
-    DISABLE = 0
-    # The normal speculative decoding (small draft) mode.
-    SMALL_DRAFT = 1
-    # The eagle-style speculative decoding.
-    EAGLE = 2
-
-
-@tvm._ffi.register_object("mlc.serve.EngineConfig")  # pylint: disable=protected-access
-class EngineConfig(tvm.runtime.Object):
+class EngineConfig:  # pylint: disable=too-many-instance-attributes
     """The class of MLCEngine execution configuration.
 
     Parameters
@@ -155,74 +14,125 @@ class EngineConfig(tvm.runtime.Object):
     model : str
         The path to the model directory.
 
-    model_lib_path : str
+    model_lib : str
         The path to the model library.
 
-    additional_models : List[str]
-        The path to the additional models' directories.
+    additional_models : List[Union[str, Tuple[str, str]]]
+        The paths to the additional models' directories (and model libraries).
+        Each element is a single string (denoting the model directory)
+        or a tuple of two strings (denoting the model directory and model lib path).
 
-    additional_model_lib_paths : List[str]
-        The path to the additional models' libraries.
+    mode : Literal["local", "interactive", "server"]
+        The engine mode in MLC LLM.
+        We provide three preset modes: "local", "interactive" and "server".
+        The default mode is "local".
+        The choice of mode decides the values of "max_num_sequence", "max_total_sequence_length"
+        and "prefill_chunk_size" when they are not explicitly specified.
+        1. Mode "local" refers to the local server deployment which has low
+        request concurrency. So the max batch size will be set to 4, and max
+        total sequence length and prefill chunk size are set to the context
+        window size (or sliding window size) of the model.
+        2. Mode "interactive" refers to the interactive use of server, which
+        has at most 1 concurrent request. So the max batch size will be set to 1,
+        and max total sequence length and prefill chunk size are set to the context
+        window size (or sliding window size) of the model.
+        3. Mode "server" refers to the large server use case which may handle
+        many concurrent request and want to use GPU memory as much as possible.
+        In this mode, we will automatically infer the largest possible max batch
+        size and max total sequence length.
+
+        You can manually specify arguments "max_num_sequence", "max_total_sequence_length" and
+        "prefill_chunk_size" to override the automatic inferred values.
+
+    tensor_parallel_shards : Optional[int]
+        Number of shards to split the model into in tensor parallelism multi-gpu inference.
+
+    gpu_memory_utilization : Optional[float]
+        A number in (0, 1) denoting the fraction of GPU memory used by the server in total.
+        It is used to infer to maximum possible KV cache capacity.
+        When it is unspecified, it defaults to 0.85.
+        Under mode "local" or "interactive", the actual memory usage may be
+        significantly smaller than this number. Under mode "server", the actual
+        memory usage may be slightly larger than this number.
 
     kv_cache_page_size : int
         The number of consecutive tokens handled in each page in paged KV cache.
 
-    max_num_sequence : int
+    max_num_sequence : Optional[int]
         The maximum number of sequences that are allowed to be
         processed by the KV cache at any time.
 
-    max_total_sequence_length : int
-        The maximum length allowed for a single sequence in the engine.
-
-    max_single_sequence_length : int
+    max_total_sequence_length : Optional[int]
         The maximum total number of tokens whose KV data are allowed
         to exist in the KV cache at any time.
 
-    prefill_chunk_size : int
+    max_single_sequence_length : Optional[int]
+        The maximum length allowed for a single sequence in the engine.
+
+    prefill_chunk_size : Optional[int]
         The maximum total sequence length in a prefill.
 
-    max_history_size: int
-        The maximum history size for RNN state to rool back.
+    sliding_window_size : Optional[int]
+        The sliding window size in sliding window attention (SWA).
 
-    kv_state_kind: KVStateKind
+    attention_sink_size : Optional[int]
+        The number of attention sinks when sliding window is enabled..
+
+    max_history_size: Optional[int]
+        The maximum history size for RNN state to roll back.
+
+    kv_state_kind: Optional[Literal["kv_cache", "rnn_state"]]
         The kind of cache.
 
-    speculative_mode : SpeculativeMode
+    speculative_mode : Literal["disable", "small_draft", "eagle", "medusa"]
         The speculative mode.
+        "disable" means speculative decoding is disabled.
+        "small_draft" means the normal speculative decoding (small draft) mode.
+        "eagle" means the eagle-style speculative decoding.
+        "medusa" means the medusa-style speculative decoding.
 
     spec_draft_length : int
         The number of tokens to generate in speculative proposal (draft).
+
+    prefix_cache_mode : Literal["disable", "radix"]
+        The prefix cache mode.
+        "disable" means no prefix cache is disabled.
+        "radix" means the paged radix tree based prefix cache mode.
+
+    prefix_cache_max_num_recycling_seqs: Optional[int]
+        The maximum number of recycling sequences in prefix cache, default as max_num_sequence.
+        And set 0 to disable prefix cache, set -1 to have infinite capacity prefix cache.
+
+    verbose : bool
+        A boolean indicating whether to print logging info in engine.
     """
 
-    def __init__(  # pylint: disable=too-many-arguments
-        self,
-        model: str,
-        model_lib_path: str,
-        additional_models: List[str],
-        additional_model_lib_paths: List[str],
-        kv_cache_page_size: int,
-        max_num_sequence: int,
-        max_total_sequence_length: int,
-        max_single_sequence_length: int,
-        prefill_chunk_size: int,
-        max_history_size: int,
-        kv_state_kind: KVStateKind,
-        speculative_mode: SpeculativeMode,
-        spec_draft_length: int,
-    ) -> None:
-        self.__init_handle_by_constructor__(
-            _ffi_api.EngineConfig,  # type: ignore  # pylint: disable=no-member
-            model,
-            model_lib_path,
-            additional_models,
-            additional_model_lib_paths,
-            kv_cache_page_size,
-            max_num_sequence,
-            max_total_sequence_length,
-            max_single_sequence_length,
-            prefill_chunk_size,
-            max_history_size,
-            kv_state_kind,
-            speculative_mode,
-            spec_draft_length,
-        )
+    model: Optional[str] = None
+    model_lib: Optional[str] = None
+    additional_models: List[Union[str, Tuple[str, str]]] = field(default_factory=list)
+    mode: Optional[Literal["local", "interactive", "server"]] = None
+    tensor_parallel_shards: Optional[int] = None
+    gpu_memory_utilization: Optional[float] = None
+    kv_cache_page_size: int = 16
+    max_num_sequence: Optional[int] = None
+    max_total_sequence_length: Optional[int] = None
+    max_single_sequence_length: Optional[int] = None
+    prefill_chunk_size: Optional[int] = None
+    sliding_window_size: Optional[int] = None
+    attention_sink_size: Optional[int] = None
+    max_history_size: Optional[int] = None
+    kv_state_kind: Optional[Literal["kv_cache", "rnn_state"]] = None
+    speculative_mode: Literal["disable", "small_draft", "eagle", "medusa"] = "disable"
+    spec_draft_length: int = 4
+    prefix_cache_mode: Literal["disable", "radix"] = "radix"
+    prefix_cache_max_num_recycling_seqs: Optional[int] = None
+    verbose: bool = True
+
+    def asjson(self) -> str:
+        """Return the config in string of JSON format."""
+        return json.dumps(asdict(self))
+
+    @staticmethod
+    def from_json(json_str: str) -> "EngineConfig":
+        """Construct a config from JSON string."""
+        return EngineConfig(**json.loads(json_str))

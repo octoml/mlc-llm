@@ -55,7 +55,7 @@ class StableLmConfig(ConfigBase):  # pylint: disable=too-many-instance-attribute
                     break
             else:
                 raise ValueError(
-                    "Unable to determine the maxmimum sequence length, because none of "
+                    "Unable to determine the maximum sequence length, because none of "
                     "`context_window_size`, `max_position_embeddings` or `max_sequence_length` is "
                     "provided in `config.json`."
                 )
@@ -64,21 +64,19 @@ class StableLmConfig(ConfigBase):  # pylint: disable=too-many-instance-attribute
         assert self.head_dim * self.num_attention_heads == self.hidden_size
         if self.prefill_chunk_size == 0:
             logger.info(
-                "%s defaults to %s (%d)",
+                "%s defaults to %d",
                 bold("prefill_chunk_size"),
-                bold("context_window_size"),
-                self.context_window_size,
+                min(self.context_window_size, 2048),
             )
-            self.prefill_chunk_size = self.context_window_size
+            self.prefill_chunk_size = min(self.context_window_size, 2048)
         elif self.prefill_chunk_size > self.context_window_size:
             logger.info(
-                "Overriding %s from %d to %d (%s)",
+                "Overriding %s from %d to %d",
                 bold("prefill_chunk_size"),
                 self.prefill_chunk_size,
-                self.context_window_size,
-                bold("context_window_size"),
+                min(self.context_window_size, 2048),
             )
-            self.prefill_chunk_size = self.context_window_size
+            self.prefill_chunk_size = min(self.context_window_size, 2048)
 
 
 # pylint: disable=invalid-name,missing-docstring
@@ -90,6 +88,11 @@ class StableLmAttention(nn.Module):  # pylint: disable=too-many-instance-attribu
         self.rope_theta = config.rope_theta
         self.tensor_parallel_shards = config.tensor_parallel_shards
         self.head_dim = config.head_dim
+        if config.num_key_value_heads % config.tensor_parallel_shards != 0:
+            raise ValueError(
+                f"Cannot split {config.num_key_value_heads} key-value attention heads "
+                f"evenly to {config.tensor_parallel_shards} GPUs."
+            )
         self.num_heads = config.num_attention_heads // self.tensor_parallel_shards
         self.num_key_value_heads = config.num_key_value_heads // self.tensor_parallel_shards
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
@@ -117,6 +120,11 @@ class StableLmAttention(nn.Module):  # pylint: disable=too-many-instance-attribu
 
 class StableLmMLP(nn.Module):
     def __init__(self, config: StableLmConfig):
+        if config.intermediate_size % config.tensor_parallel_shards != 0:
+            raise ValueError(
+                f"Cannot split MLP intermediate size {config.intermediate_size} "
+                f"evenly to {config.tensor_parallel_shards} GPUs."
+            )
         self.intermediate_size = config.intermediate_size // config.tensor_parallel_shards
         self.gate_up_proj = nn.Linear(
             in_features=config.hidden_size,
@@ -277,9 +285,6 @@ class StableLmForCausalLM(nn.Module):  # pylint: disable=too-many-instance-attri
         logits = self.batch_forward(input_embeds, paged_kv_cache)
         return logits, paged_kv_cache
 
-    def softmax_with_temperature(self, logits: Tensor, temperature: Tensor):
-        return op.softmax(logits / op.reshape(temperature, (temperature.shape[0], 1, 1)), axis=-1)
-
     def create_paged_kv_cache(  # pylint: disable=too-many-arguments
         self,
         max_batch_size: tir.Var,
@@ -352,14 +357,6 @@ class StableLmForCausalLM(nn.Module):  # pylint: disable=too-many-instance-attri
                 "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
                 "$": {
                     "param_mode": "packed",
-                    "effect_mode": "none",
-                },
-            },
-            "softmax_with_temperature": {
-                "logits": nn.spec.Tensor(["batch_size", 1, "vocab_size"], "float32"),
-                "temperature": nn.spec.Tensor(["batch_size"], "float32"),
-                "$": {
-                    "param_mode": "none",
                     "effect_mode": "none",
                 },
             },

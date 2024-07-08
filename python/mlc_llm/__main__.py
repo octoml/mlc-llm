@@ -14,7 +14,15 @@ def main():
     parser.add_argument(
         "subcommand",
         type=str,
-        choices=["compile", "convert_weight", "gen_config", "chat", "serve", "bench"],
+        choices=[
+            "compile",
+            "convert_weight",
+            "gen_config",
+            "chat",
+            "serve",
+            "package",
+            "calibrate",
+        ],
         help="Subcommand to to run. (choices: %(choices)s)",
     )
     parsed = parser.parse_args(sys.argv[1:2])
@@ -39,8 +47,12 @@ def main():
         from mlc_llm.cli import serve as cli
 
         cli.main(sys.argv[2:])
-    elif parsed.subcommand == "bench":
-        from mlc_llm.cli import bench as cli
+    elif parsed.subcommand == "package":
+        from mlc_llm.cli import package as cli
+
+        cli.main(sys.argv[2:])
+    elif parsed.subcommand == "calibrate":
+        from mlc_llm.cli import calibrate as cli
 
         cli.main(sys.argv[2:])
     else:

@@ -1,4 +1,5 @@
 """Command line entrypoint of compilation."""
+
 import argparse
 import json
 import re
@@ -6,12 +7,12 @@ from functools import partial
 from pathlib import Path
 from typing import Union
 
-from mlc_llm.help import HELP
 from mlc_llm.interface.compile import (  # pylint: disable=redefined-builtin
     ModelConfigOverride,
     OptimizationFlags,
     compile,
 )
+from mlc_llm.interface.help import HELP
 from mlc_llm.model import MODELS
 from mlc_llm.quantization import QUANTIZATION
 from mlc_llm.support.argparse import ArgumentParser
@@ -24,7 +25,7 @@ from mlc_llm.support.auto_target import detect_system_lib_prefix, detect_target_
 
 
 def main(argv):
-    """Parse command line argumennts and call `mlc_llm.compiler.compile`."""
+    """Parse command line arguments and call `mlc_llm.compiler.compile`."""
 
     def _parse_output(path: Union[str, Path]) -> Path:
         path = Path(path)

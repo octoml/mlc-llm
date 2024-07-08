@@ -5,84 +5,113 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import List, Literal, Optional, Union
+from typing import Literal, Optional, Union
 
 import psutil
 import requests
 from tvm.runtime import Device
 
-from mlc_llm.serve.config import SpeculativeMode
+from mlc_llm.serve.config import EngineConfig
+from mlc_llm.serve.engine_base import _check_engine_config
 
 
 class PopenServer:  # pylint: disable=too-many-instance-attributes
     """The wrapper of MLC LLM server, which runs the server in
-    a background subprocess."""
+    a background subprocess.
+
+    This server can be used for debugging purposes.
+    """
 
     def __init__(  # pylint: disable=too-many-arguments
         self,
         model: str,
         device: Union[str, Device] = "auto",
         *,
-        model_lib_path: Optional[str] = None,
+        model_lib: Optional[str] = None,
         mode: Literal["local", "interactive", "server"] = "local",
-        additional_models: Optional[List[str]] = None,
-        max_batch_size: Optional[int] = None,
-        max_total_sequence_length: Optional[int] = None,
-        prefill_chunk_size: Optional[int] = None,
-        gpu_memory_utilization: Optional[float] = None,
-        speculative_mode: SpeculativeMode = SpeculativeMode.DISABLE,
-        spec_draft_length: int = 4,
+        engine_config: Optional[EngineConfig] = None,
+        enable_debug: bool = True,
         enable_tracing: bool = False,
         host: str = "127.0.0.1",
-        port: int = 8000,
+        port: int = 8082,
     ) -> None:
         """Please check out `python/mlc_llm/cli/serve.py` for the server arguments."""
+        # - Check the fields fields of `engine_config`.
+        if engine_config is None:
+            engine_config = EngineConfig()
+        _check_engine_config(model, model_lib, mode, engine_config)
+
         self.model = model
-        self.model_lib_path = model_lib_path
+        self.model_lib = model_lib
         self.device = device
         self.mode = mode
-        self.additional_models = additional_models
-        self.max_batch_size = max_batch_size
-        self.max_total_sequence_length = max_total_sequence_length
-        self.prefill_chunk_size = prefill_chunk_size
-        self.gpu_memory_utilization = gpu_memory_utilization
-        self.speculative_mode = speculative_mode
-        self.spec_draft_length = spec_draft_length
+        self.enable_debug = enable_debug
+        self.engine_config = engine_config
         self.enable_tracing = enable_tracing
+        self.enable_debug = enable_debug
         self.host = host
         self.port = port
         self._proc: Optional[subprocess.Popen] = None
 
-    def start(self) -> None:  # pylint: disable=too-many-branches
+        self.base_url = ""
+        self.openai_v1_base_url = ""
+
+    def start(self) -> None:  # pylint: disable=too-many-branches,too-many-statements
         """Launch the server in a popen subprocess.
         Wait until the server becomes ready before return.
         """
         cmd = [sys.executable]
         cmd += ["-m", "mlc_llm", "serve", self.model]
-        if self.model_lib_path is not None:
-            cmd += ["--model-lib-path", self.model_lib_path]
+        if self.model_lib is not None:
+            cmd += ["--model-lib", self.model_lib]
         cmd += ["--device", self.device]
+
+        if self.enable_debug:
+            cmd += ["--enable-debug"]
+
         if self.mode is not None:
             cmd += ["--mode", self.mode]
-        if self.additional_models is not None:
-            cmd += ["--additional-models", *self.additional_models]
-        if self.max_batch_size is not None:
-            cmd += ["--max-batch-size", str(self.max_batch_size)]
-        if self.max_total_sequence_length is not None:
-            cmd += ["--max-total-seq-length", str(self.max_total_sequence_length)]
-        if self.prefill_chunk_size is not None:
-            cmd += ["--prefill-chunk-size", str(self.prefill_chunk_size)]
-        if self.speculative_mode != SpeculativeMode.DISABLE:
-            cmd += [
-                "--speculative-mode",
-                self.speculative_mode.name,
-                "--spec-draft-length",
-                str(self.spec_draft_length),
-            ]
-        if self.gpu_memory_utilization is not None:
-            cmd += ["--gpu-memory-utilization", str(self.gpu_memory_utilization)]
+
+        if len(self.engine_config.additional_models) > 0:
+            args_additional_model = []
+            for additional_model in self.engine_config.additional_models:
+                if isinstance(additional_model, str):
+                    args_additional_model.append(additional_model)
+                else:
+                    args_additional_model.append(additional_model[0] + "," + additional_model[1])
+            cmd += ["--additional-models", *args_additional_model]
+        cmd += ["--speculative-mode", self.engine_config.speculative_mode]
+        cmd += ["--prefix-cache-mode", self.engine_config.prefix_cache_mode]
+
+        args_overrides = []
+        if self.engine_config.max_num_sequence is not None:
+            args_overrides.append(f"max_num_sequence={self.engine_config.max_num_sequence}")
+        if self.engine_config.max_total_sequence_length is not None:
+            args_overrides.append(
+                f"max_total_seq_length={self.engine_config.max_total_sequence_length}"
+            )
+        if self.engine_config.prefill_chunk_size is not None:
+            args_overrides.append(f"prefill_chunk_size={self.engine_config.prefill_chunk_size}")
+        if self.engine_config.max_history_size is not None:
+            args_overrides.append(f"max_history_size={self.engine_config.max_history_size}")
+        if self.engine_config.gpu_memory_utilization is not None:
+            args_overrides.append(
+                f"gpu_memory_utilization={self.engine_config.gpu_memory_utilization}"
+            )
+        if self.engine_config.spec_draft_length is not None:
+            args_overrides.append(f"spec_draft_length={self.engine_config.spec_draft_length}")
+        if self.engine_config.prefix_cache_max_num_recycling_seqs is not None:
+            args_overrides.append(
+                "prefix_cache_max_num_recycling_seqs="
+                + str(self.engine_config.prefix_cache_max_num_recycling_seqs)
+            )
+        if len(args_overrides) > 0:
+            cmd += ["--overrides", ";".join(args_overrides)]
+
         if self.enable_tracing:
             cmd += ["--enable-tracing"]
+        if self.enable_debug:
+            cmd += ["--enable-debug"]
 
         cmd += ["--host", self.host]
         cmd += ["--port", str(self.port)]
@@ -95,9 +124,12 @@ class PopenServer:  # pylint: disable=too-many-instance-attributes
         # and hang forever.
 
         # Try to query the server until it is ready.
-        openai_v1_models_url = f"http://{self.host}:{str(self.port)}/v1/models"
+        self.base_url = f"http://{self.host}:{str(self.port)}"
+        self.openai_v1_base_url = f"http://{self.host}:{str(self.port)}/v1"
+        openai_v1_models_url = f"{self.base_url}/v1/models"
+
         query_result = None
-        timeout = 60
+        timeout = 120
         attempts = 0.0
         while query_result is None and attempts < timeout:
             try:

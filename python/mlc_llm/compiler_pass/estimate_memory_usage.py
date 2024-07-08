@@ -1,4 +1,5 @@
 """Memory usage estimation analysis function for Relax functions."""
+
 import json
 from typing import Any, Dict
 
@@ -21,8 +22,6 @@ class AttachMetadataWithMemoryUsage:  # pylint: disable=too-few-public-methods
 
     def transform_module(self, mod: IRModule, _ctx: tvm.transform.PassContext) -> IRModule:
         """Entrypoint"""
-
-        func_name = "_metadata"
 
         func_name = "_metadata"
 

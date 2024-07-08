@@ -54,7 +54,7 @@ class GPT2Config(ConfigBase):  # pylint: disable=too-many-instance-attributes
                     break
             else:
                 raise ValueError(
-                    "Unable to determine the maxmimum sequence length, because none of "
+                    "Unable to determine the maximum sequence length, because none of "
                     "`context_window_size`, `n_positions` or `max_sequence_length` is "
                     "provided in `config.json`."
                 )
@@ -63,21 +63,19 @@ class GPT2Config(ConfigBase):  # pylint: disable=too-many-instance-attributes
         assert self.head_dim * self.n_head == self.n_embd
         if self.prefill_chunk_size == 0:
             logger.info(
-                "%s defaults to %s (%d)",
+                "%s defaults to %d",
                 bold("prefill_chunk_size"),
-                bold("context_window_size"),
-                self.context_window_size,
+                min(self.context_window_size, 2048),
             )
-            self.prefill_chunk_size = self.context_window_size
+            self.prefill_chunk_size = min(self.context_window_size, 2048)
         elif self.prefill_chunk_size > self.context_window_size:
             logger.info(
-                "Overriding %s from %d to %d (%s)",
+                "Overriding %s from %d to %d",
                 bold("prefill_chunk_size"),
                 self.prefill_chunk_size,
-                self.context_window_size,
-                bold("context_window_size"),
+                min(self.context_window_size, 2048),
             )
-            self.prefill_chunk_size = self.context_window_size
+            self.prefill_chunk_size = min(self.context_window_size, 2048)
 
 
 # pylint: disable=invalid-name,missing-docstring,too-many-locals
@@ -86,6 +84,11 @@ class GPT2Config(ConfigBase):  # pylint: disable=too-many-instance-attributes
 class GPT2Attention(nn.Module):  # pylint: disable=too-many-instance-attributes
     def __init__(self, config: GPT2Config):
         self.embed_dim = config.n_embd
+        if config.n_head % config.tensor_parallel_shards != 0:
+            raise ValueError(
+                f"Cannot split {config.n_head} attention heads "
+                f"evenly to {config.tensor_parallel_shards} GPUs."
+            )
         self.num_heads = config.n_head // config.tensor_parallel_shards
         self.head_dim = config.head_dim
         self.scale_attn_by_inverse_layer_idx = config.scale_attn_by_inverse_layer_idx
@@ -122,6 +125,11 @@ class GPT2Attention(nn.Module):  # pylint: disable=too-many-instance-attributes
 class GPT2MLP(nn.Module):
     def __init__(self, config: GPT2Config):
         embed_dim = config.n_embd
+        if config.n_inner % config.tensor_parallel_shards != 0:
+            raise ValueError(
+                f"Cannot split MLP intermediate size {config.n_inner} "
+                f"evenly to {config.tensor_parallel_shards} GPUs."
+            )
         intermediate_size = config.n_inner // config.tensor_parallel_shards
         self.c_fc = nn.Linear(embed_dim, intermediate_size)
         self.c_proj = nn.Linear(intermediate_size, embed_dim)
@@ -282,9 +290,6 @@ class GPT2LMHeadModel(nn.Module):  # pylint: disable=too-many-instance-attribute
         logits = self.batch_forward(input_embeds, paged_kv_cache)
         return logits, paged_kv_cache
 
-    def softmax_with_temperature(self, logits: Tensor, temperature: Tensor):
-        return op.softmax(logits / op.reshape(temperature, (temperature.shape[0], 1, 1)), axis=-1)
-
     def create_paged_kv_cache(  # pylint: disable=too-many-arguments
         self,
         max_batch_size: tir.Var,
@@ -356,14 +361,6 @@ class GPT2LMHeadModel(nn.Module):  # pylint: disable=too-many-instance-attribute
                 "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
                 "$": {
                     "param_mode": "packed",
-                    "effect_mode": "none",
-                },
-            },
-            "softmax_with_temperature": {
-                "logits": nn.spec.Tensor(["batch_size", 1, "vocab_size"], "float32"),
-                "temperature": nn.spec.Tensor(["batch_size"], "float32"),
-                "$": {
-                    "param_mode": "none",
                     "effect_mode": "none",
                 },
             },

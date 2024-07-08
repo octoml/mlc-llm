@@ -58,7 +58,7 @@ class LlamaConfig(ConfigBase):  # pylint: disable=too-many-instance-attributes
                     break
             else:
                 raise ValueError(
-                    "Unable to determine the maxmimum sequence length, because none of "
+                    "Unable to determine the maximum sequence length, because none of "
                     "`context_window_size`, `max_position_embeddings` or `max_sequence_length` is "
                     "provided in `config.json`."
                 )
@@ -70,21 +70,19 @@ class LlamaConfig(ConfigBase):  # pylint: disable=too-many-instance-attributes
         assert self.num_attention_heads % self.num_key_value_heads == 0
         if self.prefill_chunk_size == 0:
             logger.info(
-                "%s defaults to %s (%d)",
+                "%s defaults to %d",
                 bold("prefill_chunk_size"),
-                bold("context_window_size"),
-                self.context_window_size,
+                min(self.context_window_size, 2048),
             )
-            self.prefill_chunk_size = self.context_window_size
+            self.prefill_chunk_size = min(self.context_window_size, 2048)
         elif self.prefill_chunk_size > self.context_window_size:
             logger.info(
-                "Overriding %s from %d to %d (%s)",
+                "Overriding %s from %d to %d",
                 bold("prefill_chunk_size"),
                 self.prefill_chunk_size,
-                self.context_window_size,
-                bold("context_window_size"),
+                min(self.context_window_size, 2048),
             )
-            self.prefill_chunk_size = self.context_window_size
+            self.prefill_chunk_size = min(self.context_window_size, 2048)
 
 
 # pylint: disable=invalid-name,missing-docstring
@@ -93,6 +91,11 @@ class LlamaConfig(ConfigBase):  # pylint: disable=too-many-instance-attributes
 class LlamaFFN(nn.Module):
     def __init__(self, config: LlamaConfig):
         super().__init__()
+        if config.intermediate_size % config.tensor_parallel_shards != 0:
+            raise ValueError(
+                f"Cannot split MLP intermediate size {config.intermediate_size} "
+                f"evenly to {config.tensor_parallel_shards} GPUs."
+            )
         self.intermediate_size = config.intermediate_size // config.tensor_parallel_shards
         self.gate_up_proj = nn.Linear(
             in_features=config.hidden_size,
@@ -248,15 +251,10 @@ class LlamaForCasualLM(nn.Module):  # pylint: disable=too-many-instance-attribut
             logits = logits.astype("float32")
         return logits
 
-    def batch_get_logits(self, hidden_states: Tensor, logit_positions: Tensor):
+    def batch_select_last_hidden_states(self, hidden_states: Tensor, logit_positions: Tensor):
         op_ext.configure()
         if self.tensor_parallel_shards > 1:
             logit_positions = op.ccl_broadcast_from_worker0(logit_positions)
-        hidden_states = op.take(hidden_states, logit_positions, axis=0)
-        return self.get_logits(hidden_states)
-
-    def batch_select_last_hidden_states(self, hidden_states: Tensor, logit_positions: Tensor):
-        op_ext.configure()
         hidden_states = op.take(hidden_states, logit_positions, axis=0)
         return hidden_states
 
@@ -325,9 +323,6 @@ class LlamaForCasualLM(nn.Module):  # pylint: disable=too-many-instance-attribut
         hidden_states = self.batch_forward_to_last_hidden_states(input_embeds, paged_kv_cache)
         return hidden_states, paged_kv_cache
 
-    def softmax_with_temperature(self, logits: Tensor, temperature: Tensor):
-        return op.softmax(logits / op.reshape(temperature, (temperature.shape[0], 1, 1)), axis=-1)
-
     def create_paged_kv_cache(  # pylint: disable=too-many-arguments
         self,
         max_batch_size: tir.Var,
@@ -362,15 +357,7 @@ class LlamaForCasualLM(nn.Module):  # pylint: disable=too-many-instance-attribut
                 },
             },
             "get_logits": {
-                "hidden_states": nn.spec.Tensor(["batch_size", self.hidden_size], self.dtype),
-                "$": {
-                    "param_mode": "packed",
-                    "effect_mode": "none",
-                },
-            },
-            "batch_get_logits": {
                 "hidden_states": nn.spec.Tensor(["seq_len", self.hidden_size], self.dtype),
-                "logit_positions": nn.spec.Tensor(["batch_size"], "int32"),
                 "$": {
                     "param_mode": "packed",
                     "effect_mode": "none",
@@ -462,14 +449,6 @@ class LlamaForCasualLM(nn.Module):  # pylint: disable=too-many-instance-attribut
                 "paged_kv_cache": nn.spec.Object(object_type=PagedKVCache),
                 "$": {
                     "param_mode": "packed",
-                    "effect_mode": "none",
-                },
-            },
-            "softmax_with_temperature": {
-                "logits": nn.spec.Tensor(["batch_size", 1, "vocab_size"], "float32"),
-                "temperature": nn.spec.Tensor(["batch_size"], "float32"),
-                "$": {
-                    "param_mode": "none",
                     "effect_mode": "none",
                 },
             },

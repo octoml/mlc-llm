@@ -52,11 +52,11 @@ class RWKV6Config(ConfigBase):  # pylint: disable=too-many-instance-attributes
         )
         if self.num_heads * self.head_size != self.hidden_size:
             raise ValueError(
-                f"hidden_size ({self.hidden_size}) must be diisible "
+                f"hidden_size ({self.hidden_size}) must be divisible "
                 f"by head_size ({self.head_size})"
             )
         if self.tensor_parallel_shards != 1:
-            raise ValueError("Only support single deice at this moment.")
+            raise ValueError("Only support single device at this moment.")
 
 
 # pylint: disable=invalid-name, missing-docstring
@@ -421,10 +421,6 @@ class RWKV6_ForCasualLM(nn.Module):  # pylint: disable=too-many-instance-attribu
         """Verify step."""
         return self.forward(input_embeds, state)
 
-    def softmax_with_temperature(self, logits: Tensor, temperature: Tensor):
-        """Softmax."""
-        return op.softmax(logits / op.reshape(temperature, (temperature.shape[0], 1, 1)), axis=-1)
-
     def create_rnn_state(
         self,
         max_batch_size: tir.Var,
@@ -490,14 +486,6 @@ class RWKV6_ForCasualLM(nn.Module):  # pylint: disable=too-many-instance-attribu
                 "state": nn.spec.Object(object_type=RNNState),
                 "$": {
                     "param_mode": "packed",
-                    "effect_mode": "none",
-                },
-            },
-            "softmax_with_temperature": {
-                "logits": nn.spec.Tensor(["batch_size", 1, "vocab_size"], "float32"),
-                "temperature": nn.spec.Tensor(["batch_size"], "float32"),
-                "$": {
-                    "param_mode": "none",
                     "effect_mode": "none",
                 },
             },

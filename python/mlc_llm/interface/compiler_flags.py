@@ -95,7 +95,7 @@ class OptimizationFlags:
                 return False
             arch_list = detect_cuda_arch_list(target)
             for arch in arch_list:
-                if int(re.findall(r"\d+", arch)[0]) < 80:
+                if arch < 80:
                     logger.warning("flashinfer is not supported on CUDA arch < 80")
                     return False
             return True
@@ -124,10 +124,17 @@ class OptimizationFlags:
                 return False
             return self.cutlass
 
+        def _cudagraph(target) -> bool:
+            """correct cudagraph flag"""
+            if not target.kind.name == "cuda":
+                return False
+            return self.cudagraph
+
         self.flashinfer = _flashinfer(target)
         self.cublas_gemm = _cublas_gemm(target, quantization)
         self.faster_transformer = _faster_transformer(target)
         self.cutlass = _cutlass(target)
+        self.cudagraph = _cudagraph(target)
 
 
 @dataclasses.dataclass
@@ -188,8 +195,8 @@ OPT_FLAG_PRESET = {
     "O2": OptimizationFlags(
         flashinfer=True,
         cublas_gemm=True,
-        faster_transformer=True,
-        cudagraph=False,
+        faster_transformer=False,
+        cudagraph=True,
         cutlass=True,
     ),
     "O3": OptimizationFlags(

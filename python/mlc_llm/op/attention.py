@@ -1,4 +1,5 @@
 """Operators enabled by external modules."""
+
 import math
 
 from tvm import tir
@@ -62,7 +63,6 @@ def attention(  # pylint: disable=invalid-name,too-many-locals,too-many-statemen
     b, s, h_q, d = q.shape
     t, h_kv, _ = k.shape[-3:]
     group_size = h_q // h_kv
-    assert b == 1, "batch size must be 1"
 
     def _fallback():
         nonlocal q, k, v, qk_dtype

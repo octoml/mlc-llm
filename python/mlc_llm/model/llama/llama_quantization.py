@@ -1,11 +1,18 @@
 """This file specifies how MLC's Llama parameters are quantized using group quantization
 or other formats."""
+
 from typing import Tuple
 
 from tvm.relax.frontend import nn
 
 from mlc_llm.loader import QuantizeMapping
-from mlc_llm.quantization import AWQQuantize, FTQuantize, GroupQuantize, NoQuantize, SmoothQuantize
+from mlc_llm.quantization import (
+    AWQQuantize,
+    FTQuantize,
+    GroupQuantize,
+    NoQuantize,
+    PerTensorQuantize,
+)
 
 from .llama_model import LlamaConfig, LlamaForCasualLM
 
@@ -18,6 +25,7 @@ def group_quant(
     model: nn.Module = LlamaForCasualLM(model_config)
     model.to(quantization.model_dtype)
     quant_map = QuantizeMapping({}, {})
+    quantization.tensor_parallel_shards = model_config.tensor_parallel_shards
     model = quantization.quantize_model(
         model,
         quant_map,
@@ -69,11 +77,11 @@ def no_quant(
     return model, quant_map
 
 
-def smooth_quant(
+def per_tensor_quant(
     model_config: LlamaConfig,
-    quantization: SmoothQuantize,
+    quantization: PerTensorQuantize,
 ) -> Tuple[nn.Module, QuantizeMapping]:
-    """Quantize a Llama-architecture model using SmoothQuant."""
+    """Quantize a Llama-architecture model using per-tensor quantization."""
     model: nn.Module = LlamaForCasualLM(model_config)
     model.to(quantization.model_dtype)
     quant_map = QuantizeMapping({}, {})
@@ -81,5 +89,6 @@ def smooth_quant(
         model,
         quant_map,
         "",
+        tensor_parallel_shards=model_config.tensor_parallel_shards,
     )
     return model, quant_map

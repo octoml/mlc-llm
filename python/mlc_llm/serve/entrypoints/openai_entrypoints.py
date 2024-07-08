@@ -1,6 +1,8 @@
 """OpenAI API-compatible server entrypoints in MLC LLM"""
 
 # pylint: disable=too-many-locals,too-many-return-statements,too-many-statements
+import json
+from datetime import datetime
 from http import HTTPStatus
 from typing import AsyncGenerator, List, Optional
 
@@ -18,12 +20,11 @@ from mlc_llm.serve import engine_base, engine_utils
 from mlc_llm.serve.server import ServerContext
 
 app = fastapi.APIRouter()
-
 ################ v1/models ################
 
 
 @app.get("/v1/models")
-async def request_models():
+async def request_models() -> ListResponse:
     """OpenAI-compatible served model query API.
     API reference: https://platform.openai.com/docs/api-reference/models
     """
@@ -41,6 +42,12 @@ async def request_completion(request: CompletionRequest, raw_request: fastapi.Re
     """
     # - Check the requested model.
     server_context: ServerContext = ServerContext.current()
+    request_final_usage_include_extra = server_context.enable_debug
+    request_include_debug_config = server_context.enable_debug
+
+    if not request_include_debug_config:
+        request.debug_config = None
+
     async_engine = server_context.get_engine(request.model)
     if async_engine is None:
         return error_protocol.create_error_response(
@@ -54,7 +61,7 @@ async def request_completion(request: CompletionRequest, raw_request: fastapi.Re
         # capture potential exceptions in this scope, rather then
         # the StreamingResponse scope.
         stream_generator = async_engine._handle_completion(  # pylint: disable=protected-access
-            request, request_id
+            request, request_id, request_final_usage_include_extra=request_final_usage_include_extra
         )
         first_response = await anext(  # type: ignore  # pylint: disable=undefined-variable
             stream_generator
@@ -64,9 +71,9 @@ async def request_completion(request: CompletionRequest, raw_request: fastapi.Re
             if isinstance(first_response, StopAsyncIteration):
                 yield "data: [DONE]\n\n"
                 return
-            yield f"data: {first_response.model_dump_json()}\n\n"
+            yield f"data: {first_response.model_dump_json(by_alias=True)}\n\n"
             async for response in stream_generator:
-                yield f"data: {response.model_dump_json()}\n\n"
+                yield f"data: {response.model_dump_json(by_alias=True)}\n\n"
             yield "data: [DONE]\n\n"
 
         return fastapi.responses.StreamingResponse(
@@ -74,8 +81,7 @@ async def request_completion(request: CompletionRequest, raw_request: fastapi.Re
         )
 
     # Normal response.
-    num_prompt_tokens = 0
-    num_completion_tokens = 0
+    request_final_usage = None
     output_texts = ["" for _ in range(request.n)]
     finish_reasons: List[Optional[str]] = [None for _ in range(request.n)]
     logprob_results: Optional[List[List[LogProbsContent]]] = (
@@ -83,7 +89,7 @@ async def request_completion(request: CompletionRequest, raw_request: fastapi.Re
     )
 
     async for response in async_engine._handle_completion(  # pylint: disable=protected-access
-        request, request_id
+        request, request_id, request_final_usage_include_extra=request_final_usage_include_extra
     ):
         if await raw_request.is_disconnected():
             # In non-streaming cases, the engine will not be notified
@@ -94,8 +100,13 @@ async def request_completion(request: CompletionRequest, raw_request: fastapi.Re
             return error_protocol.create_error_response(
                 HTTPStatus.BAD_REQUEST, message="The request has disconnected"
             )
-        num_prompt_tokens = response.usage.prompt_tokens
-        num_completion_tokens = response.usage.completion_tokens
+        # this is the final chunk
+        if response.usage is not None:
+            request_final_usage = response.usage
+            # remove extra information if debug is not enabled
+            if not server_context.enable_debug:
+                request_final_usage.extra = None
+            continue
         for choice in response.choices:
             output_texts[choice.index] += choice.text
             if choice.finish_reason is not None and finish_reasons[choice.index] is None:
@@ -111,8 +122,7 @@ async def request_completion(request: CompletionRequest, raw_request: fastapi.Re
         output_texts=output_texts,
         finish_reasons=finish_reasons,
         logprob_results=logprob_results,
-        num_prompt_tokens=num_prompt_tokens,
-        num_completion_tokens=num_completion_tokens,
+        usage=request_final_usage,
     )
 
 
@@ -128,6 +138,28 @@ async def request_chat_completion(
     """
     # - Check the requested model.
     server_context: ServerContext = ServerContext.current()
+    request_final_usage_include_extra = server_context.enable_debug
+    request_include_debug_config = server_context.enable_debug
+
+    if server_context.enable_debug:
+        import structlog  # pylint: disable=import-outside-toplevel,import-error
+
+        logger = structlog.stdlib.get_logger(__name__)
+
+        request_param = await raw_request.json()
+        timestamp = {"timestamp": datetime.now().isoformat()}
+        request_param = {**timestamp, **request_param}
+        try:
+            logger.info("Received chat completion request", request=json.dumps(request_param))
+        except (  # pylint: disable=broad-exception-caught
+            Exception,
+            json.JSONDecodeError,
+        ) as err:
+            logger.error("Error in dumping request parameters: %s", err)
+
+    if not request_include_debug_config:
+        request.debug_config = None
+
     async_engine = server_context.get_engine(request.model)
     if async_engine is None:
         return error_protocol.create_error_response(
@@ -141,7 +173,7 @@ async def request_chat_completion(
         # capture potential exceptions in this scope, rather then
         # the StreamingResponse scope.
         stream_generator = async_engine._handle_chat_completion(  # pylint: disable=protected-access
-            request, request_id
+            request, request_id, request_final_usage_include_extra=request_final_usage_include_extra
         )
         first_response = await anext(  # type: ignore  # pylint: disable=undefined-variable
             stream_generator
@@ -151,9 +183,9 @@ async def request_chat_completion(
             if isinstance(first_response, StopAsyncIteration):
                 yield "data: [DONE]\n\n"
                 return
-            yield f"data: {first_response.model_dump_json()}\n\n"
+            yield f"data: {first_response.model_dump_json(by_alias=True)}\n\n"
             async for response in stream_generator:
-                yield f"data: {response.model_dump_json()}\n\n"
+                yield f"data: {response.model_dump_json(by_alias=True)}\n\n"
             yield "data: [DONE]\n\n"
 
         return fastapi.responses.StreamingResponse(
@@ -161,8 +193,7 @@ async def request_chat_completion(
         )
 
     # Normal response.
-    num_prompt_tokens = 0
-    num_completion_tokens = 0
+    request_final_usage = None
     output_texts = ["" for _ in range(request.n)]
     finish_reasons: List[Optional[str]] = [None for _ in range(request.n)]
     logprob_results: Optional[List[List[LogProbsContent]]] = (
@@ -170,7 +201,7 @@ async def request_chat_completion(
     )
 
     async for response in async_engine._handle_chat_completion(  # pylint: disable=protected-access
-        request, request_id
+        request, request_id, request_final_usage_include_extra=request_final_usage_include_extra
     ):
         if await raw_request.is_disconnected():
             # In non-streaming cases, the engine will not be notified
@@ -181,8 +212,13 @@ async def request_chat_completion(
             return error_protocol.create_error_response(
                 HTTPStatus.BAD_REQUEST, message="The request has disconnected"
             )
-        num_prompt_tokens = response.usage.prompt_tokens
-        num_completion_tokens = response.usage.completion_tokens
+        # usage is always the last chunk
+        if response.usage is not None:
+            request_final_usage = response.usage
+            # remove extra information if debug is not enabled
+            if not server_context.enable_debug:
+                request_final_usage.extra = None
+
         for choice in response.choices:
             assert isinstance(choice.delta.content, str)
             output_texts[choice.index] += choice.delta.content
@@ -196,6 +232,7 @@ async def request_chat_completion(
     use_function_calling, tool_calls_list = engine_base.process_function_call_output(
         output_texts, finish_reasons
     )
+
     return engine_base.wrap_chat_completion_response(
         request_id=request_id,
         model=request.model,
@@ -204,6 +241,5 @@ async def request_chat_completion(
         tool_calls_list=tool_calls_list,
         logprob_results=logprob_results,
         use_function_calling=use_function_calling,
-        num_prompt_tokens=num_prompt_tokens,
-        num_completion_tokens=num_completion_tokens,
+        usage=request_final_usage,
     )
