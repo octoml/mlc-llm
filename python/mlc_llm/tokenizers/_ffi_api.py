@@ -1,5 +1,4 @@
 """FFI APIs for mlc_llm"""
-
 import tvm._ffi
 
 # Exports functions registered via TVM_REGISTER_GLOBAL with the "mlc" prefix.
