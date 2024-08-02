@@ -5,8 +5,6 @@ PyTorch, HuggingFace safetensors.
 
 import functools
 
-import numpy as np
-
 from mlc_llm.loader import ExternMapping
 from mlc_llm.quantization import Quantization
 
@@ -46,16 +44,6 @@ def phi3_huggingface(model_config: Phi3Config, quantization: Quantization) -> Ex
             [hf_name],
             functools.partial(
                 lambda x, dtype: x.astype(dtype),
-                dtype=named_parameters[mlc_name].dtype,
-            ),
-        )
-
-    def _concat_add(mlc_name, hf_names):
-        mapping.add_mapping(
-            mlc_name,
-            hf_names,
-            functools.partial(
-                lambda q, k, v, dtype: np.concatenate([q, k, v], axis=0).astype(dtype),
                 dtype=named_parameters[mlc_name].dtype,
             ),
         )

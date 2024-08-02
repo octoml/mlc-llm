@@ -13,6 +13,7 @@ from .bert import bert_loader, bert_model, bert_quantization
 from .chatglm3 import chatglm3_loader, chatglm3_model, chatglm3_quantization
 from .eagle import eagle_loader, eagle_model, eagle_quantization
 from .gemma import gemma_loader, gemma_model, gemma_quantization
+from .gemma2 import gemma2_loader, gemma2_model, gemma2_quantization
 from .gpt2 import gpt2_loader, gpt2_model, gpt2_quantization
 from .gpt_bigcode import gpt_bigcode_loader, gpt_bigcode_model, gpt_bigcode_quantization
 from .gpt_neox import gpt_neox_loader, gpt_neox_model, gpt_neox_quantization
@@ -26,12 +27,14 @@ from .mixtral import mixtral_loader, mixtral_model, mixtral_quantization
 from .orion import orion_loader, orion_model, orion_quantization
 from .phi import phi_loader, phi_model, phi_quantization
 from .phi3 import phi3_loader, phi3_model, phi3_quantization
+from .phi3v import phi3v_loader, phi3v_model, phi3v_quantization
 from .qwen import qwen_loader, qwen_model, qwen_quantization
 from .qwen2 import qwen2_loader, qwen2_model, qwen2_quantization
 from .qwen2_moe import qwen2_moe_loader, qwen2_moe_model, qwen2_moe_quantization
 from .rwkv5 import rwkv5_loader, rwkv5_model, rwkv5_quantization
 from .rwkv6 import rwkv6_loader, rwkv6_model, rwkv6_quantization
 from .stable_lm import stablelm_loader, stablelm_model, stablelm_quantization
+from .starcoder2 import starcoder2_loader, starcoder2_model, starcoder2_quantization
 
 ModelConfig = Any
 """A ModelConfig is an object that represents a model architecture. It is required to have
@@ -119,6 +122,19 @@ MODELS: Dict[str, Model] = {
         quantize={
             "no-quant": gemma_quantization.no_quant,
             "group-quant": gemma_quantization.group_quant,
+        },
+    ),
+    "gemma2": Model(
+        name="gemma2",
+        model=gemma2_model.Gemma2ForCausalLM,
+        config=gemma2_model.Gemma2Config,
+        source={
+            "huggingface-torch": gemma2_loader.huggingface,
+            "huggingface-safetensor": gemma2_loader.huggingface,
+        },
+        quantize={
+            "no-quant": gemma2_quantization.no_quant,
+            "group-quant": gemma2_quantization.group_quant,
         },
     ),
     "gpt2": Model(
@@ -218,6 +234,20 @@ MODELS: Dict[str, Model] = {
             "no-quant": phi3_quantization.no_quant,
             "group-quant": phi3_quantization.group_quant,
             "ft-quant": phi3_quantization.ft_quant,
+        },
+    ),
+    "phi3_v": Model(
+        name="phi3_v",
+        model=phi3v_model.Phi3VForCausalLM,
+        config=phi3v_model.Phi3VConfig,
+        source={
+            "huggingface-torch": phi3v_loader.huggingface,
+            "huggingface-safetensor": phi3v_loader.huggingface,
+        },
+        quantize={
+            "no-quant": phi3v_quantization.no_quant,
+            "group-quant": phi3v_quantization.group_quant,
+            "ft-quant": phi3v_quantization.ft_quant,
         },
     ),
     "qwen": Model(
@@ -426,6 +456,20 @@ MODELS: Dict[str, Model] = {
         },
         quantize={
             "no-quant": medusa_quantization.no_quant,
+        },
+    ),
+    "starcoder2": Model(
+        name="starcoder2",
+        model=starcoder2_model.Starcoder2ForCausalLM,
+        config=starcoder2_model.Starcoder2Config,
+        source={
+            "huggingface-torch": starcoder2_loader.huggingface,
+            "huggingface-safetensor": starcoder2_loader.huggingface,
+        },
+        quantize={
+            "no-quant": starcoder2_quantization.no_quant,
+            "group-quant": starcoder2_quantization.group_quant,
+            "ft-quant": starcoder2_quantization.ft_quant,
         },
     ),
 }
