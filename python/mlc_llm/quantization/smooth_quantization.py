@@ -76,9 +76,8 @@ def load_file(path):
 
 
 def shard_smoothquant_params(tensor_parallel_shards, args) -> Iterator[Tuple[str, NDArray]]:
-    model_config = args.model.config.from_file(args.config)
-    model_config.tensor_parallel_shards = tensor_parallel_shards
-    model = args.model.model(model_config)
+    args.model_config.tensor_parallel_shards = tensor_parallel_shards
+    model = args.model.model(args.model_config)
     model.to(args.quantization.model_dtype)
 
     pth = args.statistics_path
@@ -175,9 +174,8 @@ def _create_smoothquant_func(
     return func_names
 
 def gen_smoothquant(named_params: Dict[str, nn.Parameter], tensor_parallel_shards: int, args: Any):
-    model_config = args.model.config.from_file(args.config)
-    model_config.tensor_parallel_shards = tensor_parallel_shards
-    model = args.model.model(model_config)
+    args.model_config.tensor_parallel_shards = tensor_parallel_shards
+    model = args.model.model(args.model_config)
     model.to(args.quantization.model_dtype)
 
     # verification if smooth parameters exist to determine if smoothing was used
